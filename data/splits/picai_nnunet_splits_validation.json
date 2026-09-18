@@ -1,0 +1,128 @@
+{
+  "generated_at": "2026-09-14T09:25:43",
+  "dataset": "Dataset605_PICAI",
+  "fold_count": 1,
+  "split_unit": "patient_id",
+  "scope": "PI-CAI 仅 train/validation；最终测试由通过 G0-E 语义与几何审计后冻结的外部数据集承担，PI-CAI 内部不设 test。",
+  "seed": 0,
+  "val_ratio": 0.15,
+  "counts": {
+    "train_studies": 1277,
+    "validation_studies": 223,
+    "total_studies": 1500,
+    "train_patients": 1256,
+    "validation_patients": 220
+  },
+  "by_center": {
+    "train": {
+      "PCNN": 300,
+      "RUMC": 681,
+      "ZGT": 296
+    },
+    "validation": {
+      "PCNN": 50,
+      "RUMC": 119,
+      "ZGT": 54
+    }
+  },
+  "checks": [
+    {
+      "check": "两侧 study 列表无重复",
+      "pass": true,
+      "detail": "train=1277/1277 validation=223/223"
+    },
+    {
+      "check": "train / validation 的 study 无交集",
+      "pass": true,
+      "detail": "overlap=0"
+    },
+    {
+      "check": "train / validation 的患者无交集",
+      "pass": true,
+      "detail": "overlap=0"
+    },
+    {
+      "check": "全部 study 均已分配（无遗漏）",
+      "pass": true,
+      "detail": "未分配=0"
+    },
+    {
+      "check": "每个 case 恰好归属一侧",
+      "pass": true,
+      "detail": "取值=['train', 'validation']"
+    },
+    {
+      "check": "study 并集覆盖 manifest 全部",
+      "pass": true,
+      "detail": "union=1500 manifest=1500"
+    },
+    {
+      "check": "与划分文件声明的 n_studies 一致",
+      "pass": true,
+      "detail": "train=1277/1277 validation=223/223"
+    },
+    {
+      "check": "与划分文件声明的 n_patients 一致",
+      "pass": true,
+      "detail": "train=1256/1256 validation=220/220"
+    },
+    {
+      "check": "预处理 case 集合一致（gt_segmentations）",
+      "pass": true,
+      "detail": "gt=1500 manifest=1500 差=[]"
+    },
+    {
+      "check": "预处理 case 集合一致（nnUNetPlans_3d_fullres）",
+      "pass": true,
+      "detail": "b2nd=1500 manifest=1500 差=[]"
+    },
+    {
+      "check": "train ∪ validation == 预处理 case 集合",
+      "pass": true,
+      "detail": "split=1500 pre=1500"
+    },
+    {
+      "check": "逐病例存在性（gt_seg / b2nd）",
+      "pass": true,
+      "detail": "缺 gt_seg=0 缺 b2nd=0"
+    },
+    {
+      "check": "多 study 患者（23 名）全部 study 在同一侧",
+      "pass": true,
+      "detail": "违规=[]"
+    },
+    {
+      "check": "回读校验：fold 数=1 且内容一致",
+      "pass": true,
+      "detail": "folds=1 train=1277 val=223"
+    }
+  ],
+  "inputs": {
+    "split_json": "/opt/data/private/lm/my-projects/data/splits/picai_train_val_split.json",
+    "split_json_sha256": "44d115a23750898a0780054546d7edf8cb6402062a18d8375df3188c7441feab",
+    "manifest": "/opt/data/private/lm/my-projects/data/metadata/picai_manifest.csv",
+    "manifest_sha256": "0226cd220b263be8f811f39d52e8655ef39fd043d1a343e9dfbf389148d09e34",
+    "preprocessed_dir": "/opt/data/private/lm/my-projects/workdir/nnUNet_preprocessed/Dataset605_PICAI"
+  },
+  "outputs": {
+    "splits_final_targets": [
+      {
+        "label": "preprocessed",
+        "path": "/opt/data/private/lm/my-projects/workdir/nnUNet_preprocessed/Dataset605_PICAI/splits_final.json",
+        "action": "written",
+        "sha256": "db1d838dd73ee5a2cab3bcba771987f4ef783186bd3ea3a1b96e25de5b607148"
+      },
+      {
+        "label": "raw",
+        "path": "/opt/data/private/lm/my-projects/workdir/nnUNet_raw/Dataset605_PICAI/splits_final.json",
+        "action": "written",
+        "sha256": "db1d838dd73ee5a2cab3bcba771987f4ef783186bd3ea3a1b96e25de5b607148"
+      }
+    ],
+    "splits_payload_sha256": "db1d838dd73ee5a2cab3bcba771987f4ef783186bd3ea3a1b96e25de5b607148",
+    "summary": "/opt/data/private/lm/my-projects/data/splits/picai_nnunet_splits_validation.json",
+    "mapping_csv": "/opt/data/private/lm/my-projects/data/splits/picai_nnunet_split_cases.csv",
+    "mapping_rows": 1500
+  },
+  "elapsed_sec": 0.2
+}

@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Private and generated data
+data/raw/**
+data/interim/**
+data/processed/**
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# Runtime artifacts
+logs/**
+workdir/**
+outputs/checkpoints/**
+outputs/predictions/**
+outputs/diagnostics/**
+!logs/.gitkeep
+!workdir/.gitkeep
+!outputs/checkpoints/.gitkeep
+!outputs/predictions/.gitkeep
+!outputs/diagnostics/.gitkeep
+
+# Third-party repositories are tracked by provenance, not vendored into this project
+third_party/*
+!third_party/README.md
+
+# Local environment files
+.env
+.env.*
+*.log
+
+# --- 数据集级运行产物（大文件，不入库；由实验日志与哈希追溯）---
+outputs/nnUNet_results/**
+outputs/metrics/**
+outputs/reports/**
+outputs/figures/**
+outputs/ablations/**
+outputs/external/**
+!outputs/**/.gitkeep
+
+# --- 二进制/大数据文件兜底（任何目录）---
+*.pth
+*.pt
+*.npz
+*.npy
+*.pkl
+*.h5
+*.nii
+*.nii.gz
+*.b2nd
+*.mha

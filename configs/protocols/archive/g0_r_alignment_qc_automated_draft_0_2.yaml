@@ -1,0 +1,143 @@
+# G0-R Automated v0.2 —— 全自动序列对齐 QC 协议配置（状态：DRAFT，未冻结）
+#
+# 本文件是自动路径的唯一配置载体：所有影响结论的算法、参数、阈值推导公式与判定逻辑都必须写在这里，
+# 并由 `protocol_hash`（去除 inputs/outputs/progress 后的 canonical JSON 的 SHA256）绑定。
+#
+# 边界：
+# - 只读取物化影像（只读）；不写回任何医学影像；不上传任何数据到网络/外部 API；
+# - 不使用 lesion / WG / PZ-TZ / 任何模型预测或训练结果；
+# - 自动路径只输出 resample-only / resample+rigid / INSUFFICIENT_EVIDENCE 三种候选；
+# - 本文件为 DRAFT：冻结前不得据此把 G0-R 标记为 PASS/FROZEN。
+
+protocol:
+  id: G0-R-AUTOMATED
+  version: draft-0.2
+  status: DRAFT
+  automated_only: true
+  human_visual_review_required: false
+  human_landmarks_required: false
+  sees_model_predictions: false
+
+privacy:
+  external_upload_allowed: false
+  external_api_allowed: false
+  source_images_read_only: true
+
+input_policy:
+  lesion_allowed: false
+  wg_allowed: false
+  zonal_allowed: false
+  model_predictions_allowed: false
+
+inputs:
+  # 由 CLI --sampling-manifest 覆盖；此处记录默认来源（冻结的 16 例抽样清单）
+  sampling_manifest: outputs/diagnostics/g0_r/20260915_093819/sampling_manifest.json
+  materialized_root: data/processed/picai/cases
+
+outputs:
+  dir: outputs/diagnostics/g0_r_automated
+
+progress: true
+
+# --------------------------------------------------------------------------- A. 物理几何与 FOV
+fov_policy:
+  # 每个几何轴的最小物理重叠比例（沿用 picai.axes_overlap 的定义：交集/并集，逐轴）
+  min_axis_overlap_ratio: 0.5
+  min_overlapping_axes: 3
+  # 重采样到 T2W 网格后，z 方向至少有这么多层在 moving 物理范围内
+  min_covered_slices_z: 4
+  # 重采样后非背景（>0）体素占比低于该值 → 视为空/异常影像
+  min_nonzero_voxel_fraction: 0.002
+
+# --------------------------------------------------------------------------- B. 边缘一致性（跨模态）
+preprocessing:
+  intensity:
+    method: robust_percentile_scaling
+    low_percentile: 1.0
+    high_percentile: 99.0
+    background_masking: true          # 用 >0 掩膜排除背景，避免背景主导百分位
+  edge:
+    # 多尺度高斯平滑（单位 mm，物理尺度；sigma 会按各自 spacing 折算为体素）
+    scales_sigma_mm: [0.5, 1.5]
+    gradient: spacing_aware            # np.gradient 按物理 spacing 求导，单位 1/mm
+    threshold_percentile: 90.0         # 在每个尺度的梯度幅值上取百分位 → 二值边缘
+    min_edge_voxels: 200               # 单例单尺度边缘体素少于此值 → 该尺度指标不可用
+
+metrics:
+  tolerance_radii_mm: [0.5, 1.0, 2.0, 3.0]
+  # 指标名格式：sigma<尺度mm>.<指标>；主指标为阈值推导对象，越低越差（F1）
+  primary_metric: sigma1.5.edge_f1_at_1.0mm
+  primary_direction: lower_is_worse
+  # 一致性检查指标（与主指标同时判定；若方向不一致的结论冲突 → INSUFFICIENT_EVIDENCE）
+  consistency_metrics:
+    - name: sigma1.5.edge_f1_at_2.0mm
+      direction: lower_is_worse
+    - name: sigma1.5.chamfer_mm
+      direction: higher_is_worse
+  slicewise: true                      # 分 slice 统计（z 方向逐层），用于报告分布（不参与阈值判定）
+
+# --------------------------------------------------------------------------- C. 诊断性刚体残余估计
+registration_diagnostic:
+  enabled: true
+  library: SimpleITK
+  library_version_expect: "2.5.3"      # 运行时校验，不匹配则记录警告（不静默）
+  transform: Euler3D
+  initialization: centered_geometry
+  metric: mattes_mutual_information
+  metric_bins: 32
+  metric_sampling: random
+  metric_sampling_percentage: 0.10
+  seed: 20260916
+  optimizer: regular_step_gradient_descent
+  learning_rate: 1.0
+  min_step: 0.001
+  iterations: 150
+  shrink_factors: [4, 2, 1]
+  smoothing_sigmas_mm: [2.0, 1.0, 0.0]
+  interpolator: linear
+  # 该失败标记不得伪造为零位移；仅作诊断，不单独决定结论
+  failure_status: REGISTRATION_DIAGNOSTIC_FAILED
+
+# --------------------------------------------------------------------------- D. 合成已知位移校准
+calibration:
+  seed: 20260916
+  displacements_mm: [0.0, 0.5, 1.0, 2.0, 3.0, 4.0]
+  directions: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+  interpolation: linear
+  injection_border_mode: nearest   # 冻结：禁用 constant（零填充会造出人为边界、破坏单调性）
+  max_cases: 3                         # 从 manifest 顺序取前 N 例做校准（确定性）
+  stability_repeats: 3                 # 固定 seed 的强度扰动重复次数（用于零位移离散度）
+  stability_noise_sigma: 0.02          # 相对标准化强度尺度 [0,1] 的噪声标准差
+  detection_multiplier: 3.0            # 检测门限 = zero_mean ∓ k × zero_sd（按指标方向）
+  monotonicity_min: 0.8                # 位移-指标严格单调对比例下限
+  min_detectable_mm: 2.0               # 校准必须在此位移上可检测
+  require_detection_rate_at_min: 0.9   # 该位移上的检出率下限
+  max_zero_false_positive_rate: 0.05   # 零位移误报率上限
+  scales_used: all                     # all | [mm, ...]
+
+# --------------------------------------------------------------------------- 阈值推导（冻结公式）
+thresholds:
+  derivation: midpoint_zero_vs_min_detectable
+  # threshold = (metric(0mm) + metric(min_detectable_mm)) / 2，方向按 metrics.*_direction
+  # 不得依据模型结果、人工结果或真实 QC 最终结论调整阈值
+  direction: from_metric
+
+# --------------------------------------------------------------------------- 自动决策（冻结逻辑）
+decision:
+  rule_version: "0.2"
+  all_pairs_must_be_acceptable_for_resample_only: true
+  any_flagged_pair_triggers_rigid: true
+  insufficient_evidence_triggers:
+    - calibration_not_passed
+    - invalid_input_fraction_above_max
+    - fov_insufficient_fraction_above_max
+    - registration_failed_fraction_above_max
+    - any_case_metric_conflict
+  max_invalid_input_fraction: 0.10
+  max_fov_insufficient_fraction: 0.10
+  max_registration_failed_fraction: 0.10
+  # 自动路径只输出下列候选之一，且一律为 DRAFT（冻结由研究者按协议 §6 执行）
+  allowed_candidates:
+    - resample-only
+    - resample+rigid
+    - INSUFFICIENT_EVIDENCE

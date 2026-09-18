@@ -1,0 +1,91 @@
+{
+  "n_studies": 1500,
+  "n_patients": 1476,
+  "n_negative": 1075,
+  "n_positive": 425,
+  "n_expert_pos_original": 220,
+  "n_expert_pos_pooch25": 205,
+  "centers": {
+    "PCNN": {
+      "studies": 350,
+      "pos": 109
+    },
+    "RUMC": {
+      "studies": 800,
+      "pos": 236
+    },
+    "ZGT": {
+      "studies": 350,
+      "pos": 80
+    }
+  },
+  "checks": {
+    "n_studies": {
+      "expected": 1500,
+      "actual": 1500,
+      "pass": true
+    },
+    "n_patients": {
+      "expected": 1476,
+      "actual": 1476,
+      "pass": true
+    },
+    "n_negative": {
+      "expected": 1075,
+      "actual": 1075,
+      "pass": true
+    },
+    "n_positive": {
+      "expected": 425,
+      "actual": 425,
+      "pass": true
+    },
+    "n_expert_pos_original": {
+      "expected": 220,
+      "actual": 220,
+      "pass": true
+    },
+    "n_expert_pos_pooch25": {
+      "expected": 205,
+      "actual": 205,
+      "pass": true
+    },
+    "center_RUMC": {
+      "expected": {
+        "studies": 800,
+        "pos": 236
+      },
+      "actual": {
+        "studies": 800,
+        "pos": 236
+      },
+      "pass": true
+    },
+    "center_PCNN": {
+      "expected": {
+        "studies": 350,
+        "pos": 109
+      },
+      "actual": {
+        "studies": 350,
+        "pos": 109
+      },
+      "pass": true
+    },
+    "center_ZGT": {
+      "expected": {
+        "studies": 350,
+        "pos": 80
+      },
+      "actual": {
+        "studies": 350,
+        "pos": 80
+      },
+      "pass": true
+    }
+  },
+  "all_pass": true,
+  "build_errors": [],
+  "n_build_errors": 0,
+  "elapsed_sec": 201.5
+}

@@ -1,0 +1,129 @@
+# v2.3 版本化架构配置：plan-driven Residual-Encoder 3D U-Net（正式 M0，M1–M4 共用骨干）。
+#
+# 职责边界（research_plan §7.2/§7.3/§9.4.2）：
+#   - features_per_stage / kernel_sizes / strides / n_conv_per_stage_decoder / norm / nonlin / conv_bias
+#     **必须与冻结 3d_fullres plan 完全一致**（load 时由 validate_architecture_against_plan 校验，冲突即报错）；
+#   - **blocks_per_stage（每级 residual block 数）与 shortcut/初始化/stem/decoder/DS 身份来自本文件**，
+#     不在代码里隐式推断；
+#   - 本文件的结构字段进入 architecture_sha256（sorted-key canonical JSON → SHA-256）；provenance/source_path
+#     等非结构字段**不进入哈希**（另行冻结在 resolved config 的 plan.* 与 provenance.*）。
+#
+# blocks_per_stage=(1,3,4,6,6,6,6) 直接取自本地官方源码
+#   third_party/nnUNet/nnunetv2/experiment_planning/experiment_planners/resencUNet_planner.py
+#   ResEncUNetPlanner.UNet_blocks_per_stage_encoder=(1,3,4,6,6,6,6,...)（即 nnU-Net ResEnc-M 级 encoder 拓扑）。
+# 本项目**不宣称**与官方 ResEnc-M 完全等价：官方 preset 会重新规划 patch/features 且 decoder 用 n_conv=1；
+# 本项目冻结 3d_fullres plan（patch/features/strides 不变），只把 encoder 升级为 residual，decoder 沿用 plan 的
+# n_conv_per_stage_decoder=(2,2,2,2,2,2)。差异详见 docs/P2_M0_ResidualEncoder_v23.md。
+
+architecture_name: m0_resenc_picai_3d_fullres
+architecture_version: v2.3
+encoder_type: residual_encoder
+block_type: basic_post_activation       # BasicBlockD 等价：conv1(Conv-IN-LeakyReLU) + conv2(Conv-IN) + shortcut，加后激活
+activation_order: post_activation        # 显式冻结：out = LeakyReLU(conv2(conv1(x)) + shortcut(x))
+
+n_stages: 7
+# 每级 residual block 数（来自官方 ResEnc-M encoder 拓扑；这是本文件相对 plan 唯一新增的结构自由度）
+blocks_per_stage: [1, 3, 4, 6, 6, 6, 6]
+# 以下三项必须逐值等于冻结 plan（3d_fullres）
+features_per_stage: [32, 64, 128, 256, 320, 320, 320]
+kernel_sizes: [[1, 3, 3], [1, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]]
+strides: [[1, 1, 1], [1, 2, 2], [1, 2, 2], [2, 2, 2], [2, 2, 2], [1, 2, 2], [1, 2, 2]]
+
+# stem：官方 ResidualEncoder 的 default stem —— 1 个 Conv-IN-LeakyReLU，不下采样
+stem:
+  type: stacked_conv_blocks
+  n_convs: 1
+  stride: [1, 1, 1]
+  does_downsample: false
+
+# shortcut / projection 规则（ResNet-D 风格；禁止隐式裁剪通道）
+# 真实语义（与 BasicBlockD 一致，由 models/residual_blocks.py 实现并被白名单校验）：
+#   下采样仅由 stride 触发（AvgPool）；projection（1×1×1 Conv+IN）仅由通道变化触发；stride+通道同时变化时先 pool 后 proj。
+shortcut:
+  identity_when: same_spatial_and_channels          # 空间与通道均相同 → identity
+  downsample_when: stride_change                     # 下采样**仅由 stride 触发** → AvgPool3d(kernel=stride,stride=stride,ceil_mode=True)
+  projection_when: channel_change                    # projection（1×1×1 Conv(bias=False)+IN）**仅由通道变化触发**
+  downsample_op: avgpool3d_kernel_eq_stride
+  downsample_before_projection: true                 # ResNet-D：stride+通道同时变化时先 avgpool 后 1×1×1 conv（非 strided 1×1×1）
+  projection_kernel: [1, 1, 1]
+  projection_conv_bias: false
+  projection_norm: true                              # 1×1×1 conv 后接 InstanceNorm3d（无激活）
+  implicit_channel_crop_forbidden: true
+
+normalization:
+  op: InstanceNorm3d
+  eps: 1.0e-5
+  affine: true
+
+nonlinearity:
+  op: LeakyReLU
+  negative_slope: 0.01
+  inplace: true
+
+conv_bias: true
+
+# 初始化规则（对齐官方 InitWeights_He(1e-2) + init_last_bn_before_add_to_0）
+initialization:
+  method: he_kaiming_normal
+  mode: fan_in
+  nonlinearity: leaky_relu
+  negative_slope: 0.01
+  conv_bias_init: zeros
+  norm_weight_init: ones
+  norm_bias_init: zeros
+  zero_init_last_norm_before_add: true               # 加法前最后一个 IN（conv2 的 norm）仿射参数置 0
+
+# decoder：普通 U-Net（非残差），沿用冻结 plan 的 n_conv_per_stage_decoder
+decoder:
+  type: plain_unet_decoder
+  upsample: convtranspose3d
+  transpconv_kernel_equals_stride: true              # ConvTranspose3d(kernel=stride, stride=stride)
+  skip_align: center_crop_or_pad                     # 奇数尺寸对齐（差异 >2 体素报错）
+  skip_merge: concat
+  stage_block: stacked_conv_blocks
+  n_conv_per_stage_decoder: [2, 2, 2, 2, 2, 2]       # 必须等于冻结 plan
+  per_level_seg_heads: true                          # 每级都建 1×1×1 seg head（DS 开/关权重一致）
+  residual: false
+
+deep_supervision:
+  output_order: high_to_low_resolution               # 输出列表高分辨率在前（与现有协议一致）
+  weight_scheme: 1_over_2_pow_i
+  lowest_resolution_weight_zero: true
+  weights_normalized_to_one: true
+  single_output_weight: 1.0
+
+# §8.6 浅层 skip 接口契约（P2A 只冻结接口，不实现 Q_l / F_fuse / M1–M4）
+shallow_skip_contract:
+  contract_id: shallow_skip.v23.concat_conv1x1_in_leakyrelu
+  applies_to_stages: [0, 1]
+  inputs:
+    kind: modality_specific_encoder_features
+    count: 3
+    modality_order: [T2W, ADC, HBV]
+  target_channels_source: plan.features_per_stage[stage]
+  topology: [concat, conv1x1x1, instance_norm3d, leaky_relu]
+  forbidden_inputs: [pz_tz, wg, sequence_gate_weight, sequence_logits, decoder_feature]
+  produces_second_modality_logits: false
+  stage2_skip: F_fuse
+  stage3_and_deeper_skip: shared_encoder_skip
+  identical_across_m1_m4: true
+
+fusion_stage: 2                                       # §8.5：encoder stage 2（累积 stride (1,4,4)）
+in_channels: 3
+num_classes: 2
+
+# 非结构字段：仅用于可追溯，**不进入 architecture_sha256**
+provenance:
+  plans_name: nnUNetPlans
+  configuration: 3d_fullres
+  plan_source: workdir/nnUNet_preprocessed/Dataset605_PICAI/nnUNetPlans.json
+  blocks_per_stage_source: >-
+    official nnU-Net ResEnc-M preset: ResEncUNetPlanner.UNet_blocks_per_stage_encoder=(1,3,4,6,6,6,6,...)
+    in third_party/nnUNet/nnunetv2/experiment_planning/experiment_planners/resencUNet_planner.py
+  block_reference: >-
+    dynamic_network_architectures.building_blocks.residual.BasicBlockD (post-activation, ResNet-D
+    avgpool+1x1 projection shortcut) and ResidualEncoder default stem; re-implemented, not imported.
+  equivalence_note: >-
+    Not claimed equivalent to official ResEnc-M: official presets re-plan patch/features and use decoder
+    n_conv=1; this project freezes the 3d_fullres plan (patch/features/strides unchanged), upgrades only the
+    encoder to residual, and keeps the plan decoder n_conv_per_stage_decoder=(2,2,2,2,2,2).

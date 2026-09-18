@@ -1,0 +1,153 @@
+# G0-R 序列错位协议（机器可读草案）
+# 说明文档：docs/protocols/G0_R_ALIGNMENT_QC.md
+# 所有 `null` 字段表示"待盲态 pilot 确定后填写"，冻结前不得用猜测值替代；
+# 不得在任何模型（N0/M0–M4/H0）结果可见后修改本文件的已冻结字段。
+protocol:
+  id: G0-R
+  version: draft-0.1
+  status: DRAFT            # DRAFT -> FROZEN（全部阈值与决策写入且记录哈希后才可 FROZEN）
+  created: "2026-09-15"
+  reviewer: null           # 双阅片者姓名/标识（冻结时填写）
+  frozen_at: null          # 冻结日期（ISO 8601）
+  sees_model_predictions: false  # 必须为 false；违反则本轮结论作废
+
+inputs:
+  raw_data_root: /opt/data/private/lm/data/Prostate/PI-CAI   # 只读
+  manifest: data/metadata/picai_manifest.csv
+  geometry_audit: outputs/diagnostics/picai_model_readiness/geometry_audit.csv
+  geometry_anomalies: outputs/diagnostics/picai_model_readiness/geometry_anomalies.csv
+  # 物化根；`.../picai` 与 `.../picai/cases` 两种写法均被工具支持（不猜测其它命名）
+  materialized_cases: data/processed/picai
+  qc_scripts_existing:
+    - scripts/audit/generate_picai_qc.py
+    - scripts/audit/generate_picai_materialized_qc.py
+  # v2.2：抽样/清单工具已实现（只读元数据；真实数据运行由研究者执行）
+  qc_script_implemented: scripts/audit/audit_picai_alignment_qc.py
+  qc_script_status: IMPLEMENTED_NOT_EXECUTED   # 运行后仍不代表 G0-R PASS
+
+# 已核实的数据事实（来自 manifest/geometry_audit，仅作抽样依据，不得改写）
+known_facts:
+  n_studies: 1500
+  geometry_status_counts: {same_physical_space_different_grid: 840, partial_physical_overlap: 655, geometry_suspect: 5}
+  adc_grid_counts: {same_physical_space_different_grid: 1153, partial_physical_overlap: 343, geometry_suspect: 4}
+  hbv_grid_counts: {same_physical_space_different_grid: 1145, partial_physical_overlap: 351, geometry_suspect: 4}
+  center_counts: {RUMC: 800, PCNN: 350, ZGT: 350}
+  csPCa_counts: {YES: 425, NO: 1075}
+
+sampling:
+  deterministic: true          # 排序后按固定规则取例，不使用随机数
+  n_cases: null                # 总样本量：盲态 pilot 前确定并写入；冻结后不得改动分层配额
+  strata:
+    center:
+      rule: "RUMC / PCNN / ZGT 各自 >= 1 例"
+      min_per_level: 1
+    lesion_status:
+      rule: "csPCa YES / NO 各自 >= 1 例（case_csPCa 列）"
+      min_per_level: 1
+    geometry_suspect:
+      rule: "geometry_status == geometry_suspect 的 5 例全部纳入"
+      include_all: true
+    partial_overlap:
+      rule: "geometry_status == partial_physical_overlap 至少 2 例（ADC/HBV 与 T2W 部分重叠）"
+      min_cases: 2
+    extreme_fov:
+      rule: "按 t2w_extent / adc_extent / hbv_extent 的物理包围盒（体积或 z 向跨度）排序，最大与最小各 >= 1 例"
+      min_per_tail: 1
+    spacing_span:
+      rule: "按 adc_spacing（0.86–2.51 mm）与 t2w_spacing（0.3–0.63 mm）排序，两端各 >= 1 例"
+      min_per_tail: 1
+  sampled_cases_output: outputs/diagnostics/g0_r/sampled_cases.csv
+
+evaluation:
+  pairs: [T2W-ADC, T2W-HBV]    # 必须分别得出结论，不允许只评价一组后外推
+  units: mm                    # 位移指标一律以毫米报告
+  coordinate_convention: LPS   # 物化数据方向码（manifest *_orient）
+  quantitative:
+    landmark_displacement_mm: {report: [per_case, median, max]}
+    boundary_distance_mm: {method: null}   # 冻结时写明（如 Hausdorff / 平均表面距离）
+  landmark_rules:
+    # 冻结：各序列原生体素索引 (i,j,k)=(x,y,z)；t2w_* 在 T2W 物化网格、moving_* 在对应 ADC/HBV 物化网格；
+    # 位移由 SimpleITK TransformIndexToPhysicalPoint（含 origin/direction/spacing）按各序列几何计算。
+    coordinate_space: native_index_per_series
+    min_per_case_pair: null     # 真实运行（指标模式严格校验）前必须冻结；工具不代填、不编造阈值
+    require_measured_by: true   # 每行必须填写 measured_by（双阅片可追溯）
+  overlays:
+    checkerboard: true
+    edge_overlay: true
+    physical_space_only: true  # 必须先物理空间重采样再叠加，禁止按数组索引直接叠加不同网格
+  visual_scale:
+    levels: 3                  # 0=无可辨错位 1=轻微 2=明显 3=严重
+    definitions:
+      0: "无可辨错位"
+      1: "轻微、仅边缘可见"
+      2: "明显错位但主要解剖结构仍对应"
+      3: "严重错位（结构不可对应）"
+    reference_images: null     # 每级 1 张示例图，pilot 前冻结
+  auxiliary_only:
+    - MI
+    - NMI
+  prohibited_as_sole_criterion:
+    - raw_cross_modality_NCC   # 不得单独用跨模态原始 NCC 决定是否需要配准
+
+readers:
+  n_readers_min: 2
+  disagreement_definition: "等级差 >= 1"
+  tie_break_rule: null         # 第三方/复核规则，冻结时写入
+  record_fields: [case_id, pair, reader_a_level, reader_b_level, final_level, disagreement, adjudication_note]
+
+threshold_decision:            # 盲态 pilot（不查看任何模型结果）后填写；不得捏造
+  status: INSUFFICIENT_DATA    # -> DECIDED
+  sample_size: null
+  pilot_quantiles: null
+  chosen_threshold_mm: null    # 位移阈值（mm）
+  rationale: null
+  alternatives_considered: null
+  sensitivity_note: null
+
+decision_rule:
+  options: [resample-only, resample+rigid]
+  metric: "不可接受病例比例（最终视觉等级 >= 2 或位移超阈值），T2W-ADC 与 T2W-HBV 分别计算"
+  acceptable_fraction_max: null   # 盲态 pilot 确定并冻结
+  selection:
+    - "两组不可接受比例均 < acceptable_fraction_max -> resample-only"
+    - "任一组 >= acceptable_fraction_max -> resample+rigid"
+  frozen_decision: null           # resample-only | resample+rigid（冻结后不可变）
+  decided_before_formal_runs: null  # 必须为 true 才有效
+
+failure_rules:
+  alignment_failed:
+    action: "标记并保留在数据集（不删除）；敏感性分析中报告"
+  fov_insufficient:
+    coverage_metric: null         # 与 WG 的交集覆盖度（冻结时写明算法）
+    threshold: null
+    action: "仅在涉及该序列的子分析中排除并显式报告，不整体删例"
+  local_degradation:
+    action: "标记；按预注册规则选择采用配准前/后版本（规则冻结时写入）"
+  forbid_silent_exclusion: true
+  forbid_resampling_based_on_model_outputs: true
+  geometry_suspect_5_cases: "全部纳入 QC；处理决定逐例记录（沿用 P0B 已记录结论）"
+
+recompute_if_rigid:
+  new_derived_data_dir: data/processed/picai_rigid_v1   # 旧物化数据保留
+  requirements:
+    - "写死配准实现与参数（工具/版本/插值/参考序列/失败回退）"
+    - "重新生成 nnU-Net raw 链接与 3d_fullres plan/preprocess（研究者执行）"
+    - "重新冻结 splits_final.json（patient 级划分预期不变）"
+    - "重建前的任何 run 只作 feasibility，不得混用"
+    - "重建后复跑本协议抽样 QC"
+
+outputs:
+  dir: outputs/diagnostics/g0_r
+  files:
+    - sampled_cases.csv                # 确定性分层抽样结果（工具产出）
+    - sampling_manifest.json           # 机器可读抽样 manifest（含 decision=null）
+    - blind_review_sheet.csv           # 双阅片者盲审记录模板（空表，待填写）
+    - alignment_metrics_schema.json    # 定量指标输入/输出 schema
+    - run_metadata.json                # 运行元数据（时间/环境/配置哈希）
+    - alignment_metrics.csv            # 定量指标（研究者/工具填写；schema 见上）
+    - visual_scores.csv                # 视觉等级（双阅片者）
+    - qc_report.md                     # QC 报告（含 T2W-ADC / T2W-HBV 分别结论）
+    - overlay/                         # <case_id>_{adc,hbv}_{checkerboard,edge}.png
+  record_fields: [input_files, output_files, protocol_version, script_version, status, reviewers, dates, sha256]
+
+hashes: {}                     # 冻结时写入本文件、协议文档与全部输出的 SHA256

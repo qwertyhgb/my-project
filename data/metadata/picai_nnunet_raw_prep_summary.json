@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-09-14T08:53:27",
+  "dataset_dir": "/opt/data/private/lm/my-projects/workdir/nnUNet_raw/Dataset605_PICAI",
+  "dataset_name": "Dataset605_PICAI",
+  "n_selected": 1500,
+  "n_linked": 1500,
+  "n_missing": 0,
+  "missing_cases": [],
+  "channel_order": {
+    "0000": "T2W",
+    "0001": "ADC",
+    "0002": "HBV"
+  },
+  "labels": {
+    "background": 0,
+    "lesion": 1
+  },
+  "n_imagesTr": 4500,
+  "n_labelsTr": 1500,
+  "mapping_csv": "/opt/data/private/lm/my-projects/data/metadata/picai_nnunet_case_mapping.csv",
+  "dataset_json": "/opt/data/private/lm/my-projects/workdir/nnUNet_raw/Dataset605_PICAI/dataset.json"
+}

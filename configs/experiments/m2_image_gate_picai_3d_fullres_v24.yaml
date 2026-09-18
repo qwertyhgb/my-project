@@ -1,0 +1,108 @@
+# v2.3 融合模型实验配置 M2（variant=m2_image_gate）：三路 modality-specific 浅层分支 + stage 2 融合。
+#
+# 与 legacy `configs/experiments/m0_picai_3d_fullres.yaml` 的关系：
+#   - legacy 文件保留不动（PlainConv，v2.2，标记 legacy/feasibility）；
+#   - 本文件通过 `architecture` 块引用版本化架构配置，训练入口据此**明确选择** Residual-Encoder M0；
+#   - **独立的 run/output 身份**：experiment.name 与 paths.output_root 均与 legacy 不同，绝不共用输出目录。
+#
+# 除 encoder 身份外，训练/验证/损失/预算协议与 legacy 完全一致（复用已验证的基础设施）：
+#   Focal+CE（与正式 N0 对齐）、max_epochs=200 固定预算、每 5 epoch 全体积验证、禁用 early stopping。
+#
+# 状态：P2A 只完成实现与合成回归；**本配置的真实数据 setup/loader-smoke/overfit/训练/验证均未运行**，
+#   G2 = NOT YET EVALUATED，须由研究者在 G0-R 冻结预处理身份后执行（见 docs/P2_M0_ResidualEncoder_v23.md）。
+experiment:
+  name: m2_image_gate_picai_3d_fullres_v24
+  model_id: M2
+  seed: 0
+  fold: 0
+
+paths:
+  plans: workdir/nnUNet_preprocessed/Dataset605_PICAI/nnUNetPlans.json
+  preprocessed_dataset: workdir/nnUNet_preprocessed/Dataset605_PICAI
+  splits: workdir/nnUNet_preprocessed/Dataset605_PICAI/splits_final.json
+  # 独立输出根目录（不与 legacy outputs/checkpoints/m0 共用）
+  output_root: outputs/checkpoints/m2_image_gate_v24
+
+# v2.3 架构引用：训练入口据此构建 Residual-Encoder M0，并核对 name/version/encoder_type 与架构配置一致
+architecture:
+  config_path: configs/architectures/fusion_resenc_v24.yaml
+  architecture_name: fusion_resenc_picai_3d_fullres
+  architecture_version: v2.4
+  encoder_type: residual_encoder
+  fusion_variant: m2_image_gate
+
+model:
+  in_channels: 3
+  num_classes: 2
+  deep_supervision: true
+  configuration: 3d_fullres
+
+data:
+  modality_order: [T2W, ADC, HBV]
+  batch_size: 2
+  patch_size: [16, 320, 320]
+  oversample_foreground: 0.33
+  num_workers: 4
+  pin_memory: true
+
+# 增强：当前只实现"同步镜像"；pending_parity 是尚未对齐 nnU-Net 的增强清单（与 legacy 相同，显式冻结）
+augmentation:
+  mirror: true
+  mirror_p_per_axis: 0.5
+  per_channel_intensity: false
+  pending_parity: [rotation, scaling, low_resolution_simulation, gaussian_noise, blur, gamma]
+
+# 损失：与正式 N0 对齐（research_plan §9.2），复用 PiCAIFocalCELoss，不引入第三种口径
+loss:
+  name: focal_ce
+  focal_weight: 0.5
+  ce_weight: 0.5
+  gamma: 2.0
+  smooth: 1.0e-05
+  batch_dice: false
+
+optimizer:
+  name: SGD
+  lr: 0.01
+  momentum: 0.99
+  nesterov: true
+  weight_decay: 3.0e-05
+
+scheduler:
+  name: PolyLR
+  power: 0.9
+
+training:
+  max_epochs: 200
+  iterations_per_epoch: 250
+  diagnostic_validation_iterations: 50
+  amp: true
+  grad_clip: 12.0
+  checkpoint_every: 50
+  progress: true
+
+validation:
+  mode: full_volume
+  every_n_epochs: 5
+  checkpoint_metric: val_positive_casewise_dice_mean
+  maximize: true
+  expected_cases: 223
+  expected_positive_cases: 63
+  expected_negative_cases: 160
+  step_fraction: 0.5
+  gaussian: true
+  mirror_tta: false
+  sliding_window_batch_size: 1
+  inner_patch_progress: false
+  save_case_metrics: true
+
+early_stopping:
+  enabled: false
+  min_epochs: 50
+  patience: 8
+  min_delta: 1.0e-4
+
+inference:
+  step_fraction: 0.5
+  gaussian: true
+  mirror_tta: false

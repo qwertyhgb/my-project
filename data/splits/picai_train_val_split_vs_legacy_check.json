@@ -1,0 +1,26 @@
+{
+  "legacy": "data/splits/picai_cross_center_splits.json",
+  "checks": {
+    "train_patients_equal": {
+      "n_old": 1256,
+      "n_new": 1256,
+      "equal": true
+    },
+    "train_studies_equal": {
+      "n_old": 1277,
+      "n_new": 1277,
+      "equal": true
+    },
+    "validation_patients_equal": {
+      "n_old": 220,
+      "n_new": 220,
+      "equal": true
+    },
+    "validation_studies_equal": {
+      "n_old": 223,
+      "n_new": 223,
+      "equal": true
+    }
+  },
+  "pass": true
+}

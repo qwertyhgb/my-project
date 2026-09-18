@@ -1,0 +1,131 @@
+# G0-E 独立测试路径冻结（机器可读草案）
+# 说明文档：docs/protocols/G0_E_INDEPENDENT_TEST.md
+# 所有 `null` 字段表示"待审计填写"；不得用假设值替代；不得在查看任何模型外部结果后修改已冻结字段。
+protocol:
+  id: G0-E
+  version: draft-0.1
+  status: DRAFT            # DRAFT -> FROZEN（决策写入且记录哈希后才可 FROZEN）
+  created: "2026-09-15"
+  reviewer: null
+  frozen_at: null
+  sees_model_predictions: false   # 必须为 false
+
+candidates:
+  - name: Prostate158
+    priority: 1
+    local_root: /opt/data/private/lm/data/Prostate/Prostate158   # 本地只读；仅用于文件清单级清点
+    version: null
+    source: null                   # 论文/DOI/获取渠道
+    license: null                  # 许可与证据
+    usage_scope: null              # 允许范围（研究/再分发/商用）
+    n_cases: null
+    n_lesions: null
+    modalities: null               # 实际可用：T2 / ADC / DWI(b值) / 其它
+    patient_overlap_with_picai: null   # 必须为 0 才可作 test（附排查方法）
+    label_semantics: null          # 见 label_semantics_required_fields
+    zonal_labels: null             # 是否存在 PZ/TZ、编码、来源
+    prior_independence: null       # 见 prior_independence_required_fields
+    metrics_supported: null
+    verdict: null                  # eligible_external_test | exploratory_only | rejected
+    verdict_reason: null
+  - name: Private_PCA
+    priority: 2
+    local_root: /opt/data/private/lm/data/Prostate/PCA   # 本地只读；语义未确认前不得作为 csPCa 外部 test
+    version: null
+    source: null
+    license: null
+    usage_scope: null
+    n_cases: null
+    n_lesions: null
+    modalities: null
+    patient_overlap_with_picai: null
+    label_semantics: null          # 当前未书面确认；确认前不得作为 csPCa 外部 test
+    zonal_labels: null
+    prior_independence: null
+    metrics_supported: null
+    verdict: null
+    verdict_reason: null
+  - name: Private_BPH
+    priority: 3
+    local_root: /opt/data/private/lm/data/Prostate/BPH
+    excluded_as_lesion_test: true  # ROI 语义待确认，不作为病灶分割测试集
+  - name: MSD_Prostate
+    priority: 3
+    local_root: /opt/data/private/lm/data/Prostate/MSD_Prostate
+    excluded_as_lesion_test: true  # 主要为解剖分区数据
+  - name: ProstateX
+    priority: 3
+    local_root: null               # 本地路径未确认；且与 PI-CAI 存在病例映射
+    excluded_as_lesion_test: true  # 与 PI-CAI 存在病例映射，禁止作独立外部集
+
+audit_tool:
+  # v2.2：候选清点工具已实现（只读文件清单/表头；不做任何独立性或可用性推断）
+  script: scripts/audit/audit_g0e_candidates.py
+  # 状态口径（2026-09-17 修正，原写 IMPLEMENTED_NOT_EXECUTED 与实际情况不符）：
+  #   - inventory（文件清单级清点）已执行：2026-09-15 → outputs/diagnostics/g0_e/20260915_093835/
+  #     （run_metadata.json 记录 missing_evidence_items=67，config_sha256=90953cba…）
+  #   - evidence_audit（许可/语义/重叠/先验独立性等证据审计）尚未执行；verdict/frozen_decision 仍为 null
+  #   - G0-E 整体仍为 PENDING（工具运行成功不等于通过）
+  inventory_status: EXECUTED
+  inventory_run: outputs/diagnostics/g0_e/20260915_093835/
+  inventory_config_sha256: "90953cba3660f71858bbe19a7112574a7e380d1d9ace791635e3aa5f58cc16ce"
+  evidence_audit_status: NOT_EXECUTED
+  status: INVENTORY_EXECUTED_EVIDENCE_AUDIT_NOT_EXECUTED
+  status_note: "本文件在 2026-09-15 清点运行之后被修订（仅状态字段）；若以修订后配置冻结 G0-E，必须重新运行清点并绑定新哈希"
+  auto_only_note: "工具只做文件清单级清点（目录名/文件名/CSV 表头/行数）；AUTO 值不作为判定依据"
+
+label_semantics_required_fields: [lesion_annotation_source, diagnostic_standard, positive_definition,
+                                   negative_definition, pathology_confirmed, index_lesion_rule, readers]
+  # positive_definition 需与 PI-CAI `ISUP >= 2 csPCa` 逐条对照；
+  # 不等价 -> 只能 `external PCa lesion validation`（exploratory_only）。
+  # 只有阳性病例 -> 仅允许分割类指标，禁止 AUROC / FP per exam。
+
+modality_mapping_required_fields: [t2_source, t2_axis, t2_fat_sat, adc_definition, dwi_b_values,
+                                   hbv_b_value_range, mapping_uncertain]
+  # mapping_uncertain 为 true 的序列必须从主分析排除。
+
+patient_overlap:
+  method: null                    # 患者级标识比对方法（可溯源）+ 脚本路径
+  overlap_count: null             # 必须为 0
+  evidence_file: null
+
+prior_independence_required_fields: [prior_name, training_data_source, covers_picai_cases,
+                                     covers_external_cases, verdict, evidence]
+  # verdict: independent_auto_prior | out_of_fold_required | oracle_prior_friendly_only
+  # 无法证明独立 -> oracle/upper-bound 或 prior-friendly analysis，不得作为确认性结果。
+  # 形态学扰动（corrosion/dilation/patch-drop）只能评价鲁棒性，不得声称消除/量化泄漏。
+candidate_priors: [Yuan23, HeviAI23]
+
+geometry_intensity_audit: [size, spacing, origin, direction, dtype, intensity_range, anomalies, fov_coverage]
+
+decision_tree:
+  order:
+    - "license_scope_unconfirmed -> rejected"
+    - "patient_overlap != 0 -> rejected"
+    - "modality_mapping_uncertain -> exclude sequence; continue if T2 + >=1 diffusion sequence usable"
+    - "label_semantics_not_equivalent_to_ISUP2_csPCa -> exploratory_only"
+    - "positive_cases_only -> exploratory_only"
+    - "zonal_semantics_unresolved -> oracle-prior analysis only"
+    - "prior_independence_unproven -> degrade; if all priors unproven -> exploratory_only"
+    - "all_passed_and_power_sufficient -> eligible_external_test"
+  fallback:
+    path_B: "no eligible test but >=1 exploratory candidate -> pre-declared exploratory external validation"
+    path_C: "all rejected -> redesign PI-CAI internal test before any formal result"
+  frozen_decision:
+    path: null            # A | B | C
+    chosen_dataset: null
+    decided_before_formal_runs: null   # 必须为 true 才有效
+
+internal_test_redesign_if_path_C:
+  current_split: workdir/nnUNet_preprocessed/Dataset605_PICAI/splits_final.json  # 1277/223 作废但保留审计
+  new_split_requirements: [patient_level, center_x_csPCa_stratified, test_not_used_in_dev]
+  version: null
+
+outputs:
+  dir: outputs/diagnostics/g0_e
+  files: [candidate_registry.csv, evidence_status.json, missing_evidence.md, audit_report.md,
+          run_metadata.json, patient_overlap_report.json, label_semantics_audit.md,
+          geometry_intensity_audit.csv, zonal_mapping_audit.md, prior_independence_audit.md, decision.md]
+  record_fields: [inputs, outputs, protocol_version, script_version, status, reviewers, dates, sha256]
+
+hashes: {}
