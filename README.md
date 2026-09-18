@@ -47,7 +47,7 @@
 - G0-R 抽样与盲审清单工具 `scripts/audit/audit_picai_alignment_qc.py`（确定性分层抽样 → 冻结的抽样清单）；
 - G0-R 人工路径工具 `scripts/audit/render_picai_alignment_qc.py`（盲审图 + landmark **LPS 物理位移**；
   不含病灶标签或模型输出）——已降级为历史草案与后备；
-- **G0-R 自动路径（当前主路径，协议 `draft-0.3`；draft-0.2 配置已归档于 `configs/protocols/archive/`）**：
+- **G0-R 自动路径（当前主路径，协议 `draft-0.4`；draft-0.2 / draft-0.3 配置已归档于 `configs/protocols/archive/`）**：
   `scripts/audit/run_picai_alignment_qc_automated.py` +
   `src/.../protocols/g0_r_automated_qc.py`（协议 `docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`，配置
   `configs/protocols/g0_r_alignment_qc_automated.yaml`）。四组自动证据：A 物理几何/FOV、B 多尺度跨模态边缘

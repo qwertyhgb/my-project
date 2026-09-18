@@ -1,6 +1,6 @@
 # Runbook：G0-R 序列错位协议（全自动 QC，真实数据）
 
-- **协议**：`docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`（`G0-R-AUTOMATED` **draft-0.3**，DRAFT；draft-0.2 载体已归档于 `configs/protocols/archive/`）
+- **协议**：`docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`（`G0-R-AUTOMATED` **draft-0.4**，DRAFT；draft-0.2 / draft-0.3 载体已归档于 `configs/protocols/archive/`）
 - **配置**：`configs/protocols/g0_r_alignment_qc_automated.yaml`
 - **状态与阻塞项**：见 `docs/STATUS.md`（本手册不维护状态）
 - **执行人**：研究者（读取真实物化影像体素）
@@ -45,7 +45,8 @@ outputs/diagnostics/g0_r_automated/<UTC 时间戳>/
   automated_metrics.csv        每 case×pair 的自动指标 + 刚体诊断 + FOV 摘要
   per_case_decisions.csv       状态/原因/主指标与阈值/逐指标 checks
   calibration_summary.json     分 pair（(pair, case_id) unit）校准曲线、unit 内噪声阈值、单调性、
-                               检出率、零位移误报率、分 pair passed、schema_version / grouping
+                               检出率、零位移误报率、分 pair passed、schema_version / grouping、
+                               unit 完整性计数（total/complete/at-min/paticipating）与 incomplete_unit_ids
   threshold_derivation.json    每 pair 阈值（by_pair）、unit baseline / min-detectable 均值 / midpoint、
                                聚合方法（median）、方向、sensitivity_passed
   decision_draft.json          候选决策（DRAFT）+ 分状态占比 + 成对结论
@@ -64,10 +65,13 @@ outputs/diagnostics/g0_r_automated/<UTC 时间戳>/
 1. `calibration_summary.json.passed = true`，且**两个 pair 的主指标各自通过**
    （`per_pair["T2W-ADC"].passed` 与 `per_pair["T2W-HBV"].passed` 均为 true；monotonicity ≥ 0.8、
    检出率 ≥ 0.9、零位移误报 ≤ 0.05）；
+1b. **v0.4 附加**：每 pair `n_units_complete ≥ 3`、`incomplete_unit_ids == []`，且所有参与记录的
+   `sigma*.usable === true`（否则属 `INSUFFICIENT_EVIDENCE`，属预期行为）；
 2. `decision_draft.json.candidate ∈ {resample-only, resample+rigid}`（**不是** `INSUFFICIENT_EVIDENCE`）；
 3. ADC 与 HBV 的 `pair_conclusions` 分别给出结论，未跳过任一对；
 4. 无 `INVALID_INPUT` / `FOV_INSUFFICIENT` / `REGISTRATION_DIAGNOSTIC_FAILED` 超限比例；
-5. 所有 JSON 输出带 `schema_version = g0-r-automated/0.3`（读取一律用 `load_output_json()`）。
+5. 所有 JSON 输出带 `schema_version = g0-r-automated/0.4`（读取一律用 `load_output_json()`）；
+   v0.2 / v0.3 旧输出会被显式拒绝。
 
 > **即使全部满足，也只是"DRAFT 候选可用"**：自动路径只产出候选，0 mm 状态不等于解剖学对齐真值；
 > 冻结仍须研究者按 §5 执行。
@@ -91,7 +95,10 @@ outputs/diagnostics/g0_r_automated/<UTC 时间戳>/
   本 runbook 不对「是否足以支撑配准决策」下结论；是否追加人工 landmark 复核或扩大抽样由研究者决定；
 - 合成位移只验证"指标对额外位移的响应"，**不能**证明真实病例解剖学对齐；观察到的 0 mm 状态不等价于真值；
 - draft-0.2 的失败运行（`outputs/diagnostics/g0_r_automated/20260918_074219/`）**原样保留**为历史证据，
-  不得修改、不得与 draft-0.3 结果合并比较。
+  不得修改、不得与 draft-0.4 结果合并比较；
+- v0.4 的两种新失败原因（`insufficient_complete_units` / `incomplete_unit_condition_grid` /
+  `metric_unusable`）表示**该数据/该尺度不足以支撑判定**；不得通过放宽 `min_edge_voxels`、
+  `min_complete_units_per_pair`、删除失败 unit 或降低检出率要求来"让它通过"。
 
 ## 7. 历史路径（不再是 blocker）
 

@@ -1,15 +1,25 @@
-# G0-R 全自动序列对齐 QC 协议（Automated v0.3）
+# G0-R 全自动序列对齐 QC 协议（Automated v0.4）
 
-- **状态：DRAFT（未冻结）**；`protocol.id = G0-R-AUTOMATED`，`version = draft-0.3`
+- **状态：DRAFT（未冻结）**；`protocol.id = G0-R-AUTOMATED`，`version = draft-0.4`
 - 机器可读载体：`configs/protocols/g0_r_alignment_qc_automated.yaml`（本文件的唯一权威参数来源）
 - 执行工具：`scripts/audit/run_picai_alignment_qc_automated.py`
 - 核心算法库：`src/zonal_reliability_fusion/protocols/g0_r_automated_qc.py`
 - 人工协议（历史草案，保留不改）：`docs/protocols/G0_R_ALIGNMENT_QC.md`（`G0-R` draft-0.1）
-- **历史版本（按字节归档，不再执行）**：`configs/protocols/archive/g0_r_alignment_qc_automated_draft_0_2.yaml`
-  （SHA256 `67c479a0…c89a`，见同目录 `README.md`）；draft-0.2 的首次真实运行产物位于
-  `outputs/diagnostics/g0_r_automated/20260918_074219/`，**原样保留、不得追溯修改**。
+- **历史版本（按字节归档，不再执行）**：`configs/protocols/archive/` 下的
+  `g0_r_alignment_qc_automated_draft_0_2.yaml`（SHA256 `67c479a0…c89a`）与
+  `g0_r_alignment_qc_automated_draft_0_3.yaml`（SHA256 `beda4bbf…8198`），见同目录 `README.md`；
+  draft-0.2 的首次真实运行产物位于 `outputs/diagnostics/g0_r_automated/20260918_074219/`，
+  **原样保留、不得追溯修改**。
+- **draft-0.3 从未在真实数据上运行过**（修复 transform 类型与分组缺陷后即发现下述两个 fail-open 缺陷而升版）。
 
-## 0. v0.3 相对 draft-0.2 的方法性变更（必须整体升版本，禁止混用）
+## 0. v0.4 相对 draft-0.3 的修复（两项 fail-open；必须整体升版本，禁止混用）
+
+| # | 变更 | 原因（审查确认的 fail-open 缺陷） |
+|---|---|---|
+| 1 | **指标 usable 守卫**：解析指标名的尺度前缀（`sigma1.5.edge_f1_at_1.0mm` → `sigma1.5.usable`），只有该字段**显式为 `true`** 时指标才可用；缺失 / `false` / 非布尔一律 fail-closed。主指标 unusable → `UNAVAILABLE` → `INSUFFICIENT_EVIDENCE`；一致性指标 unusable → `SKIPPED`（写明边缘体素不足，不得用于支持 ACCEPTABLE/FLAGGED）。所有检查写入 `metric_usable` / `metric_unusable_reason` | v0.3 的 `_metric_value()` 与 `decide_case()` 只检查数值有限，忽略 `sigma*.usable`，于是**边缘体素不足的尺度指标仍可参与校准与判定**（`preprocessing.edge.min_edge_voxels` 事实上失效） |
+| 2 | **校准 unit 条件网格完整性**：新增冻结项 `calibration.min_complete_units_per_pair: 3`、`calibration.require_complete_condition_grid: true`；逐 unit 审计零位移重复数、每个非零位移 × 全部方向（尤其是 `min_detectable_mm`）；只有 complete unit 参与噪声/曲线/midpoint；存在任何不完整 unit 或 complete unit 不足 → 该 pair 直接失败 | v0.3 在某 unit 缺少 `min_detectable_mm` 数据时会把它**从 detection-rate 分母与 midpoint 聚合中静默移除**，只剩 1 个 unit 也能通过校准（分母被静默缩小） |
+
+## 0.1 v0.3 相对 draft-0.2 的方法性变更（保留供追溯）
 
 | # | 变更 | 原因（已发生的真实缺陷） |
 |---|---|---|
@@ -154,7 +164,39 @@ noise_threshold        = max( detection_multiplier × pooled_within_unit_sd,
 阈值定义保证「零位移样本不会被判为变差」：`zero_false_positive_rate = 0`。
 **病例间 / pair 间的绝对基线差异不得进入该阈值**（v0.2 的缺陷正是如此）。
 
-### 7.4 灵敏度曲线与通过条件
+### 7.4 指标可用性（v0.4，硬约束）
+
+- 指标名必须形如 `sigma<scale>.<metric>`；其可用性由同尺度的 `sigma<scale>.usable` 决定
+  （来源：`preprocessing.edge.min_edge_voxels`——某尺度边缘体素不足时该尺度 `usable=false`）；
+- 只有 `usable === true` 的**记录**才进入：零位移参考、退化曲线、检出率、midpoint 与阈值推导；
+- 缺失 / `false` / 非布尔 → 一律**不可用**（fail-closed，不得默认为 true），并写入
+  `invalid_conditions`（原因含 `sigma*.usable=false（该尺度边缘体素不足…）`）；
+- 真实病例判定同样先查 usable：主指标 unusable → `UNAVAILABLE` → `INSUFFICIENT_EVIDENCE`；
+  一致性指标 unusable → `SKIPPED`（不得用于支持 ACCEPTABLE / FLAGGED）。
+
+### 7.5 unit 完整性（v0.4，冻结）
+
+对每个 `(case_id, pair, metric)` 生成完整性审计：
+
+```
+零位移：finite 且 usable 的记录数 == calibration.stability_repeats
+非零：  每个 displacements_mm(>0) × 每个 directions 都必须有 finite 且 usable 的记录
+        （min_detectable_mm 必须覆盖全部方向）
+额外：   配置之外的距离/方向 一律记为 invalid_conditions（fail-closed）
+```
+
+- 输出字段：`complete`、`missing_conditions`、`invalid_conditions`、`n_zero_expected`、`n_zero_observed`、
+  以及每个 distance 的 `expected_directions` / `observed_directions` / `missing_directions` / `complete`；
+- **只有 complete unit 参与** pooled SD、退化曲线、检出率、单调性、FPR 与 midpoint；
+- 以下任一情况使该 pair 的主指标校准失败（不得静默缩小分母）：
+  `n_units_complete < min_complete_units_per_pair`；被选中 unit 存在不完整条件网格
+  （`require_complete_condition_grid=true`）；`min_detectable_mm` 缺少任意 unit 或任意方向；
+  指标非有限或 `usable=false`；
+- 计数必须显式区分：`n_units_total`（全部 unit）、`n_units_complete`（complete）、
+  `n_units_at_min_detectable`（min-detectable 覆盖完整）、`n_units_participating`（实际进入统计）、
+  `incomplete_unit_ids`。**不得把 `n_units_total` 呈现为全部参与阈值推导**。
+
+### 7.6 灵敏度曲线与通过条件
 
 对每个 pair × 每个 metric 分别计算：
 
@@ -168,10 +210,13 @@ noise_threshold        = max( detection_multiplier × pooled_within_unit_sd,
 通过条件（数值与 draft-0.2 相同，**未因任何结果调整**）：
 
 ```
-monotonicity ≥ 0.8
-detection_rate_at_min_detectable ≥ 0.9      (min_detectable_mm = 2.0)
+monotonicity ≥ 0.8                                  # 在 complete unit 聚合曲线上
+detection_rate_at_min_detectable ≥ 0.9              (min_detectable_mm = 2.0)
 zero_false_positive_rate ≤ 0.05
 min_detectable 处的 unit 内退化 > 0
+n_units_complete ≥ calibration.min_complete_units_per_pair (= 3)      # v0.4
+不存在不完整 unit（require_complete_condition_grid = true）            # v0.4
+所有参与记录 sigma*.usable === true                                  # v0.4
 ```
 
 `calibration.require_each_pair_primary_pass: true`：**两个 pair 的主指标都必须各自通过**；
@@ -208,6 +253,9 @@ unit_midpoint(u)       = ( unit_zero_baseline(u) + unit_min_mean(u) ) / 2
 threshold(pair, metric) = median{ unit_midpoint(u) : u ∈ 该 pair }        # thresholds.aggregation_by_pair
 ```
 
+- 阈值只由**该 pair 的 complete unit** 生成（`n_units_complete≥3` 且无 incomplete unit），
+  并把 `n_units_total` / `n_units_complete` / `n_units_at_min_detectable` / `incomplete_unit_ids` /
+  `require_complete_condition_grid` 一并写入 `threshold_derivation.json`（不得让读者误以为全部 unit 参与）；
 - 阈值**按 pair 保存**：`thresholds.metrics.<metric>.by_pair.T2W-ADC` / `...T2W-HBV`；
 - `unit_zero_baselines` / `unit_min_detectable_means` / `unit_midpoints` / 聚合方法 / 指标方向 /
   `sensitivity_passed` 全部写入 `threshold_derivation.json`；
@@ -258,11 +306,11 @@ overlay/                     可选（`--overlay`）；仅审计用，无需人�
 **分 pair 合成校准结果（含每个 unit 的零位移基线 / min-detectable 均值 / midpoint 与 pair 阈值）**、
 自动候选决策、不能冻结的原因、局限性，并显式声明**不是**人工阅片/双阅片证据。
 
-**输出 schema 与兼容性（v0.3）**：所有 JSON 输出都带
-`schema_version = g0-r-automated/0.3`、`protocol_version`、`protocol_hash`、`draft: true`、
-`calibration_grouping`。读取本工具输出**必须**使用
+**输出 schema 与兼容性（v0.4）**：所有 JSON 输出都带
+`schema_version = g0-r-automated/0.4`、`protocol_version`、`protocol_hash`、`draft: true`、
+`calibration_grouping`、unit 完整性计数与 `metric_usable_key`。读取本工具输出**必须**使用
 `scripts/audit/run_picai_alignment_qc_automated.py::load_output_json()`（schema 不匹配即拒绝）；
-**禁止**把 `20260918_074219/`（draft-0.2 产物）按 v0.3 schema 解释或与之直接合并比较。
+**禁止**把 `20260918_074219/`（draft-0.2 产物）按 v0.4 schema 解释或与之直接合并比较。
 
 **冻结程序（研究者）**：
 
@@ -316,5 +364,8 @@ python scripts/audit/run_picai_alignment_qc_automated.py \
   `INSUFFICIENT_EVIDENCE`——这是**预期行为**（不强行给出二选一结论）；
 - **证据充分性（16 例、相对指标、合成校准）与是否需要人工 landmark 复核或扩大抽样，属研究者决策**
   （`docs/research_plan.md` §20.2 D2）；代理不得替研究者决定，也不得用自动结果替代该决策；
-- **即使 draft-0.3 工具运行成功（校准通过、候选非 `INSUFFICIENT_EVIDENCE`），也不自动使 G0-R PASS**：
-  冻结仍需研究者按 §9 写入 `frozen_decision` / `reviewer` / `frozen_at`。
+- **即使 draft-0.4 工具运行成功（校准通过、候选非 `INSUFFICIENT_EVIDENCE`），也不自动使 G0-R PASS**：
+  冻结仍需研究者按 §9 写入 `frozen_decision` / `reviewer` / `frozen_at`；
+- `usable=false` / 条件网格不完整导致的失败是**预期行为**（说明该尺度/该数据不足以支撑判定），
+  不得通过放宽 `min_edge_voxels`、`min_complete_units_per_pair` 或删除失败 unit 来"修好"，
+  此类调整属协议参数变更，必须先冻结讨论。

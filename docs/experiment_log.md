@@ -625,3 +625,19 @@ echo "exit_code=$rc"
 | 排除 | `data/{raw,interim,processed}/`（26 GB）、`workdir/`（45 GB）、`outputs/nnUNet_results/`（342 MB，含 341 MB checkpoint）、`outputs/` 其余运行产物；二进制兜底模式 |
 | 未做 | 未配置/修改 git config、未添加远端、未推送；未使用 GPU、未读真实医学影像、未训练/推理/评测 |
 | 影响 | `docs/STATUS.md` B1 关闭；正式 run 可记录 `git rev-parse HEAD` 作为「代码版本」证据 |
+
+
+### G0-R Automated draft-0.4 修复轮的合成验证（代理执行；2026-09-18）
+
+| # | 命令 | 结果 |
+|:--|:--|:--|
+| 1 | `python -m pytest -q tests/unit/test_g0_r_automated_qc.py` | **52 passed**（上一基线 44 → +8；含 11 类新回归） |
+| 2 | `python -m pytest -q tests/unit` | **741 passed / 0 failed**（上一基线 733 → +8） |
+| 3 | `ruff check <本轮 3 个 Python 文件>` | **All checks passed** |
+| 4 | `python -m compileall -q <同两个文件>` | OK |
+| 5 | `--dry-run`（研究者允许；读取 manifest 元数据与文件是否存在，**不读影像体素、不写文件**） | 协议 `G0-R-AUTOMATED / draft-0.4`、`schema=g0-r-automated/0.4`、`hash=13e7be50752db794…`；16 例 × 2 对 = 32 行，三序列齐全；**输出目录未创建**（已核对 `test -e` 为假） |
+
+- 全部为合成数组 / 合成 NIfTI / 静态检查；**未读取真实医学影像、未使用 GPU、未训练、未推理、未评测**；
+- **未运行**真实 G0-R（draft-0.4）：draft-0.3 从未在真实数据上运行；draft-0.2 失败运行产物保持原样；
+- 预注册数值（位移/方向/min_detectable/检出率/multiplier/单调性/FPR 上限/min_edge_voxels/
+  输入与隐私策略）**均未修改**，并有逐项比对测试锁定。

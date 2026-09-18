@@ -66,7 +66,7 @@
 | `INSUFFICIENT_EVIDENCE` | 证据不足 → **必须停止**，不得强行开训 |
 
 工具只输出**候选**，不写决策；决策由研究者冻结并记录哈希。
-（自动路径 = `G0-R-AUTOMATED`，当前载体版本 **draft-0.3**：按 `(pair, case_id)` unit 校准、真实病例阈值按 pair 推导；draft-0.2 配置与失败运行产物保留为历史证据。人工双阅片路径保留为历史草案与后备。）
+（自动路径 = `G0-R-AUTOMATED`，当前载体版本 **draft-0.4**：按 `(pair, case_id)` unit 校准、真实病例阈值按 pair 推导，并含指标 `sigma*.usable` 守卫与 unit 条件网格完整性 fail-closed；draft-0.2 配置/失败运行产物与 draft-0.3 配置保留为历史证据。人工双阅片路径保留为历史草案与后备。）
 
 ### 2.3 G0-E 的三条路径
 

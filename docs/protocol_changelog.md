@@ -20,7 +20,43 @@
 | **v2.3.1** | 2026-09-17 | **协议 amendment**：G0-SAP 三阶段生命周期（SAP-A/B/C）与预测可见性字段拆分；MCID 与主判定规则；M1/M2 容量混杂控制；G0-R 证据充分性决策与文献系统检索要求 | 是（仍无任何正式模型结果；M0–M4 未训练） | 无历史结果可影响，但**改变实验设计与结论强度**：H2/G3 可能降级为探索性；成功判定需 MCID；G0-SAP 冻结时点重新定义 |
 | （文档结构重构，不含协议修订） | 2026-09-17 | research_plan 文档边界重构；新增 STATUS/changelog/runbooks；修复状态矛盾与 G0-E 配置字段 | 是 | 无；除已登记为 v2.3.1 的四项实质性新增外，仅迁移与澄清 |
 | （执行顺序豁免 + 标签语义澄清，不含条款修订） | 2026-09-17/18 | ① M1–M4 融合代码**提前实现**（研究者工程指令）；② seg 存储态 `-1` 哨兵映射，对齐官方 `RemoveLabelTansform(-1,0)`；③ 运行时峰值显存遥测（工程侧，详见 `docs/Development_Log.md`） | 是（仍无任何正式模型结果；M0–M4 未训练、未读真实 prior、未评测） | 无历史结果可影响；两点注意见下方专节 |
+| **G0-R-AUTOMATED draft-0.3 → draft-0.4**（协议**载体版本升级**，门定义未变） | 2026-09-18 | ① 指标 `sigma*.usable` 守卫（缺失/false/非布尔一律 fail-closed；主指标 unusable → INSUFFICIENT_EVIDENCE，一致性指标 → SKIPPED）；② 校准 unit 条件网格完整性（`min_complete_units_per_pair: 3`、`require_complete_condition_grid: true`；不完整 unit 不得静默移出分母）；③ 输出 schema `g0-r-automated/0.4` | 是（仍无任何正式模型结果；M0–M4 未训练、未评测） | 无科学结果可影响；draft-0.2 失败产物与 draft-0.3 配置归档保留，不得追溯修改或跨 schema 混用 |
 | **G0-R-AUTOMATED draft-0.2 → draft-0.3**（协议**载体版本升级**，门定义未变） | 2026-09-18 | ① 刚体诊断 transform 类型修复（`inPlace=True` + 显式类型校验 + 单元素 Euler Composite 解包，否则 fail-closed）；② 校准按 `(pair, case_id)` unit 分组、零位移参考 unit 内均值、零位移噪声 leave-one-out；③ 真实病例阈值按 pair 推导（unit midpoint 的 median）、与灵敏度门限分离命名、`decide_case` 强制 pair；④ 输出 schema 版本化（`g0-r-automated/0.3`） | 是（仍无任何正式模型结果；M0–M4 未训练、未评测） | 无科学结果可影响；draft-0.2 首次真实运行产物**原样保留**为历史证据，不得追溯修改或与 v0.3 结果混用 |
+
+---
+
+## G0-R-AUTOMATED draft-0.3 → draft-0.4（2026-09-18；**协议载体版本升级，门定义未变**）
+
+- **修改内容（两项 fail-open 缺陷修复）**：
+  ① **指标可用性守卫**：指标名解析尺度前缀（`sigma1.5.edge_f1_at_1.0mm` → `sigma1.5.usable`），
+  只有该字段**显式为 `true`** 才可用；缺失 / `false` / 非布尔一律 fail-closed。
+  主指标 unusable → `UNAVAILABLE` → `INSUFFICIENT_EVIDENCE`；一致性指标 unusable → `SKIPPED`
+  （写明"边缘体素不足"，不得用于支持 ACCEPTABLE/FLAGGED）。输出记录
+  `metric_usable` / `metric_unusable_reason`。修复前的缺陷：`_metric_value()` 与 `decide_case()`
+  仅检查数值有限，**忽略 `sigma*.usable`**，使 `preprocessing.edge.min_edge_voxels` 事实失效；
+  ② **校准 unit 条件网格完整性**：新增冻结配置项
+  `calibration.min_complete_units_per_pair: 3` 与 `calibration.require_complete_condition_grid: true`；
+  逐 `(case_id, pair, metric)` 审计（零位移重复数 == `stability_repeats`、每个非零位移 × 全部方向、
+  `min_detectable_mm` 必须覆盖全部方向、全部记录数值有限且 `usable=true`）；只有 complete unit 参与
+  pooled SD / 曲线 / 检出率 / midpoint；complete unit 不足或存在任何不完整 unit → 该 pair 校准失败。
+  输出显式区分 `n_units_total` / `n_units_complete` / `n_units_at_min_detectable` /
+  `n_units_participating` / `incomplete_unit_ids` / `missing_conditions` / `invalid_conditions`。
+  修复前的缺陷：缺 `min_detectable_mm` 数据的 unit 会被**静默移出** detection-rate 分母与 midpoint 聚合，
+  只剩 1 个 unit 也可能通过；
+- **载体**：`configs/protocols/g0_r_alignment_qc_automated.yaml`（`protocol.version: draft-0.4`、
+  `decision.rule_version: "0.4"`、`protocol.output_schema_version: g0-r-automated/0.4`）、
+  `docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`；
+- **draft-0.3 归档（按字节）**：`configs/protocols/archive/g0_r_alignment_qc_automated_draft_0_3.yaml`
+  ，SHA256 `beda4bbf1065c9c8493fe41a640f5e4a257076b256438b8dd493cbedfa678198`（旧 `protocol_hash` = `5aeed6e8d1c039a371fb8d9e553da4752dce89d3c51526d9afdcf1ec8318655c`）；draft-0.2 归档与失败运行产物均未修改；
+- **修改原因**：独立审查发现上述两个 fail-open 缺陷；两者都会**放行本来应当判为证据不足的输入**，
+  属安全问题而非精度问题；
+- **是否在查看正式模型结果之前**：是（仍无任何正式模型结果）；
+- **对既有结果的影响**：无科学结果可影响；**draft-0.3 从未在真实数据上运行**（故不存在需要重解释的
+  draft-0.3 运行）；draft-0.2 失败运行仍为历史证据；
+- **门定义与预注册数值未变**：抽样 16 例、序列对、位移集合（`[0,0.5,1,2,3,4] mm`）、方向集合、
+  `min_detectable_mm=2.0`、检出率下限 `0.9`、`detection_multiplier=3.0`、单调性下限、零位移误报上限、
+  `min_edge_voxels`、`input_policy`、`privacy`、不写回原则**全部未修改**（有逐项比对测试锁定）；
+- **G0-R 仍为 PENDING / DRAFT**：draft-0.4 工具运行成功同样**不等于** PASS。
 
 ---
 

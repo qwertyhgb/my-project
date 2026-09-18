@@ -1575,3 +1575,54 @@ M3/M4 仍**不是**训练就绪；6 项增强未开始。
   `*.pth/*.pt/*.npz/*.npy/*.pkl/*.h5/*.nii/*.nii.gz/*.b2nd/*.mha`；
 - 未入库的既有产物仍**原位保留**（含 `outputs/diagnostics/g0_r_automated/20260918_074219/` 失败证据、
   代码快照目录），仅不进入版本库，由 `docs/experiment_log.md` 与哈希追溯。
+
+
+### G0-R Automated draft-0.4：两项 fail-open 修复（2026-09-18）
+
+> 只改代码/配置/测试/文档；未读取真实医学影像、未使用 GPU、未训练、未推理；未修改任何既有科学阈值与
+> draft-0.2 失败产物。
+
+**1. 指标 usable 守卫（`sigma*.usable`）**
+- 新增 `metric_scale_prefix()`（正则解析 `sigma<数字>[.<数字>].`，尺度含小数点如 `sigma1.5`）、
+  `metric_usable_key()`、`metric_usable()`、`metric_value_with_reason()`；
+- 判定顺序改为：**先 usable 守卫（fail-closed）→ 再取有限数值**；缺失 / `false` / 非布尔一律不可用；
+- `_unit_metric_detail()` 只接受 `usable===true` 的记录，其它写入 `invalid_conditions`（含原因）；
+- `decide_case()`：主指标 unusable → `UNAVAILABLE`（→ `INSUFFICIENT_EVIDENCE`）；
+  一致性指标 unusable → `SKIPPED`（写明不得用于支持 ACCEPTABLE/FLAGGED）；每个 check 记录
+  `metric_usable` / `metric_unusable_reason`。
+
+**2. 校准 unit 条件网格完整性**
+- 新增常量 `CALIBRATION_MIN_COMPLETE_UNITS=3`、`REQUIRE_COMPLETE_CONDITION_GRID=True`，并由配置
+  `calibration.min_complete_units_per_pair` / `require_complete_condition_grid` 显式冻结；
+- `_unit_metric_detail()` 期望网格改为**配置驱动**（`stability_repeats` 条零位移 + 每个非零
+  `displacements_mm` × 全部 `directions`），逐项输出 `missing_conditions` / `invalid_conditions` /
+  `n_zero_expected` / `n_zero_observed` / 每个 distance 的 expected/observed/missing directions /
+  `complete` / `min_detectable_complete`；
+- `_metric_calibration_for_pair()`：只有 complete unit 参与 pooled SD/曲线/检出率/midpoint；
+  新增失败原因 `incomplete_unit_condition_grid` / `insufficient_complete_units` /
+  `min_detectable_mm_uncovered_units`；输出 `n_units_total` / `n_units_complete` /
+  `n_units_at_min_detectable` / `n_units_participating` / `incomplete_unit_ids` / `excluded_unit_ids`；
+- `summarize_calibration()` / `derive_thresholds()` 的计数与完整性字段同步（顶层与每 pair/每 metric）。
+
+**3. 版本与 CLI**
+- `OUTPUT_SCHEMA_VERSION = "g0-r-automated/0.4"`；配置 `protocol.version: draft-0.4`、
+  `decision.rule_version: "0.4"`；draft-0.3 配置按字节归档（SHA256 `beda4bbf1065c9c8493fe41a640f5e4a257076b256438b8dd493cbedfa678198`）；
+- CLI 报告/摘要/`run_metadata` 输出完整性与 usable 审计（`calibration_units`、`metric_usable_keys`）；
+- `--dry-run` 实测通过（协议 draft-0.4、schema 0.4、hash `13e7be50752db794…`），**未创建输出目录**。
+
+**4. 测试（`tests/unit/test_g0_r_automated_qc.py` 44 → 52）**
+- 合成助手升级：指标名必须带 `sigma<scale>.` 前缀并携带 `sigma*.usable`；新增注入能力
+  （`drop_conditions` / `nan_conditions` / `unusable_units`）与 `_three_unit_spec()`（3 unit × 2 pair）；
+- 新增 11 类回归：NaN@min-detectable、缺方向@min-detectable、`usable=false` 主指标、真实病例
+  unusable → `INSUFFICIENT_EVIDENCE`、usable 字段缺失/非布尔 fail-closed、complete unit 不足（1/2 个）、
+  3 个 complete unit 正常通过、计数与 missing/invalid 审计字段、pair 不得互相补足 unit、
+  输入顺序不变性、v0.2/v0.3 输出被 v0.4 loader 拒绝。
+
+**修改文件**：`src/zonal_reliability_fusion/protocols/g0_r_automated_qc.py`、
+`scripts/audit/run_picai_alignment_qc_automated.py`、`tests/unit/test_g0_r_automated_qc.py`、
+`configs/protocols/g0_r_alignment_qc_automated.yaml`、
+`configs/protocols/archive/g0_r_alignment_qc_automated_draft_0_3.yaml`（新增，按字节归档）、
+`configs/protocols/archive/README.md`、`docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`、
+`docs/runbooks/g0_r_alignment_qc.md`、`docs/protocol_changelog.md`、`docs/STATUS.md`、
+`docs/experiment_log.md`、`README.md`、`docs/GLOSSARY.md`、
+`outputs/diagnostics/code_snapshots/g0_r_v02_before_fix_20260918_081501/RESTORE.md`（校验命令修正）。

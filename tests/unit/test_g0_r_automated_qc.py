@@ -127,6 +127,9 @@ def metrics_cfg() -> dict:
 def calibration_cfg(**overrides) -> dict:
     cfg = {
         "seed": 20260916,
+        # v0.4：unit 完整性（与 canonical 配置同值）
+        "min_complete_units_per_pair": 3,
+        "require_complete_condition_grid": True,
         "displacements_mm": [0.0, 1.0, 2.0, 3.0],
         "directions": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
         "interpolation": "linear",
@@ -276,6 +279,8 @@ def test_protocol_hash_binds_key_fields_but_not_paths():
 ARCHIVE_CONFIG = PROJECT_ROOT / "configs/protocols/archive/g0_r_alignment_qc_automated_draft_0_2.yaml"
 #: draft-0.2 归档配置的原始 SHA256（与真实运行 20260918_074219 的 config_sha256 一致）
 ARCHIVED_CONFIG_SHA256 = "67c479a055736693d290d017d2fc9bbe2f08558a593bc40cf76414920659c89a"
+ARCHIVE_DRAFT_0_3 = PROJECT_ROOT / "configs/protocols/archive/g0_r_alignment_qc_automated_draft_0_3.yaml"
+ARCHIVED_DRAFT_0_3_SHA256 = "beda4bbf1065c9c8493fe41a640f5e4a257076b256438b8dd493cbedfa678198"
 
 
 def test_archived_draft_0_2_config_is_byte_identical_and_hash_matches():
@@ -291,12 +296,21 @@ def test_archived_draft_0_2_config_is_byte_identical_and_hash_matches():
         assert recorded == ARCHIVED_CONFIG_SHA256
 
 
-def test_v0_3_keeps_predeclared_fields_unchanged():
-    """v0.3 是方法性变更，但**不得静默改变**抽样/序列对/位移/方向/门限/输入与隐私策略。"""
+def test_archived_draft_0_3_config_is_byte_identical_and_hash_matches():
+    """draft-0.3 配置必须按字节归档（draft-0.4 可追溯）。"""
+    assert ARCHIVE_DRAFT_0_3.is_file(), ARCHIVE_DRAFT_0_3
+    import hashlib as _hashlib
+
+    assert _hashlib.sha256(ARCHIVE_DRAFT_0_3.read_bytes()).hexdigest() == ARCHIVED_DRAFT_0_3_SHA256
+
+
+def test_v0_4_keeps_predeclared_fields_unchanged():
+    """v0.4 是 fail-closed 修复，但**不得静默改变**抽样/序列对/位移/方向/门限/输入与隐私策略。"""
     new = yaml.safe_load(AUTO_CONFIG.read_text(encoding="utf-8"))
     old = yaml.safe_load(ARCHIVE_CONFIG.read_text(encoding="utf-8"))
     for path in (
         ("protocol", "automated_only"),
+        ("protocol", "id"),
         ("protocol", "human_visual_review_required"),
         ("protocol", "human_landmarks_required"),
         ("protocol", "sees_model_predictions"),
@@ -332,22 +346,26 @@ def test_v0_3_keeps_predeclared_fields_unchanged():
             a, b = a[key], b[key]
         assert a == b, f"{'.'.join(path)} 不得在 v0.3 中静默改变"
     # 版本与方法性字段必须已升级
-    assert new["protocol"]["version"] == "draft-0.3"
+    assert new["protocol"]["version"] == "draft-0.4"
     assert new["protocol"]["output_schema_version"] == aq.OUTPUT_SCHEMA_VERSION
-    assert new["decision"]["rule_version"] == "0.3"
+    assert new["decision"]["rule_version"] == "0.4"
     assert new["calibration"]["grouping"] == ["pair", "case_id"]
     assert new["calibration"]["zero_reference"] == "within_unit_mean"
     assert new["calibration"]["zero_noise_reference"] == "leave_one_out"
     assert new["calibration"]["require_each_pair_primary_pass"] is True
     assert new["thresholds"]["derivation"] == aq.THRESHOLD_DERIVATION_BY_PAIR
     assert new["thresholds"]["aggregation_by_pair"] == "median"
+    # v0.4：unit 完整性冻结值（不得放松）
+    assert int(new["calibration"]["min_complete_units_per_pair"]) == aq.CALIBRATION_MIN_COMPLETE_UNITS == 3
+    assert bool(new["calibration"]["require_complete_condition_grid"]) is True
+    assert aq.REQUIRE_COMPLETE_CONDITION_GRID is True
 
 
 def test_automated_config_frozen_values():
     doc = yaml.safe_load(AUTO_CONFIG.read_text(encoding="utf-8"))
     aq.assert_automated_input_policy(doc)
     assert doc["protocol"]["id"] == "G0-R-AUTOMATED"
-    assert doc["protocol"]["version"] == "draft-0.3"
+    assert doc["protocol"]["version"] == "draft-0.4"
     assert doc["protocol"]["status"] == "DRAFT"
     assert doc["protocol"]["automated_only"] is True
     assert doc["protocol"]["human_visual_review_required"] is False
@@ -357,7 +375,9 @@ def test_automated_config_frozen_values():
     assert doc["privacy"]["external_api_allowed"] is False
     assert doc["privacy"]["source_images_read_only"] is True
     assert doc["thresholds"]["derivation"] == aq.THRESHOLD_DERIVATION_BY_PAIR
-    assert str(doc["decision"]["rule_version"]) == "0.3"
+    assert str(doc["decision"]["rule_version"]) == "0.4"
+    assert int(doc["calibration"]["min_complete_units_per_pair"]) == 3
+    assert doc["calibration"]["require_complete_condition_grid"] is True
     assert set(doc["decision"]["allowed_candidates"]) == set(aq.ALLOWED_CANDIDATES)
     scale = float(doc["preprocessing"]["edge"]["scales_sigma_mm"][-1])
     assert str(doc["metrics"]["primary_metric"]).startswith(f"sigma{scale:g}.")
@@ -711,8 +731,28 @@ def _calibration_cases(count: int = 2, pairs: tuple[str, ...] = ("T2W-ADC", "T2W
     return cases
 
 
-def _synth_metric_cfg(metric: str = "m") -> dict:
-    return {"primary_metric": metric, "primary_direction": "lower_is_worse", "consistency_metrics": []}
+SYNTH_SCALE = "sigma1.5"
+SYNTH_METRIC = f"{SYNTH_SCALE}.m"
+SYNTH_USABLE_KEY = f"{SYNTH_SCALE}.usable"
+
+
+def _synth_metric_cfg(metric: str | None = None) -> dict:
+    """v0.4：合成指标名必须带 `sigma<scale>.` 前缀（否则 usable 守卫直接 fail-closed）。"""
+    return {
+        "primary_metric": metric or SYNTH_METRIC,
+        "primary_direction": "lower_is_worse",
+        "consistency_metrics": [],
+    }
+
+
+def _three_unit_spec(*, adc=("c1", "c2", "c3"), hbv=("c1", "c2", "c3")) -> dict:
+    """三个 unit × 两个 pair 的合成谱（每 unit 有自身 baseline 与位移敏感度）。"""
+    adc_slopes = {"c1": (0.35, 0.010), "c2": (0.30, 0.012), "c3": (0.40, 0.009)}
+    hbv_slopes = {"c1": (0.12, 0.006), "c2": (0.16, 0.007), "c3": (0.10, 0.005)}
+    return {
+        "T2W-ADC": {case: adc_slopes[case] for case in adc},
+        "T2W-HBV": {case: hbv_slopes[case] for case in hbv},
+    }
 
 
 def _synth_cal_cfg(**overrides) -> dict:
@@ -729,6 +769,9 @@ def _synth_cal_cfg(**overrides) -> dict:
         "zero_reference": "within_unit_mean",
         "zero_noise_reference": "leave_one_out",
         "require_each_pair_primary_pass": True,
+        # v0.4：每个 pair 至少 3 个 complete unit；条件网格必须完整
+        "min_complete_units_per_pair": 3,
+        "require_complete_condition_grid": True,
     }
     cfg.update(overrides)
     return cfg
@@ -737,41 +780,63 @@ def _synth_cal_cfg(**overrides) -> dict:
 def _synth_records(
     spec: dict,
     *,
-    metric: str = "m",
+    metric: str | None = None,
     distances: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0, 3.0, 4.0),
+    directions: tuple[tuple[int, int, int], ...] = ((1, 0, 0), (0, 1, 0)),
     repeats: int = 3,
     jitter: float = 0.0002,
+    drop_conditions: set | None = None,
+    nan_conditions: set | None = None,
+    unusable_units: set[str] | None = None,
 ) -> list[dict]:
-    """构造合成校准记录：unit=(case_id, pair)，`value = baseline - slope × distance`（lower_is_worse）。"""
+    """构造合成校准记录：unit=(case_id, pair)，`value = baseline - slope × distance`（lower_is_worse）。
+
+    v0.4 注入能力（用于 fail-closed 回归测试）：
+    - `drop_conditions` / `nan_conditions`：键 `(case_id, distance, direction_index)`（零位移用 repeat index）；
+    - `unusable_units`：该 case 的全部记录写 `sigma1.5.usable=false`。
+
+    每条记录的 `metrics` 都带 `sigma1.5.usable=true`（除非被 `unusable_units` 关闭）。
+    """
+    name = metric or SYNTH_METRIC
+    drop = set(drop_conditions or set())
+    nan = set(nan_conditions or set())
+    unusable = set(unusable_units or set())
     records: list[dict] = []
+
+    def _emit(pair, case_id, distance, direction_index, direction, value, condition) -> None:
+        key = (case_id, float(distance), direction_index)
+        if key in drop:
+            return
+        if key in nan:
+            value = float("nan")
+        records.append(
+            {
+                "case_id": case_id,
+                "pair": pair,
+                "condition": condition,
+                "distance_mm": float(distance),
+                "direction": direction,
+                "perturbation": {},
+                "metrics": {name: float(value), SYNTH_USABLE_KEY: case_id not in unusable},
+            }
+        )
+
     for pair, units in sorted(spec.items()):
         for case_id, (baseline, slope) in sorted(units.items()):
             for index in range(repeats):
-                records.append(
-                    {
-                        "case_id": case_id,
-                        "pair": pair,
-                        "condition": f"d0.0|noise{index}",
-                        "distance_mm": 0.0,
-                        "direction": None,
-                        "perturbation": {},
-                        "metrics": {metric: float(baseline) + jitter * index},
-                    }
-                )
+                _emit(pair, case_id, 0.0, index, None, baseline + jitter * index, f"d0.0|noise{index}")
             for distance in distances:
                 if distance <= 0:
                     continue
-                for direction in ([1, 0, 0], [0, 1, 0]):
-                    records.append(
-                        {
-                            "case_id": case_id,
-                            "pair": pair,
-                            "condition": f"d{distance:g}",
-                            "distance_mm": float(distance),
-                            "direction": direction,
-                            "perturbation": {},
-                            "metrics": {metric: float(baseline) - float(slope) * float(distance)},
-                        }
+                for direction_index, direction in enumerate(directions):
+                    _emit(
+                        pair,
+                        case_id,
+                        distance,
+                        direction_index,
+                        list(direction),
+                        baseline - slope * float(distance),
+                        f"d{distance:g}|dir{direction_index}",
                     )
     return records
 
@@ -800,7 +865,7 @@ def _old_v0_2_mixed_stats(records: list[dict], *, metric: str = "m", multiplier:
 
 def test_calibration_is_reproducible_with_fixed_seed():
     prep, mcfg, ccfg = prep_cfg(), metrics_cfg(), calibration_cfg()
-    cases = _calibration_cases(1)
+    cases = _calibration_cases(3)  # v0.4：每 pair 至少 3 个 complete unit
     first = aq.run_calibration(cases, cfg=ccfg, prep=prep, metrics_cfg=mcfg)
     second = aq.run_calibration(cases, cfg=ccfg, prep=prep, metrics_cfg=mcfg)
     assert set(first["per_pair"]) == {"T2W-ADC", "T2W-HBV"}
@@ -822,13 +887,15 @@ def test_calibration_is_reproducible_with_fixed_seed():
 
 def test_calibration_passes_and_thresholds_derive_per_pair_midpoints():
     prep, mcfg, ccfg = prep_cfg(), metrics_cfg(), calibration_cfg()
-    calibration = aq.run_calibration(_calibration_cases(2), cfg=ccfg, prep=prep, metrics_cfg=mcfg)
+    calibration = aq.run_calibration(_calibration_cases(3), cfg=ccfg, prep=prep, metrics_cfg=mcfg)
     assert calibration["passed"] is True, calibration["per_pair"]
     assert set(calibration["per_pair"]) == {"T2W-ADC", "T2W-HBV"}
     primary = mcfg["primary_metric"]
     for pair in ("T2W-ADC", "T2W-HBV"):
         info = calibration["per_pair"][pair]["per_metric"][primary]
         assert info["passed"] is True, (pair, info["reasons"])
+        assert info["n_units_total"] == 3 and info["n_units_complete"] == 3
+        assert info["n_units_at_min_detectable"] == 3 and info["incomplete_unit_ids"] == []
         assert info["monotonicity"] >= ccfg["monotonicity_min"]
         assert info["detection_rate_at_min_detectable"] >= ccfg["require_detection_rate_at_min"]
         assert info["zero_false_positive_rate"] <= ccfg["max_zero_false_positive_rate"]
@@ -882,6 +949,17 @@ def test_calibration_failure_yields_insufficient_evidence():
     assert any("calibration_not_passed" in reason for reason in overall["reasons"])
 
 
+def _usable_metrics(**values: float) -> dict:
+    """构造带 `sigma*.usable=true` 的指标字典（键为该 sigma 前缀下的指标名）。"""
+    out: dict = {}
+    for name, value in values.items():
+        out[name] = float(value)
+        key = aq.metric_usable_key(name)
+        if key:
+            out[key] = True
+    return out
+
+
 def _pair_thresholds(pair_thresholds: dict, *, pair: str, metrics_cfg: dict, calibration_passed: dict) -> tuple[dict, dict]:
     """构造 v0.3 结构的 thresholds / calibration（只含指定 pair）。"""
     thresholds = {
@@ -913,41 +991,48 @@ def _pair_thresholds(pair_thresholds: dict, *, pair: str, metrics_cfg: dict, cal
 
 
 def test_decide_case_detects_conflict_and_unavailable_metrics():
+    primary, other = f"{SYNTH_SCALE}.m_primary", f"{SYNTH_SCALE}.m_other"
     mcfg = {
-        "primary_metric": "m_primary",
+        "primary_metric": primary,
         "primary_direction": "lower_is_worse",
-        "consistency_metrics": [{"name": "m_other", "direction": "higher_is_worse"}],
+        "consistency_metrics": [{"name": other, "direction": "higher_is_worse"}],
     }
     thresholds, calibration = _pair_thresholds(
-        {"m_primary": 0.5, "m_other": 2.0}, pair="T2W-ADC", metrics_cfg=mcfg, calibration_passed={}
+        {primary: 0.5, other: 2.0}, pair="T2W-ADC", metrics_cfg=mcfg, calibration_passed={}
     )
     ok = aq.decide_case(
-        {"m_primary": 0.6, "m_other": 1.0}, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
+        _usable_metrics(**{primary: 0.6, other: 1.0}), thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
     )
     assert ok["status"] == aq.CASE_ACCEPTABLE and ok["pair"] == "T2W-ADC"
     conflict = aq.decide_case(
-        {"m_primary": 0.4, "m_other": 1.0}, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
+        _usable_metrics(**{primary: 0.4, other: 1.0}), thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
     )
     assert conflict["status"] == aq.CASE_INSUFFICIENT and "冲突" in conflict["reason"]
     flagged = aq.decide_case(
-        {"m_primary": 0.4, "m_other": 3.0}, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
+        _usable_metrics(**{primary: 0.4, other: 3.0}), thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
     )
     assert flagged["status"] == aq.CASE_FLAGGED
-    unavailable = aq.decide_case(
-        {"m_primary": None, "m_other": 1.0}, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
-    )
+    unusable_value = _usable_metrics(**{primary: 0.6, other: 1.0})
+    unusable_value[primary] = None
+    unavailable = aq.decide_case(unusable_value, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg)
     assert unavailable["status"] == aq.CASE_INSUFFICIENT
     # 该 pair 未通过校准 → 主指标 UNAVAILABLE（不得据此判定）
     bad_thresholds, bad_calibration = _pair_thresholds(
-        {"m_primary": 0.5, "m_other": 2.0}, pair="T2W-ADC", metrics_cfg=mcfg, calibration_passed={"T2W-ADC": False}
+        {primary: 0.5, other: 2.0}, pair="T2W-ADC", metrics_cfg=mcfg, calibration_passed={"T2W-ADC": False}
     )
     not_calibrated = aq.decide_case(
-        {"m_primary": 0.9, "m_other": 1.0}, bad_thresholds, bad_calibration, pair="T2W-ADC", metrics_cfg=mcfg
+        _usable_metrics(**{primary: 0.9, other: 1.0}),
+        bad_thresholds,
+        bad_calibration,
+        pair="T2W-ADC",
+        metrics_cfg=mcfg,
     )
     assert not_calibrated["status"] == aq.CASE_INSUFFICIENT
     # 未知 pair 必须显式失败
     with pytest.raises(ValueError, match="未知 pair"):
-        aq.decide_case({"m_primary": 0.9}, thresholds, calibration, pair="T2W-FLAIR", metrics_cfg=mcfg)
+        aq.decide_case(
+            _usable_metrics(**{primary: 0.9}), thresholds, calibration, pair="T2W-FLAIR", metrics_cfg=mcfg
+        )
 
 
 def test_decide_overall_logic_and_fractions():
@@ -1015,7 +1100,11 @@ def test_cli_rejects_nonempty_out_dir(cli, tmp_path, monkeypatch):
 
 
 def test_pipeline_end_to_end_pairs_independent_and_inputs_untouched(cli, tmp_path, monkeypatch):
-    ws = make_workspace(tmp_path)
+    # v0.4：每 pair 需要 ≥3 个 complete unit → 3 例 × 2 对
+    ws = make_workspace(tmp_path, cases=("c01_1", "c02_1", "c03_1"))
+    ws["doc"]["calibration"]["max_cases"] = 3
+    ws["doc"]["calibration"]["min_complete_units_per_pair"] = 3
+    ws["doc"]["calibration"]["require_complete_condition_grid"] = True
     out_dir = tmp_path / "run"
     before = {path: pc.sha256_file(path) for path in ws["files"]}
     monkeypatch.setattr(pc, "PROJECT_ROOT", tmp_path)
@@ -1077,7 +1166,7 @@ def test_pipeline_end_to_end_pairs_independent_and_inputs_untouched(cli, tmp_pat
     ):
         payload = cli.load_output_json(out_dir / name)
         assert payload["schema_version"] == aq.OUTPUT_SCHEMA_VERSION, name
-        assert payload["protocol_version"] == "draft-0.3", name
+        assert payload["protocol_version"] == "draft-0.4", name
         assert payload["protocol_hash"] == aq.protocol_hash(ws["doc"]), name
         assert payload["draft"] is True, name
     calibration = cli.load_output_json(out_dir / "calibration_summary.json")
@@ -1085,11 +1174,24 @@ def test_pipeline_end_to_end_pairs_independent_and_inputs_untouched(cli, tmp_pat
     assert calibration["grouping"] == ["pair", "case_id"]
     assert calibration["zero_reference"] == "within_unit_mean"
     assert calibration["zero_noise_reference"] == "leave_one_out"
+    # v0.4：完整性计数与通过状态
+    assert calibration["passed"] is True, calibration["reasons"]
+    assert calibration["n_units_complete"] == calibration["n_units_total"] == 6
+    assert calibration["incomplete_unit_ids"] == []
+    assert calibration["min_complete_units_per_pair"] == 3
+    assert calibration["require_complete_condition_grid"] is True
+    for pair, info in calibration["per_pair"].items():
+        assert info["passed"] is True, (pair, info["reasons"])
+        assert info["n_units_complete"] == info["n_units_at_min_detectable"] == 3
+        metric = info["per_metric"][ws["doc"]["metrics"]["primary_metric"]]
+        assert metric["n_units_complete"] == 3 and metric["incomplete_unit_ids"] == []
+        assert metric["metric_usable_key"].endswith(".usable")
     thresholds = cli.load_output_json(out_dir / "threshold_derivation.json")
-    assert set(thresholds["metrics"][ws["doc"]["metrics"]["primary_metric"]]["by_pair"]) == {
-        "T2W-ADC",
-        "T2W-HBV",
-    }
+    by_pair = thresholds["metrics"][ws["doc"]["metrics"]["primary_metric"]]["by_pair"]
+    assert set(by_pair) == {"T2W-ADC", "T2W-HBV"}
+    for entry in by_pair.values():
+        assert entry["n_units_complete"] == 3 and entry["incomplete_unit_ids"] == []
+        assert entry["require_complete_condition_grid"] is True
 
 
 def test_pipeline_flags_invalid_input_and_fov_insufficient(cli, tmp_path, monkeypatch):
@@ -1191,243 +1293,389 @@ def test_library_does_not_read_or_write_files():
     assert "sitk.ReadImage" not in source
 
 
-# --------------------------------------------------------------------------- v0.3：校准分组与 pair 隔离
-def test_v0_3_pair_separation_defeats_mixed_baseline_sd():
-    """B5-1：ADC/HBV 基线明显不同但各自敏感 —— 旧混合绝对 SD 会漏检，新 pair 内方法必须检出。"""
-    recs = _synth_records(
-        {
-            "T2W-ADC": {"c1": (0.35, 0.010), "c2": (0.30, 0.012)},
-            "T2W-HBV": {"c1": (0.12, 0.006), "c2": (0.16, 0.007)},
-        }
-    )
-    mcfg, ccfg = _synth_metric_cfg(), _synth_cal_cfg()
-    cal = aq.summarize_calibration(recs, cfg=ccfg, metrics_cfg=mcfg)
-    assert cal["passed"] is True, cal["reasons"]
+# --------------------------------------------------------------------------- v0.3/v0.4：校准分组、pair 隔离与 fail-closed
+def _three_unit_calibration(**cfg_overrides):
+    """3 unit × 2 pair 的完整合成校准（默认无缺陷）→ 返回 (calibration, thresholds, mcfg, ccfg)。"""
+    mcfg = _synth_metric_cfg()
+    ccfg = _synth_cal_cfg(**cfg_overrides)
+    calibration = aq.summarize_calibration(_synth_records(_three_unit_spec()), cfg=ccfg, metrics_cfg=mcfg)
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    return calibration, thresholds, mcfg, ccfg
+
+
+def test_v0_4_three_complete_units_pass_and_defeat_mixed_baseline_sd():
+    """B5-1/B5-7：3 个完整 unit × 完整距离方向网格 → 通过；旧混合绝对 SD 仍被证明会漏检。"""
+    calibration, thresholds, _mcfg, ccfg = _three_unit_calibration()
+    assert calibration["passed"] is True, calibration["reasons"]
+    assert calibration["n_units_total"] == 6 and calibration["n_units_complete"] == 6
+    assert calibration["incomplete_unit_ids"] == []
+    assert calibration["min_complete_units_per_pair"] == 3
+    assert calibration["require_complete_condition_grid"] is True
     for pair in ("T2W-ADC", "T2W-HBV"):
-        info = cal["per_pair"][pair]["per_metric"]["m"]
+        info = calibration["per_pair"][pair]["per_metric"][SYNTH_METRIC]
         assert info["available"] is True and info["passed"] is True, (pair, info["reasons"])
+        assert info["n_units_total"] == 3 and info["n_units_complete"] == 3
+        assert info["n_units_at_min_detectable"] == 3 and info["n_units_participating"] == 3
+        assert info["incomplete_unit_ids"] == []
         assert info["detection_rate_at_min_detectable"] >= ccfg["require_detection_rate_at_min"]
         assert info["zero_false_positive_rate"] <= ccfg["max_zero_false_positive_rate"]
-        assert info["n_units"] == 2
-    old = _old_v0_2_mixed_stats(recs)
-    assert old["detection_rate_2mm"] == 0.0  # 旧方法确实把敏感性掩盖掉了
-    adc = cal["per_pair"]["T2W-ADC"]["per_metric"]["m"]
-    baseline_gap = 0.35 - 0.12
-    assert adc["noise_threshold"] < 0.05 * baseline_gap  # 新噪声阈值不含病例间/pair 间基线差异
+        assert info["metric_usable_key"] == SYNTH_USABLE_KEY
+        entry = thresholds["metrics"][SYNTH_METRIC]["by_pair"][pair]
+        assert entry["available"] is True and entry["n_units_complete"] == 3
+        assert entry["threshold"] == pytest.approx(
+            float(np.median(list(info["unit_midpoints"].values())))
+        )
+    old = _old_v0_2_mixed_stats(_synth_records(_three_unit_spec()), metric=SYNTH_METRIC)
+    assert old["detection_rate_2mm"] == 0.0  # 旧混合方法仍然掩盖敏感性
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
     assert adc["noise_threshold"] < 0.05 * old["zero_sd"]
+    assert adc["noise_threshold"] < 0.05 * (0.35 - 0.12)
 
 
-def test_v0_3_noise_threshold_excludes_between_unit_baselines():
-    """B5-2：病例间基线差异巨大，但 unit 内对 2 mm 位移退化一致 —— 噪声阈值不得被基线差异污染。"""
-    recs = _synth_records(
-        {
-            "T2W-ADC": {"a": (0.05, 0.010), "b": (0.50, 0.010), "c": (0.95, 0.010)},
-            "T2W-HBV": {"a": (0.05, 0.010), "b": (0.50, 0.010)},
-        }
-    )
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
-    info = cal["per_pair"]["T2W-ADC"]["per_metric"]["m"]
-    spread = 0.95 - 0.05
-    assert info["noise_threshold"] <= 0.02 * spread
+def test_v0_4_noise_threshold_excludes_between_unit_baselines():
+    """B5-2：病例间基线差异巨大但 unit 内一致退化 → 噪声阈值不被基线差异污染。"""
+    spec = {
+        "T2W-ADC": {"a": (0.05, 0.010), "b": (0.50, 0.010), "c": (0.95, 0.010)},
+        "T2W-HBV": {"a": (0.05, 0.010), "b": (0.50, 0.010), "c": (0.95, 0.010)},
+    }
+    calibration = aq.summarize_calibration(_synth_records(spec), cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+    info = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    assert info["n_units_complete"] == 3
+    assert info["noise_threshold"] <= 0.02 * (0.95 - 0.05)
     assert info["detection_rate_at_min_detectable"] == 1.0
     assert info["zero_false_positive_rate"] == 0.0
-    baselines = sorted(d["zero_baseline"] for d in info["unit_details"])
-    assert baselines == pytest.approx([0.05, 0.50, 0.95], abs=1e-3)
-    assert all(d["n_zero_records"] == 3 for d in info["unit_details"])
+    assert sorted(d["zero_baseline"] for d in info["unit_details"]) == pytest.approx([0.05, 0.50, 0.95], abs=1e-3)
+    assert all(d["complete"] for d in info["unit_details"])
 
 
-def test_v0_3_one_insensitive_pair_fails_overall_calibration():
-    """B5-3：一个 pair 可校准、另一个不敏感 → 总体 calibration 必须失败。"""
-    recs = _synth_records(
-        {
-            "T2W-ADC": {"c1": (0.35, 0.010), "c2": (0.30, 0.012)},
-            "T2W-HBV": {"c1": (0.12, 0.0), "c2": (0.16, 0.0)},
-        }
+def test_v0_4_zero_displacement_false_positive_rate_within_limit():
+    """B5-4：零位移噪声（明显抖动）下 zero FPR 仍在上限内，且噪声阈值随 unit 内抖动缩放。"""
+    calibration = aq.summarize_calibration(
+        _synth_records(_three_unit_spec(), jitter=0.004), cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg()
     )
-    mcfg = _synth_metric_cfg()
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
-    assert cal["passed"] is False
-    assert cal["per_pair"]["T2W-ADC"]["passed"] is True
-    hbv = cal["per_pair"]["T2W-HBV"]
-    assert hbv["passed"] is False
-    assert any("detection_rate" in reason for reason in hbv["per_metric"]["m"]["reasons"])
-    assert any("T2W-HBV" in reason for reason in cal["reasons"])
-    thresholds = aq.derive_thresholds(cal, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    decision = aq.decide_case({"m": 0.20}, thresholds, cal, pair="T2W-HBV", metrics_cfg=mcfg)
-    assert decision["status"] == aq.CASE_INSUFFICIENT
-
-
-def test_v0_3_zero_displacement_false_positive_rate_within_limit():
-    """B5-4：零位移噪声（明显抖动）下 zero FPR 必须在配置上限内，且噪声阈值随 unit 内抖动缩放。"""
-    recs = _synth_records(
-        {"T2W-ADC": {"c1": (0.35, 0.010)}, "T2W-HBV": {"c1": (0.12, 0.008)}}, jitter=0.004
-    )
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
     for pair in ("T2W-ADC", "T2W-HBV"):
-        info = cal["per_pair"][pair]["per_metric"]["m"]
+        info = calibration["per_pair"][pair]["per_metric"][SYNTH_METRIC]
         assert info["zero_false_positive_rate"] <= 0.05
         assert info["noise_threshold"] >= info["max_within_unit_zero_degradation"] - 1e-12
         assert info["noise_threshold"] >= 3.0 * info["pooled_within_unit_zero_sd"] - 1e-12
-        assert info["noise_threshold"] > 0.001  # 随抖动增大（不是固定常量）
+        assert info["noise_threshold"] > 0.001
 
 
-def test_v0_3_insensitive_metric_cannot_pass_by_threshold_gaming():
-    """B5-5：位移不敏感指标必须校准失败，且**不能**通过改阈值让它参与判定。"""
-    recs = _synth_records({"T2W-ADC": {"c1": (0.35, 0.0)}, "T2W-HBV": {"c1": (0.12, 0.008)}})
+def test_v0_4_insensitive_metric_cannot_pass_by_threshold_gaming():
+    """B5-5：位移不敏感指标必须校准失败，且改阈值也不能让它参与判定。"""
+    spec = {
+        "T2W-ADC": {"c1": (0.35, 0.0), "c2": (0.30, 0.0), "c3": (0.40, 0.0)},
+        "T2W-HBV": {"c1": (0.12, 0.006), "c2": (0.16, 0.007), "c3": (0.10, 0.005)},
+    }
     mcfg = _synth_metric_cfg()
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
-    assert cal["passed"] is False
-    adc = cal["per_pair"]["T2W-ADC"]["per_metric"]["m"]
+    calibration = aq.summarize_calibration(_synth_records(spec), cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
+    assert calibration["passed"] is False
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
     assert adc["available"] is True and adc["passed"] is False
     assert adc["detection_rate_at_min_detectable"] == 0.0
-    thresholds = aq.derive_thresholds(cal, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    assert thresholds["metrics"]["m"]["by_pair"]["T2W-ADC"]["sensitivity_passed"] is False
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    assert thresholds["metrics"][SYNTH_METRIC]["by_pair"]["T2W-ADC"]["sensitivity_passed"] is False
     hacked = json.loads(json.dumps(thresholds))
-    hacked["metrics"]["m"]["by_pair"]["T2W-ADC"]["threshold"] = 0.99
-    decision = aq.decide_case({"m": 0.998}, hacked, cal, pair="T2W-ADC", metrics_cfg=mcfg)
+    hacked["metrics"][SYNTH_METRIC]["by_pair"]["T2W-ADC"]["threshold"] = 0.99
+    decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: 0.998}), hacked, calibration, pair="T2W-ADC", metrics_cfg=mcfg
+    )
     assert decision["status"] == aq.CASE_INSUFFICIENT
 
 
-def test_v0_3_pair_specific_thresholds_and_pair_aware_decide_case():
-    """B5-6：ADC / HBV 阈值分别生成；decide_case 用对应 pair；未知 pair 显式失败。"""
-    recs = _synth_records(
-        {
-            "T2W-ADC": {"c1": (0.35, 0.010), "c2": (0.30, 0.012)},
-            "T2W-HBV": {"c1": (0.12, 0.006), "c2": (0.16, 0.007)},
-        }
-    )
+def test_v0_4_one_insensitive_pair_fails_overall_calibration():
+    """B5-3：一个 pair 可校准、另一个不敏感 → 总体 calibration 必须失败。"""
+    spec = {
+        "T2W-ADC": {"c1": (0.35, 0.010), "c2": (0.30, 0.012), "c3": (0.40, 0.009)},
+        "T2W-HBV": {"c1": (0.12, 0.0), "c2": (0.16, 0.0), "c3": (0.10, 0.0)},
+    }
     mcfg = _synth_metric_cfg()
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
-    thresholds = aq.derive_thresholds(cal, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    by_pair = thresholds["metrics"]["m"]["by_pair"]
-    adc_threshold = by_pair["T2W-ADC"]["threshold"]
-    hbv_threshold = by_pair["T2W-HBV"]["threshold"]
-    assert adc_threshold != hbv_threshold
-    assert adc_threshold == pytest.approx(
-        float(np.median(list(cal["per_pair"]["T2W-ADC"]["per_metric"]["m"]["unit_midpoints"].values())))
+    calibration = aq.summarize_calibration(_synth_records(spec), cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
+    assert calibration["passed"] is False
+    assert calibration["per_pair"]["T2W-ADC"]["passed"] is True
+    hbv = calibration["per_pair"]["T2W-HBV"]
+    assert hbv["passed"] is False and hbv["n_units_complete"] == 3
+    assert any("detection_rate" in reason for reason in hbv["per_metric"][SYNTH_METRIC]["reasons"])
+    assert any("T2W-HBV" in reason for reason in calibration["reasons"])
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: 0.20}), thresholds, calibration, pair="T2W-HBV", metrics_cfg=mcfg
     )
-    assert adc_threshold > hbv_threshold  # ADC 基线更高
-    # 同一个数值：按 ADC 判 FLAGGED，按 HBV 判 ACCEPTABLE（只能各用各的阈值）
+    assert decision["status"] == aq.CASE_INSUFFICIENT
+
+
+def test_v0_4_pair_specific_thresholds_and_pair_aware_decide_case():
+    """B5-6 + 要求 9：ADC/HBV 阈值分别生成；decide_case 只用对应 pair；未知 pair 显式失败。"""
+    calibration, thresholds, mcfg, _ = _three_unit_calibration()
+    by_pair = thresholds["metrics"][SYNTH_METRIC]["by_pair"]
+    adc_threshold, hbv_threshold = by_pair["T2W-ADC"]["threshold"], by_pair["T2W-HBV"]["threshold"]
+    assert adc_threshold != hbv_threshold and adc_threshold > hbv_threshold
     value = 0.25
-    adc_decision = aq.decide_case({"m": value}, thresholds, cal, pair="T2W-ADC", metrics_cfg=mcfg)
-    hbv_decision = aq.decide_case({"m": value}, thresholds, cal, pair="T2W-HBV", metrics_cfg=mcfg)
+    adc_decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: value}), thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg
+    )
+    hbv_decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: value}), thresholds, calibration, pair="T2W-HBV", metrics_cfg=mcfg
+    )
     assert adc_decision["status"] == aq.CASE_FLAGGED
     assert hbv_decision["status"] == aq.CASE_ACCEPTABLE
     assert adc_decision["checks"][0]["threshold"] == adc_threshold
     assert hbv_decision["checks"][0]["threshold"] == hbv_threshold
     with pytest.raises(ValueError, match="未知 pair"):
-        aq.decide_case({"m": value}, thresholds, cal, pair="T2W-FLAIR", metrics_cfg=mcfg)
+        aq.decide_case(
+            _usable_metrics(**{SYNTH_METRIC: value}), thresholds, calibration, pair="T2W-FLAIR", metrics_cfg=mcfg
+        )
 
 
-def test_v0_3_calibration_is_order_invariant():
-    """B5-7：输入顺序打乱后结果完全不变。"""
-    recs = _synth_records(
-        {
-            "T2W-ADC": {"c1": (0.35, 0.010), "c2": (0.30, 0.012), "c3": (0.28, 0.009)},
-            "T2W-HBV": {"c1": (0.12, 0.006), "c2": (0.16, 0.007)},
-        }
-    )
-    mcfg, ccfg = _synth_metric_cfg(), _synth_cal_cfg()
-    base = aq.summarize_calibration(recs, cfg=ccfg, metrics_cfg=mcfg)
-    rng = np.random.default_rng(11)
-    shuffled = [recs[index] for index in rng.permutation(len(recs))]
-    other = aq.summarize_calibration(shuffled, cfg=ccfg, metrics_cfg=mcfg)
-    assert other["passed"] == base["passed"]
-    for pair in base["per_pair"]:
-        first = base["per_pair"][pair]["per_metric"]["m"]
-        second = other["per_pair"][pair]["per_metric"]["m"]
-        assert first["noise_threshold"] == second["noise_threshold"]
-        assert first["unit_midpoints"] == second["unit_midpoints"]
-        assert first["unit_zero_baselines"] == second["unit_zero_baselines"]
-        assert first["detection_rate_at_min_detectable"] == second["detection_rate_at_min_detectable"]
-        assert first["monotonicity"] == second["monotonicity"]
-        assert first["unit_ids"] == second["unit_ids"]
-    thresholds_first = aq.derive_thresholds(base, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    thresholds_second = aq.derive_thresholds(other, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    assert thresholds_first["metrics"]["m"]["by_pair"] == thresholds_second["metrics"]["m"]["by_pair"]
-
-
-def test_v0_3_fail_closed_on_missing_distance_zero_repeats_and_nonfinite():
-    """B5-9：缺失距离 / 缺失零位移重复 / 非有限值都必须 fail-closed（不得当 0 或跳过）。"""
-    mcfg, ccfg = _synth_metric_cfg(), _synth_cal_cfg()
-    # (a) 缺少 min_detectable 距离
-    missing_distance = _synth_records(
-        {"T2W-ADC": {"c1": (0.35, 0.01)}, "T2W-HBV": {"c1": (0.12, 0.01)}},
-        distances=(0.0, 0.5, 1.0, 3.0),
-    )
-    cal_a = aq.summarize_calibration(missing_distance, cfg=ccfg, metrics_cfg=mcfg)
-    assert cal_a["passed"] is False
-    assert any(
-        "缺少 2.0 mm 的校准条件" in reason
-        for reason in cal_a["per_pair"]["T2W-ADC"]["per_metric"]["m"]["reasons"]
-    )
-    # (b) 只有零位移记录（无非零位移 unit）→ 该 pair 指标不可用
-    zero_only = [
-        record
-        for record in _synth_records({"T2W-ADC": {"c1": (0.35, 0.01)}, "T2W-HBV": {"c1": (0.12, 0.01)}})
-        if float(record["distance_mm"]) == 0.0
-    ]
-    cal_b = aq.summarize_calibration(zero_only, cfg=ccfg, metrics_cfg=mcfg)
-    assert cal_b["passed"] is False
-    assert cal_b["per_pair"]["T2W-ADC"]["per_metric"]["m"]["available"] is False
-    # (c) 零位移全为 NaN/Inf → unit 不可用（不得当成 0 或静默丢弃）
-    broken = _synth_records({"T2W-ADC": {"c1": (0.35, 0.01)}, "T2W-HBV": {"c1": (0.12, 0.01)}})
-    for record in broken:
-        if float(record["distance_mm"]) == 0.0:
-            record["metrics"]["m"] = float("nan")
-    cal_c = aq.summarize_calibration(broken, cfg=ccfg, metrics_cfg=mcfg)
-    assert cal_c["passed"] is False
-    assert cal_c["per_pair"]["T2W-ADC"]["per_metric"]["m"]["available"] is False
-    assert cal_c["per_pair"]["T2W-HBV"]["per_metric"]["m"]["available"] is False
-
-
-def test_v0_3_insufficient_units_fail_closed_and_require_flag():
-    """B5-9（续）：unit 数不足 / 缺 pair 必须 fail-closed；`require_each_pair_primary_pass` 生效。"""
-    mcfg = _synth_metric_cfg()
-    adc_only = _synth_records({"T2W-ADC": {"c1": (0.35, 0.01), "c2": (0.30, 0.012)}})
-    strict = aq.summarize_calibration(
-        adc_only, cfg=_synth_cal_cfg(require_each_pair_primary_pass=True), metrics_cfg=mcfg
-    )
-    assert strict["passed"] is False
-    assert strict["missing_pairs"] == ["T2W-HBV"]
-    assert any("missing_pair_calibration" in reason for reason in strict["reasons"])
-    relaxed = aq.summarize_calibration(
-        adc_only, cfg=_synth_cal_cfg(require_each_pair_primary_pass=False), metrics_cfg=mcfg
-    )
-    assert relaxed["passed"] is True
-    empty = aq.summarize_calibration([], cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
-    assert empty["passed"] is False and empty["per_pair"] == {}
-    assert any("no_calibration_cases" in reason for reason in empty["reasons"])
-    single = aq.summarize_calibration(
-        _synth_records({"T2W-ADC": {"c1": (0.35, 0.01)}, "T2W-HBV": {"c1": (0.12, 0.01)}}),
-        cfg=_synth_cal_cfg(),
+def test_v0_4_consistency_metric_is_skipped_per_pair():
+    """一致性指标在该 pair 不敏感 → SKIPPED（记录但不参与判定），主指标仍独立判定。"""
+    mcfg = {
+        "primary_metric": SYNTH_METRIC,
+        "primary_direction": "lower_is_worse",
+        "consistency_metrics": [{"name": f"{SYNTH_SCALE}.c", "direction": "higher_is_worse"}],
+    }
+    records = _synth_records(_three_unit_spec())
+    for record in records:
+        record["metrics"][f"{SYNTH_SCALE}.c"] = 1.0
+    calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
+    assert calibration["per_pair"]["T2W-ADC"]["per_metric"][f"{SYNTH_SCALE}.c"]["passed"] is False
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: 0.34, f"{SYNTH_SCALE}.c": 5.0}),
+        thresholds,
+        calibration,
+        pair="T2W-ADC",
         metrics_cfg=mcfg,
     )
-    assert single["per_pair"]["T2W-ADC"]["n_units"] == 1
+    skipped = next(check for check in decision["checks"] if check["metric"] == f"{SYNTH_SCALE}.c")
+    assert skipped["decision"] == "SKIPPED" and skipped["pair"] == "T2W-ADC"
 
 
-def test_v0_3_consistency_metric_is_skipped_per_pair():
-    """一致性指标在该 pair 上不敏感 → SKIPPED（记录但不参与判定），主指标仍独立判定。"""
-    mcfg = {
-        "primary_metric": "m",
+def test_v0_4_order_invariance():
+    """要求 10：输入顺序打乱后结果完全不变。"""
+    mcfg, ccfg = _synth_metric_cfg(), _synth_cal_cfg()
+    records = _synth_records(_three_unit_spec())
+    base = aq.summarize_calibration(records, cfg=ccfg, metrics_cfg=mcfg)
+    rng = np.random.default_rng(11)
+    shuffled = [records[index] for index in rng.permutation(len(records))]
+    other = aq.summarize_calibration(shuffled, cfg=ccfg, metrics_cfg=mcfg)
+    assert other["passed"] == base["passed"]
+    assert other["n_units_complete"] == base["n_units_complete"]
+    assert other["incomplete_unit_ids"] == base["incomplete_unit_ids"]
+    for pair in base["per_pair"]:
+        first = base["per_pair"][pair]["per_metric"][SYNTH_METRIC]
+        second = other["per_pair"][pair]["per_metric"][SYNTH_METRIC]
+        for key in ("noise_threshold", "unit_midpoints", "unit_zero_baselines", "monotonicity",
+                    "detection_rate_at_min_detectable", "incomplete_unit_ids", "n_units_complete"):
+            assert first[key] == second[key], (pair, key)
+    thresholds_first = aq.derive_thresholds(base, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    thresholds_second = aq.derive_thresholds(other, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    assert thresholds_first["metrics"][SYNTH_METRIC]["by_pair"] == thresholds_second["metrics"][SYNTH_METRIC]["by_pair"]
+
+
+# --------------------------------------------------------------------------- v0.4：完整性 / usable fail-closed
+def test_v0_4_nan_at_min_detectable_fails_pair_and_overall():
+    """要求 1：某 unit 在 2 mm 的主指标为 NaN → 该 pair 与总体均失败。"""
+    records = _synth_records(_three_unit_spec(), nan_conditions={("c2", 2.0, 0), ("c2", 2.0, 1)})
+    calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+    assert calibration["passed"] is False
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    assert adc["passed"] is False
+    assert adc["n_units_total"] == 3 and adc["n_units_complete"] == 2
+    assert adc["n_units_at_min_detectable"] == 2
+    assert "c2" in adc["incomplete_unit_ids"]
+    assert any("incomplete_unit_condition_grid" in reason for reason in adc["reasons"])
+    assert any("insufficient_complete_units" in reason for reason in adc["reasons"])
+    detail = next(d for d in adc["unit_details"] if d["case_id"] == "c2")
+    assert detail["complete"] is False
+    assert any("非有限" in str(item.get("reason")) for item in detail["invalid_conditions"])
+    # 总体必须失败；真实病例判定不得据此给出结论
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=_synth_metric_cfg(), thresholds_cfg=_synth_threshold_cfg())
+    decision = aq.decide_case(
+        _usable_metrics(**{SYNTH_METRIC: 0.30}), thresholds, calibration, pair="T2W-ADC", metrics_cfg=_synth_metric_cfg()
+    )
+    assert decision["status"] == aq.CASE_INSUFFICIENT
+
+
+def test_v0_4_missing_direction_at_min_detectable_fails():
+    """要求 2：某 unit 在 2 mm 缺少一个方向 → 失败，且 missing_conditions 精确到该方向。"""
+    records = _synth_records(_three_unit_spec(), drop_conditions={("c3", 2.0, 1)})
+    calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+    assert calibration["passed"] is False
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    detail = next(d for d in adc["unit_details"] if d["case_id"] == "c3")
+    assert detail["complete"] is False
+    assert "2|dir1" in detail["missing_conditions"]
+    entry = detail["by_distance"]["2"]
+    assert entry["n_expected_directions"] == 2 and entry["n_observed_directions"] == 1
+    assert entry["complete"] is False and entry["missing_directions"] == [[0.0, 1.0, 0.0]]
+    assert adc["min_detectable_mm"] == 2.0
+    assert "c3" in adc["incomplete_unit_ids"]
+    assert any("min_detectable_mm_uncovered_units" in reason for reason in adc["reasons"])
+
+
+def test_v0_4_unusable_scale_fails_primary_calibration():
+    """要求 3：某 unit 的 sigma1.5.usable=false → 主指标校准失败（不得当作可用数值）。"""
+    records = _synth_records(_three_unit_spec(), unusable_units={"c1"})
+    calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+    assert calibration["passed"] is False
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    detail = next(d for d in adc["unit_details"] if d["case_id"] == "c1")
+    assert detail["complete"] is False
+    assert any("usable=false" in str(item.get("reason")) for item in detail["invalid_conditions"])
+    assert "c1" in adc["incomplete_unit_ids"]
+    assert detail["n_zero_observed"] == 0  # usable=false 的记录视为无效，不进入零位移参考
+
+
+def test_v0_4_decide_case_unusable_metric_is_insufficient_evidence():
+    """要求 4：真实病例指标数值有限但 usable=false → INSUFFICIENT_EVIDENCE（记录原因）。"""
+    calibration, thresholds, mcfg, _ = _three_unit_calibration()
+    metrics = _usable_metrics(**{SYNTH_METRIC: 0.30})
+    metrics[SYNTH_USABLE_KEY] = False
+    decision = aq.decide_case(metrics, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg)
+    assert decision["status"] == aq.CASE_INSUFFICIENT
+    check = decision["checks"][0]
+    assert check["decision"] == "UNAVAILABLE"
+    assert check["metric_usable"] is False
+    assert "usable=false" in str(check["metric_unusable_reason"])
+    assert "边缘体素不足" in str(check["metric_unusable_reason"])
+    assert "metric_unusable" in check["reason"]
+    # 一致性指标 unusable → SKIPPED（不得支持 ACCEPTABLE/FLAGGED）
+    mcfg2 = {
+        "primary_metric": SYNTH_METRIC,
         "primary_direction": "lower_is_worse",
-        "consistency_metrics": [{"name": "c", "direction": "higher_is_worse"}],
+        "consistency_metrics": [{"name": f"{SYNTH_SCALE}.c", "direction": "higher_is_worse"}],
     }
-    recs = _synth_records({"T2W-ADC": {"c1": (0.35, 0.01)}, "T2W-HBV": {"c1": (0.12, 0.01)}})
-    for record in recs:
-        record["metrics"]["c"] = 1.0
-    cal = aq.summarize_calibration(recs, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
-    assert cal["per_pair"]["T2W-ADC"]["per_metric"]["c"]["passed"] is False
-    thresholds = aq.derive_thresholds(cal, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
-    decision = aq.decide_case({"m": 0.34, "c": 5.0}, thresholds, cal, pair="T2W-ADC", metrics_cfg=mcfg)
-    consistency = next(check for check in decision["checks"] if check["metric"] == "c")
-    assert consistency["decision"] == "SKIPPED"
-    assert consistency["pair"] == "T2W-ADC"
+    calibration2 = aq.summarize_calibration(_synth_records(_three_unit_spec()), cfg=_synth_cal_cfg(), metrics_cfg=mcfg2)
+    thresholds2 = aq.derive_thresholds(calibration2, metrics_cfg=mcfg2, thresholds_cfg=_synth_threshold_cfg())
+    metrics2 = _usable_metrics(**{SYNTH_METRIC: 0.30, f"{SYNTH_SCALE}.c": 9.0})
+    metrics2[f"{SYNTH_SCALE}.usable"] = False
+    decision2 = aq.decide_case(metrics2, thresholds2, calibration2, pair="T2W-ADC", metrics_cfg=mcfg2)
+    consistency_check = next(c for c in decision2["checks"] if c["metric"] == f"{SYNTH_SCALE}.c")
+    assert consistency_check["decision"] == "SKIPPED"
+    assert "不得用于支持" in consistency_check["reason"] or "仅记录" in consistency_check["reason"]
+
+
+def test_v0_4_missing_usable_field_is_fail_closed():
+    """要求 5：usable 字段缺失 / 非布尔 → fail-closed（不得默认为 true）。"""
+    calibration, thresholds, mcfg, _ = _three_unit_calibration()
+    for metrics in (
+        {SYNTH_METRIC: 0.30},                       # 完全缺失
+        {SYNTH_METRIC: 0.30, SYNTH_USABLE_KEY: 1},  # 非布尔
+        {SYNTH_METRIC: 0.30, SYNTH_USABLE_KEY: None},
+    ):
+        decision = aq.decide_case(metrics, thresholds, calibration, pair="T2W-ADC", metrics_cfg=mcfg)
+        assert decision["status"] == aq.CASE_INSUFFICIENT, metrics
+        assert decision["checks"][0]["metric_usable"] is False
+        assert decision["checks"][0]["metric_unusable_reason"]
+    # 无 sigma 前缀的指标名同样 fail-closed
+    assert aq.metric_usable({}, "m")[0] is False
+    assert aq.metric_usable_key("sigma1.5.x") == "sigma1.5.usable"
+    assert aq.metric_usable_key("sigma1.x") == "sigma1.usable"
+    assert aq.metric_usable_key("m") is None
+
+
+def test_v0_4_insufficient_complete_units_fails():
+    """要求 6：每 pair 只有 1 或 2 个 complete unit（阈值 3）→ 失败。"""
+    spec = _three_unit_spec()
+    for n_units in (1, 2):
+        subset = {
+            "T2W-ADC": dict(list(spec["T2W-ADC"].items())[:n_units]),
+            "T2W-HBV": dict(list(spec["T2W-HBV"].items())[:n_units]),
+        }
+        records = _synth_records(subset)
+        calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+        assert calibration["passed"] is False, n_units
+        adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+        assert adc["n_units_complete"] == n_units
+        assert any("insufficient_complete_units" in reason for reason in adc["reasons"])
+        # 把门槛降到实际 unit 数后应当通过（证明失败来自数量门而非其它）
+        relaxed = aq.summarize_calibration(
+            records,
+            cfg=_synth_cal_cfg(min_complete_units_per_pair=n_units),
+            metrics_cfg=_synth_metric_cfg(),
+        )
+        assert relaxed["passed"] is True, n_units
+
+
+def test_v0_4_counts_and_condition_audit_fields_are_reported():
+    """要求 6/8：计数、incomplete_unit_ids、missing/invalid conditions 与逐距离覆盖正确。"""
+    records = _synth_records(
+        _three_unit_spec(),
+        drop_conditions={("c1", 2.0, 1), ("c2", 0.0, 2)},
+        unusable_units={"c3"},
+    )
+    mcfg = _synth_metric_cfg()
+    calibration = aq.summarize_calibration(records, cfg=_synth_cal_cfg(), metrics_cfg=mcfg)
+    adc = calibration["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    assert adc["n_units_total"] == 3 and adc["n_units_complete"] == 0
+    assert adc["n_units_at_min_detectable"] == 0
+    assert sorted(adc["incomplete_unit_ids"]) == ["c1", "c2", "c3"]
+    assert calibration["incomplete_unit_ids"] == ["c1", "c2", "c3"]
+    assert calibration["per_pair"]["T2W-ADC"]["passed"] is False
+    details = {d["case_id"]: d for d in adc["unit_details"]}
+    assert "2|dir1" in details["c1"]["missing_conditions"]
+    assert "zero:1 条缺失（expected=3, observed=2）" in details["c2"]["missing_conditions"]
+    assert any("usable=false" in str(i.get("reason")) for i in details["c3"]["invalid_conditions"])
+    assert details["c1"]["by_distance"]["2"]["complete"] is False
+    assert details["c2"]["by_distance"]["2"]["complete"] is True
+    assert details["c2"]["n_zero_expected"] == 3 and details["c2"]["n_zero_observed"] == 2
+    # 该 pair 失败但输出完整（不得静默丢弃）
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=mcfg, thresholds_cfg=_synth_threshold_cfg())
+    entry = thresholds["metrics"][SYNTH_METRIC]["by_pair"]["T2W-ADC"]
+    assert entry["n_units_total"] == 3 and entry["n_units_complete"] == 0
+    assert entry["incomplete_unit_ids"] == ["c1", "c2", "c3"]
+
+
+def test_v0_4_pairs_cannot_borrow_units():
+    """要求 9：ADC/HBV 完全独立，不得跨 pair 补足 unit。"""
+    spec = {
+        "T2W-ADC": dict(list(_three_unit_spec()["T2W-ADC"].items())[:3]),
+        "T2W-HBV": dict(list(_three_unit_spec()["T2W-HBV"].items())[:2]),
+    }
+    calibration = aq.summarize_calibration(_synth_records(spec), cfg=_synth_cal_cfg(), metrics_cfg=_synth_metric_cfg())
+    assert calibration["passed"] is False
+    adc = calibration["per_pair"]["T2W-ADC"]
+    hbv = calibration["per_pair"]["T2W-HBV"]
+    assert adc["passed"] is True and adc["n_units_complete"] == 3 and adc["incomplete_unit_ids"] == []
+    assert hbv["passed"] is False and hbv["n_units_complete"] == 2
+    assert any("insufficient_complete_units" in reason for reason in hbv["reasons"])
+    thresholds = aq.derive_thresholds(calibration, metrics_cfg=_synth_metric_cfg(), thresholds_cfg=_synth_threshold_cfg())
+    assert thresholds["metrics"][SYNTH_METRIC]["by_pair"]["T2W-ADC"]["n_units_complete"] == 3
+    assert thresholds["metrics"][SYNTH_METRIC]["by_pair"]["T2W-HBV"]["n_units_complete"] == 2
+
+
+def test_v0_4_missing_distance_and_zero_repeats_and_nonfinite_fail_closed():
+    """要求（fail-closed）：缺距离 / 缺零位移重复 / 非有限值 一律失败，不得静默缩小分母。"""
+    mcfg, ccfg = _synth_metric_cfg(), _synth_cal_cfg()
+    # (a) 全部 unit 的 2 mm 距离缺失（cfg 期望 2.0 在 displacements 中）
+    records_a = _synth_records(_three_unit_spec(), distances=(0.0, 0.5, 1.0, 3.0))
+    calibration_a = aq.summarize_calibration(records_a, cfg=ccfg, metrics_cfg=mcfg)
+    assert calibration_a["passed"] is False
+    adc_a = calibration_a["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]
+    assert adc_a["n_units_complete"] == 0
+    assert any("incomplete_unit_condition_grid" in reason for reason in adc_a["reasons"])
+    detail_a = adc_a["unit_details"][0]
+    assert "2|dir0" in detail_a["missing_conditions"] and "2|dir1" in detail_a["missing_conditions"]
+    # (b) 只有零位移记录 → 无非零位移 unit
+    zero_only = [r for r in _synth_records(_three_unit_spec()) if float(r["distance_mm"]) == 0.0]
+    calibration_b = aq.summarize_calibration(zero_only, cfg=ccfg, metrics_cfg=mcfg)
+    assert calibration_b["passed"] is False
+    assert calibration_b["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]["n_units_complete"] == 0
+    # (c) 零位移全为 NaN → 无效记录（不得当成 0）
+    broken = _synth_records(
+        {"T2W-ADC": {"c1": (0.35, 0.01), "c2": (0.30, 0.01), "c3": (0.40, 0.01)},
+         "T2W-HBV": {"c1": (0.12, 0.01), "c2": (0.16, 0.01), "c3": (0.10, 0.01)}},
+        nan_conditions={(c, 0.0, i) for c in ("c1", "c2", "c3") for i in range(3)},
+    )
+    calibration_c = aq.summarize_calibration(broken, cfg=ccfg, metrics_cfg=mcfg)
+    assert calibration_c["passed"] is False
+    assert calibration_c["per_pair"]["T2W-ADC"]["per_metric"][SYNTH_METRIC]["n_units_complete"] == 0
 
 
 # --------------------------------------------------------------------------- schema / 兼容性守卫
 def test_cli_schema_envelope_and_output_guard(cli, tmp_path):
-    """输出必须带 schema；读取 v0.2 旧输出必须显式失败（禁止静默按 v0.3 解释）。"""
+    """要求 11：输出必须带 schema；读取 v0.2/v0.3 旧输出必须显式失败（禁止静默解释）。"""
     envelope = cli.schema_envelope(
         {"payload": 1},
         protocol={"id": "G0-R-AUTOMATED", "version": "draft-0.3", "status": "DRAFT"},
@@ -1439,12 +1687,22 @@ def test_cli_schema_envelope_and_output_guard(cli, tmp_path):
     good = tmp_path / "good.json"
     good.write_text(json.dumps(envelope), encoding="utf-8")
     assert cli.load_output_json(good)["payload"] == 1
-    legacy = tmp_path / "legacy_v0_2.json"
-    legacy.write_text(json.dumps({"passed": False, "per_metric": {}}), encoding="utf-8")
+    # 无 schema 的旧产物（v0.2 之前 / 手工 JSON）
+    legacy_plain = tmp_path / "legacy_plain.json"
+    legacy_plain.write_text(json.dumps({"passed": False, "per_metric": {}}), encoding="utf-8")
     with pytest.raises(ValueError, match="schema 不兼容"):
-        cli.load_output_json(legacy)
-    with pytest.raises(SystemExit, match="output_schema_version"):
-        cli.assert_schema_version({"protocol": {"output_schema_version": "g0-r-automated/0.2"}})
+        cli.load_output_json(legacy_plain)
+    # v0.2 / v0.3 输出必须被显式拒绝（不得按 v0.4 schema 解释）
+    for old_schema in ("g0-r-automated/0.2", "g0-r-automated/0.3"):
+        legacy = tmp_path / f"legacy_{old_schema.split('/')[1].replace('.', '_')}.json"
+        legacy.write_text(
+            json.dumps({"schema_version": old_schema, "passed": False, "per_metric": {}, "per_pair": {}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="schema 不兼容"):
+            cli.load_output_json(legacy)
+        with pytest.raises(SystemExit, match="output_schema_version"):
+            cli.assert_schema_version({"protocol": {"output_schema_version": old_schema}})
     assert (
         cli.assert_schema_version({"protocol": {"output_schema_version": aq.OUTPUT_SCHEMA_VERSION}})
         == aq.OUTPUT_SCHEMA_VERSION

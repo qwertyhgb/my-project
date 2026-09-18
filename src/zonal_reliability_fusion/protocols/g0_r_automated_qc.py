@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -75,7 +76,19 @@ PROTOCOL_HASH_EXCLUDED_TOP_LEVEL: tuple[str, ...] = ("inputs", "outputs", "progr
 PAIR_TO_SERIES: dict[str, str] = {"T2W-ADC": "adc", "T2W-HBV": "hbv"}
 
 #: 所有自动输出共用的 schema 版本（禁止把 v0.2 旧输出按 v0.3 schema 静默解释）
-OUTPUT_SCHEMA_VERSION = "g0-r-automated/0.3"
+OUTPUT_SCHEMA_VERSION = "g0-r-automated/0.4"
+
+# ---- v0.4 指标可用性守卫与 unit 完整性（fail-closed） ----
+#: 尺度可用性字段后缀：指标 `sigma1.5.<metric>` 对应 `sigma1.5.usable`
+METRIC_USABLE_SUFFIX = "usable"
+#: 尺度前缀（指标名前缀）
+METRIC_SCALE_PREFIX = "sigma"
+#: `sigma*.usable=false` 的原因（边缘体素不足，见 preprocessing.edge.min_edge_voxels）
+METRIC_UNUSABLE_EDGE_VOXELS = "该尺度边缘体素不足（sigma*.usable=false）"
+#: 每个 pair 至少需要的 **complete** unit 数（配置同名字段冻结）
+CALIBRATION_MIN_COMPLETE_UNITS = 3
+#: 是否要求被选中的校准 unit 条件网格完整（配置同名字段冻结）
+REQUIRE_COMPLETE_CONDITION_GRID = True
 
 # ---- v0.3 校准与阈值方法（方法性变更，随协议 draft-0.3 一起版本化） ----
 #: 校准最小单元（pair 与 case_id 都必须分组，禁止跨 pair 合并分布）
@@ -870,8 +883,66 @@ def _finite_number(value: Any) -> float | None:
     return as_float if math.isfinite(as_float) else None
 
 
-def _metric_value(record: Mapping[str, Any], name: str) -> float | None:
-    return _finite_number((record.get("metrics") or {}).get(name))
+# --------------------------------------------------------------------- 指标可用性守卫（v0.4）
+#: 尺度前缀模式：`sigma<数字>[.<数字>].`（尺度本身可能含小数点，如 `sigma1.5.`）
+_SCALE_PREFIX_RE = re.compile(rf"^({re.escape(METRIC_SCALE_PREFIX)}\d+(?:\.\d+)?)\.")
+
+
+def metric_scale_prefix(name: str) -> str | None:
+    """解析指标名的尺度前缀：`sigma1.5.edge_f1_at_1.0mm` → `sigma1.5`；无法解析返回 None。
+
+    注意尺度本身可能含小数点（`sigma1.5`），因此不能用「第一个点」简单切分。
+    """
+    match = _SCALE_PREFIX_RE.match(str(name))
+    return match.group(1) if match else None
+
+
+def metric_usable_key(name: str) -> str | None:
+    """指标对应的可用性字段名：`sigma1.5.<metric>` → `sigma1.5.usable`。"""
+    prefix = metric_scale_prefix(name)
+    return f"{prefix}.{METRIC_USABLE_SUFFIX}" if prefix else None
+
+
+def metric_usable(metrics: Mapping[str, Any], name: str) -> tuple[bool, str | None]:
+    """返回 `(usable, reason)`；缺失 / False / 非布尔 一律 fail-closed（**不得默认为 true**）。"""
+    key = metric_usable_key(name)
+    if key is None:
+        return False, (
+            f"指标名 {name!r} 缺少 `{METRIC_SCALE_PREFIX}<scale>.` 前缀，无法解析 {METRIC_USABLE_SUFFIX}"
+        )
+    if key not in metrics:
+        return False, f"缺少 {key}（fail-closed，不得默认为 true）"
+    value = metrics.get(key)
+    if isinstance(value, bool):
+        if value:
+            return True, None
+        return False, f"{key}=false（{METRIC_UNUSABLE_EDGE_VOXELS}）"
+    return False, f"{key} 非布尔值（{value!r}；fail-closed）"
+
+
+def metric_value_with_reason(metrics: Mapping[str, Any], name: str) -> tuple[float | None, str | None]:
+    """先做 usable 守卫（fail-closed），再取有限数值；返回 `(值, 不可用原因)`。"""
+    usable, reason = metric_usable(metrics, name)
+    if not usable:
+        return None, reason
+    raw = metrics.get(name)
+    numeric = _finite_number(raw)
+    if numeric is None:
+        return None, f"指标 {name} 缺失或非有限（{raw!r}）"
+    return numeric, None
+
+
+def _direction_key(direction: Any) -> tuple[float, ...] | None:
+    """方向向量归一化为可比较 tuple；None / 空 / 非有限 一律返回 None（fail-closed）。"""
+    if direction is None or isinstance(direction, (str, bytes)):
+        return None
+    try:
+        arr = np.asarray(direction, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0 or not bool(np.all(np.isfinite(arr))):
+        return None
+    return tuple(float(v) for v in arr)
 
 
 def pair_threshold_from_unit_midpoints(unit_midpoints: Mapping[str, float], *, aggregation: str) -> float:
@@ -898,62 +969,150 @@ def _unit_metric_detail(
     pair: str,
     name: str,
     direction: str,
-    distances: Sequence[float],
+    cfg: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """单个 unit 的零位移参考（unit 内均值）、leave-one-out 零位移退化、逐距离/方向的退化与 midpoint。"""
-    detail: dict[str, Any] = {"case_id": case_id, "pair": pair, "available": False}
+    """单个 unit 的条件网格完整性审计 + 零位移参考 + 逐距离/方向退化（v0.4，fail-closed）。
+
+    - 只接受「数值有限 **且** `sigma*.usable === true`」的记录；
+    - 期望网格来自**配置**：`stability_repeats` 条零位移 + 每个非零 `displacements_mm` × 全部 `directions`；
+    - 缺条件、额外条件、非法方向、非有限值、usable 缺失/false 一律写入
+      `missing_conditions` / `invalid_conditions`，**不得静默缩小分母**。
+    """
+    detail: dict[str, Any] = {
+        "case_id": case_id,
+        "pair": pair,
+        "available": False,
+        "complete": False,
+        "zero_reference": ZERO_REFERENCE_WITHIN_UNIT,
+        "missing_conditions": [],
+        "invalid_conditions": [],
+    }
+    expected_zero = max(0, int(cfg.get("stability_repeats", 0) or 0))
+    expected_directions: list[tuple[float, ...]] = []
+    for raw in cfg.get("directions") or []:
+        key = _direction_key(raw)
+        if key is None:
+            detail["invalid_conditions"].append(
+                {"condition": "config.directions", "reason": f"配置方向非法: {raw!r}"}
+            )
+            continue
+        if key not in expected_directions:
+            expected_directions.append(key)
+    direction_labels = {key: f"dir{index}" for index, key in enumerate(expected_directions)}
+    expected_distances = sorted({float(d) for d in (cfg.get("displacements_mm") or []) if float(d) > 0})
+    min_detect = float(cfg["min_detectable_mm"])
+    detail["min_detectable_mm"] = min_detect
+    # ---- 零位移（期望 stability_repeats 条）
     zero_values: list[float] = []
     for record in rows:
-        if abs(float(record.get("distance_mm", 0.0))) < 1e-12:
-            value = _metric_value(record, name)
-            if value is not None:
-                zero_values.append(value)
-    detail["n_zero_records"] = len(zero_values)
+        if abs(float(record.get("distance_mm", 0.0))) >= 1e-12:
+            continue
+        value, reason = metric_value_with_reason(record.get("metrics") or {}, name)
+        if value is None:
+            detail["invalid_conditions"].append({"condition": str(record.get("condition")), "reason": reason})
+            continue
+        zero_values.append(value)
+    detail["n_zero_expected"] = expected_zero
+    detail["n_zero_observed"] = len(zero_values)
     detail["zero_values"] = [float(v) for v in zero_values]
-    if not zero_values:
-        detail["reason"] = "该 unit 缺少零位移记录（或数值非有限）"
-        return detail
-    zero_baseline = float(np.mean(zero_values))
-    detail["zero_baseline"] = zero_baseline
-    detail["zero_sd_within_unit"] = float(np.std(zero_values, ddof=1)) if len(zero_values) > 1 else 0.0
-    leave_one_out: list[float] = []
-    for index, value in enumerate(zero_values):
-        others = [zero_values[j] for j in range(len(zero_values)) if j != index]
-        reference = float(np.mean(others)) if others else zero_baseline
-        leave_one_out.append(_degradation(direction, reference, value))
-    detail["zero_leave_one_out_degradations"] = [float(v) for v in leave_one_out]
-    detail["max_zero_leave_one_out_degradation"] = float(max(leave_one_out)) if leave_one_out else 0.0
+    if len(zero_values) != expected_zero:
+        detail["missing_conditions"].append(
+            f"zero:{expected_zero - len(zero_values)} 条缺失（expected={expected_zero}, observed={len(zero_values)}）"
+        )
+    zero_baseline: float | None = None
+    if zero_values:
+        zero_baseline = float(np.mean(zero_values))
+        detail["zero_baseline"] = zero_baseline
+        detail["zero_sd_within_unit"] = float(np.std(zero_values, ddof=1)) if len(zero_values) > 1 else 0.0
+        leave_one_out: list[float] = []
+        for index, value in enumerate(zero_values):
+            others = [zero_values[j] for j in range(len(zero_values)) if j != index]
+            reference = float(np.mean(others)) if others else zero_baseline
+            leave_one_out.append(_degradation(direction, reference, value))
+        detail["zero_leave_one_out_degradations"] = [float(v) for v in leave_one_out]
+        detail["max_zero_leave_one_out_degradation"] = float(max(leave_one_out)) if leave_one_out else 0.0
+    else:
+        detail["zero_leave_one_out_degradations"] = []
+        detail["max_zero_leave_one_out_degradation"] = None
+    # ---- 非零位移 × 方向（期望网格来自配置）
+    for record in rows:
+        record_distance = float(record.get("distance_mm", 0.0))
+        if record_distance <= 0:
+            continue
+        if not any(abs(record_distance - d) < 1e-12 for d in expected_distances):
+            detail["invalid_conditions"].append(
+                {"condition": str(record.get("condition")), "reason": f"配置 displacements_mm 之外的距离 {record_distance:g} mm"}
+            )
     by_distance: dict[str, Any] = {}
-    for distance in sorted({float(d) for d in distances}):
-        if distance <= 0:
-            continue
-        values: list[float] = []
-        directions: list[Any] = []
+    for distance in expected_distances:
+        key = f"{distance:g}"
+        observed: dict[tuple[float, ...], float] = {}
         for record in rows:
-            if abs(float(record.get("distance_mm", 0.0)) - float(distance)) >= 1e-12:
+            if abs(float(record.get("distance_mm", 0.0)) - distance) >= 1e-12:
                 continue
-            value = _metric_value(record, name)
+            direction_key = _direction_key(record.get("direction"))
+            if direction_key is None:
+                detail["invalid_conditions"].append(
+                    {"condition": str(record.get("condition")), "reason": "direction 缺失/非有限"}
+                )
+                continue
+            if direction_key not in expected_directions:
+                detail["invalid_conditions"].append(
+                    {
+                        "condition": str(record.get("condition")),
+                        "reason": f"配置 directions 之外的方向 {list(direction_key)}",
+                    }
+                )
+                continue
+            value, reason = metric_value_with_reason(record.get("metrics") or {}, name)
             if value is None:
+                detail["invalid_conditions"].append({"condition": str(record.get("condition")), "reason": reason})
                 continue
-            values.append(value)
-            directions.append(record.get("direction"))
-        if not values:
-            continue
-        degradations = [_degradation(direction, zero_baseline, value) for value in values]
-        by_distance[f"{distance:g}"] = {
+            observed[direction_key] = value
+        missing = [d for d in expected_directions if d not in observed]
+        for missing_direction in missing:
+            detail["missing_conditions"].append(f"{key}|{direction_labels[missing_direction]}")
+        ordered_values = [observed[d] for d in expected_directions if d in observed]
+        degradations = (
+            [_degradation(direction, zero_baseline, value) for value in ordered_values]
+            if zero_baseline is not None
+            else []
+        )
+        entry: dict[str, Any] = {
             "distance_mm": float(distance),
-            "n": len(values),
-            "values": [float(v) for v in values],
-            "directions": directions,
+            "n_expected_directions": len(expected_directions),
+            "n_observed_directions": len(observed),
+            "expected_directions": [list(d) for d in expected_directions],
+            "observed_directions": [list(d) for d in sorted(observed)],
+            "missing_directions": [list(d) for d in missing],
+            "values": [float(v) for v in ordered_values],
             "degradations": [float(v) for v in degradations],
-            "mean_value": float(np.mean(values)),
-            "mean_degradation": float(np.mean(degradations)),
-            "degradation_sd": float(np.std(degradations, ddof=1)) if len(degradations) > 1 else 0.0,
+            "complete": bool(not missing),
         }
+        if ordered_values:
+            entry["mean_value"] = float(np.mean(ordered_values))
+        if degradations:
+            entry["mean_degradation"] = float(np.mean(degradations))
+            entry["degradation_sd"] = float(np.std(degradations, ddof=1)) if len(degradations) > 1 else 0.0
+        by_distance[key] = entry
     detail["by_distance"] = by_distance
-    detail["available"] = bool(by_distance)
-    if not detail["available"]:
-        detail["reason"] = "该 unit 缺少任何非零位移记录（或数值非有限）"
+    detail["min_detectable_complete"] = bool(by_distance.get(f"{min_detect:g}", {}).get("complete"))
+    detail["available"] = bool(
+        zero_values and any(entry["n_observed_directions"] for entry in by_distance.values())
+    )
+    detail["complete"] = bool(
+        zero_values
+        and by_distance
+        and not detail["missing_conditions"]
+        and not detail["invalid_conditions"]
+    )
+    if not detail["complete"]:
+        if detail["missing_conditions"]:
+            detail["reason"] = "incomplete_condition_grid"
+        elif detail["invalid_conditions"]:
+            detail["reason"] = "invalid_conditions"
+        else:
+            detail["reason"] = "no_records"
     return detail
 
 
@@ -963,62 +1122,102 @@ def _metric_calibration_for_pair(
     pair: str,
     spec: Mapping[str, str],
     cfg: Mapping[str, Any],
-    distances: Sequence[float],
     threshold_aggregation: str,
 ) -> dict[str, Any]:
-    """单个 pair × 单个指标的校准：unit 内零位移参考 → 噪声阈值 → 退化曲线 → 灵敏度门。"""
+    """单个 pair × 单个指标的校准（v0.4）。
+
+    - 只有 **complete** unit 参与噪声/曲线/单调性/FPR/midpoint；
+    - `require_complete_condition_grid=true` 时，存在任何不完整 unit → 该 pair 直接失败（不静默缩小分母）；
+    - complete unit 数 < `min_complete_units_per_pair` → 失败；
+    - `min_detectable_mm` 缺少任意 unit / 任意方向 → 失败。
+    """
     name = str(spec["name"])
     direction = str(spec["direction"])
     min_detect = float(cfg["min_detectable_mm"])
     multiplier = float(cfg["detection_multiplier"])
+    min_complete = int(cfg.get("min_complete_units_per_pair", CALIBRATION_MIN_COMPLETE_UNITS))
+    require_complete = bool(cfg.get("require_complete_condition_grid", REQUIRE_COMPLETE_CONDITION_GRID))
     units = _pair_units(records, pair)
     details: list[dict[str, Any]] = []
     for case_id, unit_pair in units:
         rows = [r for r in records if str(r["case_id"]) == case_id and str(r["pair"]) == unit_pair]
         details.append(
-            _unit_metric_detail(rows, case_id=case_id, pair=pair, name=name, direction=direction, distances=distances)
+            _unit_metric_detail(rows, case_id=case_id, pair=pair, name=name, direction=direction, cfg=cfg)
         )
-    available = [d for d in details if d.get("available")]
+    complete = [d for d in details if d["complete"]]
+    incomplete_ids = [str(d["case_id"]) for d in details if not d["complete"]]
+    n_at_min = sum(1 for d in complete if d["min_detectable_complete"])
+    participants = complete if require_complete else [d for d in details if d["available"]]
+    excluded = (
+        []
+        if require_complete
+        else [str(d["case_id"]) for d in details if d["available"] and not d["complete"]]
+    )
     base: dict[str, Any] = {
         "pair": pair,
         "direction": direction,
         "role": str(spec["role"]),
         "min_detectable_mm": min_detect,
         "unit_details": details,
-        "n_units": len(available),
-        "unit_ids": [str(d["case_id"]) for d in available],
+        "n_units_total": len(details),
+        "n_units_complete": len(complete),
+        "n_units_at_min_detectable": n_at_min,
+        "n_units_participating": len(participants),
+        "unit_ids": [str(d["case_id"]) for d in participants],
+        "complete_unit_ids": [str(d["case_id"]) for d in complete],
+        "incomplete_unit_ids": incomplete_ids,
+        "excluded_unit_ids": excluded,
+        "min_complete_units_per_pair": min_complete,
+        "require_complete_condition_grid": require_complete,
+        "condition_grid": {
+            "stability_repeats": max(0, int(cfg.get("stability_repeats", 0) or 0)),
+            "displacements_mm": [float(d) for d in (cfg.get("displacements_mm") or [])],
+            "directions": [list(_direction_key(d) or []) for d in (cfg.get("directions") or [])],
+        },
         "zero_reference": ZERO_REFERENCE_WITHIN_UNIT,
         "zero_noise_reference": ZERO_NOISE_LEAVE_ONE_OUT,
     }
-    if not available:
+    min_key = f"{min_detect:g}"
+    units_missing_min = [
+        str(d["case_id"]) for d in details if not bool((d.get("by_distance") or {}).get(min_key, {}).get("complete"))
+    ]
+    gate_reasons: list[str] = []
+    if not details:
+        gate_reasons.append("no_units: 该 pair 没有任何校准 unit")
+    if require_complete and incomplete_ids:
+        gate_reasons.append(f"incomplete_unit_condition_grid: {incomplete_ids}")
+    if len(complete) < min_complete:
+        gate_reasons.append(f"insufficient_complete_units: {len(complete)} < {min_complete}")
+    if units_missing_min:
+        gate_reasons.append(f"min_detectable_mm_uncovered_units: {units_missing_min}")
+    if not participants:
         return {
             **base,
             "available": False,
             "passed": False,
-            "reason": "该 pair 缺少可用校准 unit（零位移或非零位移记录缺失/非有限）",
-            "reasons": ["no_available_units"],
+            "reason": "该 pair 没有可参与统计的 unit（条件网格不完整或记录缺失）",
+            "reasons": gate_reasons or ["no_participating_units"],
         }
-    dof = sum(max(0, int(d["n_zero_records"]) - 1) for d in available)
+    dof = sum(max(0, int(d["n_zero_observed"]) - 1) for d in participants)
     pooled_within_unit_sd = (
         math.sqrt(
-            sum(max(0, int(d["n_zero_records"]) - 1) * float(d["zero_sd_within_unit"]) ** 2 for d in available) / dof
+            sum(max(0, int(d["n_zero_observed"]) - 1) * float(d["zero_sd_within_unit"]) ** 2 for d in participants)
+            / dof
         )
         if dof > 0
         else 0.0
     )
-    max_zero_degradation = max(float(d["max_zero_leave_one_out_degradation"]) for d in available)
+    max_zero_degradation = max(float(d["max_zero_leave_one_out_degradation"] or 0.0) for d in participants)
     noise_threshold = max(multiplier * pooled_within_unit_sd, max_zero_degradation, 0.0)
 
     curve: list[dict[str, Any]] = []
-    for distance in sorted({float(d) for d in distances}):
-        if distance <= 0:
-            continue
+    for distance in sorted({float(d) for d in (cfg.get("displacements_mm") or []) if float(d) > 0}):
         key = f"{distance:g}"
         degradations: list[float] = []
         per_unit: dict[str, float] = {}
-        for detail in available:
+        for detail in participants:
             entry = (detail.get("by_distance") or {}).get(key)
-            if not entry:
+            if not entry or not entry.get("degradations"):
                 continue
             degradations.extend(float(v) for v in entry["degradations"])
             per_unit[str(detail["case_id"])] = float(entry["mean_degradation"])
@@ -1060,7 +1259,7 @@ def _metric_calibration_for_pair(
     per_unit_at_min = dict(at_min["per_unit_degradation_mean"]) if at_min else {}
     aggregate_at_min = float(np.mean(list(per_unit_at_min.values()))) if per_unit_at_min else None
 
-    zero_samples = [float(v) for d in available for v in d["zero_leave_one_out_degradations"]]
+    zero_samples = [float(v) for d in participants for v in d["zero_leave_one_out_degradations"]]
     zero_false_positive_rate = (
         float(np.mean([1.0 if v > noise_threshold else 0.0 for v in zero_samples])) if zero_samples else 0.0
     )
@@ -1068,17 +1267,14 @@ def _metric_calibration_for_pair(
     unit_zero_baselines: dict[str, float] = {}
     unit_min_detectable_means: dict[str, float] = {}
     unit_midpoints: dict[str, float] = {}
-    min_key = f"{min_detect:g}"
-    for detail in available:
+    for detail in complete:  # v0.4：只有 complete unit 才能生成 midpoint
         entry = (detail.get("by_distance") or {}).get(min_key)
-        if not entry:
+        if not entry or not entry.get("complete"):
             continue
         case_id = str(detail["case_id"])
         unit_zero_baselines[case_id] = float(detail["zero_baseline"])
         unit_min_detectable_means[case_id] = float(entry["mean_value"])
-        unit_midpoints[case_id] = float(
-            (unit_zero_baselines[case_id] + unit_min_detectable_means[case_id]) / 2.0
-        )
+        unit_midpoints[case_id] = float((unit_zero_baselines[case_id] + unit_min_detectable_means[case_id]) / 2.0)
     threshold = None
     if unit_midpoints:
         try:
@@ -1086,7 +1282,7 @@ def _metric_calibration_for_pair(
         except ValueError:
             threshold = None
 
-    reasons: list[str] = []
+    reasons: list[str] = list(gate_reasons)
     if monotonicity < float(cfg["monotonicity_min"]):
         reasons.append(f"monotonicity={monotonicity:.3f} < {float(cfg['monotonicity_min'])}")
     if detection_rate_min < float(cfg["require_detection_rate_at_min"]):
@@ -1130,6 +1326,7 @@ def _metric_calibration_for_pair(
         "unit_midpoints": unit_midpoints,
         "threshold": threshold,
         "pair_threshold_aggregation": str(threshold_aggregation),
+        "metric_usable_key": metric_usable_key(name),
         "passed": not reasons,
         "reasons": reasons,
     }
@@ -1166,7 +1363,6 @@ def summarize_calibration(
             str(r.get("direction")),
         ),
     )
-    distances = sorted({float(r["distance_mm"]) for r in records})
     pairs = sorted({str(r["pair"]) for r in records})
     per_pair: dict[str, Any] = {}
     for pair in pairs:
@@ -1178,7 +1374,6 @@ def summarize_calibration(
                 pair=pair,
                 spec=spec,
                 cfg=cfg,
-                distances=distances,
                 threshold_aggregation=str(threshold_aggregation),
             )
         primary = str(metrics_cfg["primary_metric"])
@@ -1193,7 +1388,19 @@ def summarize_calibration(
             pair_reasons = [f"primary_metric_not_calibratable[{pair}]: {primary}（{details}）"]
         per_pair[pair] = {
             "pair": pair,
-            "n_units": len(units),
+            # v0.4：计数以**主指标**的条件网格审计为准，明确区分 total / complete / at-min-detectable
+            "counts_metric": primary,
+            "n_units_total": int(primary_info.get("n_units_total", len(units))),
+            "n_units_complete": int(primary_info.get("n_units_complete", 0)),
+            "n_units_at_min_detectable": int(primary_info.get("n_units_at_min_detectable", 0)),
+            "n_units_participating": int(primary_info.get("n_units_participating", 0)),
+            "incomplete_unit_ids": list(primary_info.get("incomplete_unit_ids") or []),
+            "min_complete_units_per_pair": int(
+                primary_info.get("min_complete_units_per_pair", CALIBRATION_MIN_COMPLETE_UNITS)
+            ),
+            "require_complete_condition_grid": bool(
+                primary_info.get("require_complete_condition_grid", REQUIRE_COMPLETE_CONDITION_GRID)
+            ),
             "units": [f"{case_id}/{unit_pair}" for case_id, unit_pair in units],
             "primary_metric": primary,
             "primary_passed": pair_ok,
@@ -1204,6 +1411,7 @@ def summarize_calibration(
     required_pairs = sorted(PAIR_TO_SERIES)
     missing_pairs = [p for p in required_pairs if p not in per_pair]
     require_each = bool(cfg.get("require_each_pair_primary_pass", True))
+    require_complete_grid = bool(cfg.get("require_complete_condition_grid", REQUIRE_COMPLETE_CONDITION_GRID))
     reasons: list[str] = []
     for pair in sorted(per_pair):
         if not per_pair[pair]["passed"]:
@@ -1236,15 +1444,23 @@ def summarize_calibration(
         "require_each_pair_primary_pass": require_each,
         "missing_pairs": missing_pairs,
         "n_records": len(records),
-        "n_units": sum(int(per_pair[p]["n_units"]) for p in per_pair),
+        "n_units_total": sum(int(per_pair[p]["n_units_total"]) for p in per_pair),
+        "n_units_complete": sum(int(per_pair[p]["n_units_complete"]) for p in per_pair),
+        "n_units_at_min_detectable": sum(int(per_pair[p]["n_units_at_min_detectable"]) for p in per_pair),
+        "incomplete_unit_ids": sorted(
+            {unit_id for p in per_pair for unit_id in per_pair[p]["incomplete_unit_ids"]}
+        ),
+        "min_complete_units_per_pair": int(cfg.get("min_complete_units_per_pair", CALIBRATION_MIN_COMPLETE_UNITS)),
+        "require_complete_condition_grid": require_complete_grid,
         "min_detectable_mm": min_detect,
         "primary_metric": str(metrics_cfg["primary_metric"]),
         "per_pair": per_pair,
         "passed": passed,
         "reasons": reasons,
         "note": (
-            "v0.3：两个 pair 完全独立；噪声阈值只来自 unit 内零位移残差；"
-            "禁止把 pair 之间或病例之间的绝对基线差异混入同一分布"
+            "v0.4：两个 pair 完全独立；噪声阈值只来自 unit 内零位移残差（pooled within-unit SD）；"
+            "只有 complete unit 参与统计与 midpoint，且存在不完整 unit（require_complete_condition_grid）"
+            "或 complete unit 不足时该 pair 直接失败；指标必须 `sigma*.usable=true`（边缘体素不足一律 fail-closed）"
         ),
     }
 
@@ -1289,9 +1505,23 @@ def derive_thresholds(
         for pair in pairs:
             info = (((calibration.get("per_pair") or {}).get(pair) or {}).get("per_metric") or {}).get(name) or {}
             entry: dict[str, Any] = {"pair": pair, "direction": str(info.get("direction", spec["direction"]))}
+            completeness = {
+                "n_units_total": int(info.get("n_units_total", 0)),
+                "n_units_complete": int(info.get("n_units_complete", 0)),
+                "n_units_at_min_detectable": int(info.get("n_units_at_min_detectable", 0)),
+                "incomplete_unit_ids": list(info.get("incomplete_unit_ids") or []),
+                "min_complete_units_per_pair": int(
+                    info.get("min_complete_units_per_pair", CALIBRATION_MIN_COMPLETE_UNITS)
+                ),
+                "require_complete_condition_grid": bool(
+                    info.get("require_complete_condition_grid", REQUIRE_COMPLETE_CONDITION_GRID)
+                ),
+                "metric_usable_key": info.get("metric_usable_key"),
+            }
             if not info.get("available"):
                 by_pair[pair] = {
                     **entry,
+                    **completeness,
                     "available": False,
                     "sensitivity_passed": False,
                     "reasons": list(info.get("reasons") or [info.get("reason", "该 pair 指标不可用")]),
@@ -1301,6 +1531,7 @@ def derive_thresholds(
             if not midpoints:
                 by_pair[pair] = {
                     **entry,
+                    **completeness,
                     "available": False,
                     "sensitivity_passed": bool(info.get("passed")),
                     "reasons": ["缺少 min_detectable 处的 unit midpoint（无法推导 pair 阈值）"],
@@ -1314,6 +1545,7 @@ def derive_thresholds(
                 )
             by_pair[pair] = {
                 **entry,
+                **completeness,
                 "available": True,
                 "threshold": float(threshold),
                 "n_units": len(midpoints),
@@ -1347,8 +1579,11 @@ def decide_case(
 ) -> dict[str, Any]:
     """单例（**指定 pair**）自动判定：ACCEPTABLE / FLAGGED / INSUFFICIENT_EVIDENCE。
 
-    v0.3（必须显式传 `pair`）：
+    v0.4（必须显式传 `pair`）：
 
+    - **指标可用性守卫**：先查 `sigma*.usable`；缺失 / false / 非布尔一律 fail-closed，并记录
+      `metric_unusable_reason`。主指标 unusable → `UNAVAILABLE` → `INSUFFICIENT_EVIDENCE`；
+      一致性指标 unusable → `SKIPPED`（写明边缘体素不足），不得用于支持 ACCEPTABLE / FLAGGED；
     - 只使用**该 pair 自己**的校准单元与阈值；未知 pair 直接抛错（**禁止跨 pair 混用或回退全局阈值**）；
     - 主指标必须在该 pair 上可校准且阈值可用，否则该例为 INSUFFICIENT_EVIDENCE；
     - 一致性指标若未通过该 pair 的合成校准（对位移不敏感/饱和）→ 记为 SKIPPED 并排除出判定（如实记录）；
@@ -1367,16 +1602,38 @@ def decide_case(
         name = str(spec["name"])
         entry = (((thresholds.get("metrics") or {}).get(name) or {}).get("by_pair") or {}).get(pair) or {}
         cal = (pair_calibration.get("per_metric") or {}).get(name) or {}
-        value = metrics.get(name)
         if entry.get("pair") not in (None, pair):
             raise ValueError(f"阈值 pair 标签不一致: {entry.get('pair')} != {pair}（拒绝静默混用）")
-        numeric = _finite_number(value)
+        numeric, unusable_reason = metric_value_with_reason(metrics, name)
+        check_base: dict[str, Any] = {
+            "pair": pair,
+            "metric": name,
+            "role": spec["role"],
+            "metric_usable_key": metric_usable_key(name),
+            "metric_usable": unusable_reason is None,
+            "metric_unusable_reason": unusable_reason,
+        }
+        if unusable_reason is not None:
+            # v0.4：usable 守卫优先（fail-closed）。主指标 → UNAVAILABLE；一致性指标 → SKIPPED
+            primary_role = spec["role"] == "primary"
+            checks.append(
+                {
+                    **check_base,
+                    "decision": "UNAVAILABLE" if primary_role else "SKIPPED",
+                    "reason": (
+                        f"metric_unusable（{'主指标' if primary_role else '一致性指标'}）: {unusable_reason}"
+                        + ("" if primary_role else "；该指标不得用于支持 ACCEPTABLE/FLAGGED，仅记录")
+                    ),
+                    "value": numeric,
+                    "threshold": entry.get("threshold"),
+                    "calibration_reasons": list(cal.get("reasons") or []),
+                }
+            )
+            continue
         if spec["role"] != "primary" and not cal.get("passed"):
             checks.append(
                 {
-                    "pair": pair,
-                    "metric": name,
-                    "role": spec["role"],
+                    **check_base,
                     "decision": "SKIPPED",
                     "reason": "该一致性指标在该 pair 上未通过合成校准（对注入位移不敏感/饱和）→ 排除出判定，仅记录",
                     "value": numeric,
@@ -1388,9 +1645,9 @@ def decide_case(
         if numeric is None or not entry.get("available") or not cal.get("passed"):
             checks.append(
                 {
-                    "pair": pair,
-                    "metric": name,
-                    "role": spec["role"],
+                    **check_base,
+                    "metric_usable": True,
+                    "metric_unusable_reason": None,
                     "decision": "UNAVAILABLE",
                     "reason": "指标缺失/非有限，或该 pair 未通过合成校准（不得据此判定）",
                     "value": numeric,
@@ -1405,9 +1662,7 @@ def decide_case(
             acceptable = numeric <= threshold
         checks.append(
             {
-                "pair": pair,
-                "metric": name,
-                "role": spec["role"],
+                **check_base,
                 "decision": CASE_ACCEPTABLE if acceptable else CASE_FLAGGED,
                 "value": numeric,
                 "threshold": threshold,
@@ -1418,7 +1673,14 @@ def decide_case(
     decisions = {c["decision"] for c in checks}
     judged = decisions & {CASE_ACCEPTABLE, CASE_FLAGGED}
     if "UNAVAILABLE" in decisions:
-        status, reason = CASE_INSUFFICIENT, f"[{pair}] 主指标不可用（缺失/非有限/该 pair 未通过校准）"
+        unavailable = [c for c in checks if c["decision"] == "UNAVAILABLE"]
+        detail = "; ".join(
+            str(c.get("metric_unusable_reason") or c.get("metric") or "unknown") for c in unavailable[:3]
+        )
+        status, reason = (
+            CASE_INSUFFICIENT,
+            f"[{pair}] 主指标不可用（缺失/非有限/usable=false/该 pair 未通过校准）：{detail}",
+        )
     elif CASE_ACCEPTABLE in judged and CASE_FLAGGED in judged:
         status, reason = CASE_INSUFFICIENT, f"[{pair}] 通过校准的指标间结论冲突（部分 ACCEPTABLE、部分 FLAGGED）"
     elif judged == {CASE_FLAGGED}:
@@ -1525,6 +1787,7 @@ def decide_overall(
 __all__ = [
     "ALLOWED_CANDIDATES",
     "CALIBRATION_GROUPING",
+    "CALIBRATION_MIN_COMPLETE_UNITS",
     "CASE_ACCEPTABLE",
     "CASE_FLAGGED",
     "CASE_FOV_INSUFFICIENT",
@@ -1539,6 +1802,9 @@ __all__ = [
     "DETECTION_RATE_DEFINITION",
     "DIRECTION_HIGHER_IS_WORSE",
     "DIRECTION_LOWER_IS_WORSE",
+    "METRIC_SCALE_PREFIX",
+    "METRIC_UNUSABLE_EDGE_VOXELS",
+    "METRIC_USABLE_SUFFIX",
     "MONOTONICITY_DEFINITION",
     "NOISE_THRESHOLD_FORMULA",
     "OUTPUT_SCHEMA_VERSION",
@@ -1546,6 +1812,7 @@ __all__ = [
     "PAIR_THRESHOLD_AGGREGATION",
     "PAIR_TO_SERIES",
     "PROTOCOL_HASH_EXCLUDED_TOP_LEVEL",
+    "REQUIRE_COMPLETE_CONDITION_GRID",
     "THRESHOLD_DERIVATION_BY_PAIR",
     "ZERO_NOISE_LEAVE_ONE_OUT",
     "ZERO_REFERENCE_WITHIN_UNIT",
@@ -1566,6 +1833,10 @@ __all__ = [
     "flatten_metric_row",
     "fov_evidence",
     "inject_translation",
+    "metric_scale_prefix",
+    "metric_usable",
+    "metric_usable_key",
+    "metric_value_with_reason",
     "pair_metrics_from_arrays",
     "pair_noise_offset",
     "pair_threshold_from_unit_midpoints",

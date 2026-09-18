@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""G0-R 全自动序列对齐 QC（Automated v0.3）：一键运行，无需人工阅片 / 人工 landmark / 双阅片 / 人工阈值。
+"""G0-R 全自动序列对齐 QC（Automated v0.4）：一键运行，无需人工阅片 / 人工 landmark / 双阅片 / 人工阈值。
 
 用法（由**研究者**在本机运行；代理不得自行执行真实数据运行）：
 
@@ -29,9 +29,11 @@
 边界：只**读**物化影像；**不写回、不修改任何医学影像**；不联网、不调用外部 API/云服务；
 不使用 lesion / WG / PZ-TZ 标签或任何模型预测；输出为 DRAFT 候选，**不等于 G0-R PASS**。
 
-v0.3：输出 JSON 一律带 `schema_version = g0-r-automated/0.3` 与协议身份；校准按 `(pair, case_id)` unit 分组，
+v0.4：输出 JSON 一律带 `schema_version = g0-r-automated/0.4` 与协议身份；校准按 `(pair, case_id)` unit 分组，
 真实病例阈值按 pair 推导（`decide_case` 必须显式传 pair，未知 pair 直接失败）。
-读取本工具输出必须用 `load_output_json()`（schema 不匹配即拒绝），**不得**把 v0.2 旧输出按 v0.3 schema 解释。
+v0.4 新增两项 fail-closed 守卫：① 指标必须 `sigma*.usable=true`（边缘体素不足一律不可用）；
+② 校准 unit 必须满足完整条件网格（`min_complete_units_per_pair` / `require_complete_condition_grid`）。
+读取本工具输出必须用 `load_output_json()`（schema 不匹配即拒绝），**不得**把 v0.2/v0.3 旧输出按 v0.4 schema 解释。
 """
 
 from __future__ import annotations
@@ -417,27 +419,42 @@ def write_report(
         f"- 零位移参考：{calibration.get('zero_reference')}；噪声参考：{calibration.get('zero_noise_reference')}\n"
         f"- 噪声阈值公式：{calibration.get('noise_threshold_formula')}\n"
         f"- 退化定义：{calibration.get('degradation_definition')}\n"
-        f"- 校准病例：{calibration.get('cases_used')}；unit 数：{calibration.get('n_units')}；"
-        f"记录数：{calibration.get('n_records')}；缺失 pair：{calibration.get('missing_pairs')}\n"
+        f"- 校准病例：{calibration.get('cases_used')}；unit 总数：{calibration.get('n_units_total')}"
+        f"（complete：{calibration.get('n_units_complete')}；min-detectable 覆盖："
+        f"{calibration.get('n_units_at_min_detectable')}）；记录数：{calibration.get('n_records')}；"
+        f"缺失 pair：{calibration.get('missing_pairs')}\n"
+        f"- unit 完整性要求：每 pair 至少 {calibration.get('min_complete_units_per_pair')} 个 complete unit；"
+        f"require_complete_condition_grid={calibration.get('require_complete_condition_grid')}\n"
+        f"- 不完整 unit：{calibration.get('incomplete_unit_ids') or '无'}\n"
         f"- 条件：{limited(calibration.get('conditions') or [], 8)} …（共 {len(calibration.get('conditions') or [])} 条）\n"
         f"- min_detectable_mm：{calibration.get('min_detectable_mm')}\n"
     )
     for pair, info in (calibration.get("per_pair") or {}).items():
         lines.append(
-            f"- **pair `{pair}`**：passed={info.get('passed')} n_units={info.get('n_units')} "
-            f"reasons={info.get('reasons')}\n"
+            f"- **pair `{pair}`**：passed={info.get('passed')} "
+            f"n_units_total={info.get('n_units_total')} n_units_complete={info.get('n_units_complete')} "
+            f"n_units_at_min_detectable={info.get('n_units_at_min_detectable')} "
+            f"incomplete_unit_ids={info.get('incomplete_unit_ids') or '无'} reasons={info.get('reasons')}\n"
         )
         for name, metric in (info.get("per_metric") or {}).items():
             if not metric.get("available"):
                 lines.append(f"  - `{name}`：不可用（{metric.get('reason')}）\n")
                 continue
             lines.append(
-                f"  - `{name}`（{metric.get('direction')}）：passed={metric.get('passed')} "
+                f"  - `{name}`（{metric.get('direction')}，usable 字段 `{metric.get('metric_usable_key')}`）："
+                f"passed={metric.get('passed')} "
+                f"complete_units={metric.get('n_units_complete')}/{metric.get('n_units_total')} "
                 f"noise_threshold={metric.get('noise_threshold'):.6g} "
                 f"monotonicity={metric.get('monotonicity'):.3f} "
                 f"detect@min={metric.get('detection_rate_at_min_detectable'):.3f} "
                 f"zero_FPR={metric.get('zero_false_positive_rate'):.3f} reasons={metric.get('reasons')}\n"
             )
+            incomplete = [d for d in (metric.get("unit_details") or []) if not d.get("complete")]
+            for detail in incomplete:
+                lines.append(
+                    f"    unit `{detail.get('case_id')}` 不完整："
+                    f"missing={detail.get('missing_conditions')} invalid={detail.get('invalid_conditions')}\n"
+                )
             baselines = metric.get("unit_zero_baselines") or {}
             mins = metric.get("unit_min_detectable_means") or {}
             mids = metric.get("unit_midpoints") or {}
@@ -737,6 +754,18 @@ def run_pipeline(
                 "schema_version": aq.OUTPUT_SCHEMA_VERSION,
                 "calibration_grouping": list(calibration.get("grouping") or aq.CALIBRATION_GROUPING),
                 "calibration_passed": bool(calibration.get("passed")),
+                "calibration_units": {
+                    "n_units_total": int(calibration.get("n_units_total", 0)),
+                    "n_units_complete": int(calibration.get("n_units_complete", 0)),
+                    "n_units_at_min_detectable": int(calibration.get("n_units_at_min_detectable", 0)),
+                    "incomplete_unit_ids": list(calibration.get("incomplete_unit_ids") or []),
+                    "min_complete_units_per_pair": calibration.get("min_complete_units_per_pair"),
+                    "require_complete_condition_grid": calibration.get("require_complete_condition_grid"),
+                },
+                "metric_usable_keys": {
+                    str(spec["name"]): aq.metric_usable_key(str(spec["name"]))
+                    for spec in aq.primary_and_consistency_metrics(doc["metrics"])
+                },
                 "calibration_passed_by_pair": {
                     str(pair): bool((info or {}).get("passed"))
                     for pair, info in sorted((calibration.get("per_pair") or {}).items())
@@ -788,7 +817,12 @@ def print_summary(result: Mapping[str, Any]) -> None:
         f"（主指标 {calibration.get('primary_metric')}）"
     )
     for pair, info in sorted((calibration.get("per_pair") or {}).items()):
-        print(f"    校准[{pair}]: passed={info.get('passed')} units={info.get('n_units')} reasons={info.get('reasons')}")
+        print(
+            f"    校准[{pair}]: passed={info.get('passed')} "
+            f"units_complete={info.get('n_units_complete')}/{info.get('n_units_total')} "
+            f"at_min={info.get('n_units_at_min_detectable')} "
+            f"incomplete={info.get('incomplete_unit_ids') or '无'} reasons={info.get('reasons')}"
+        )
     for name, entry in sorted(((result.get("thresholds") or {}).get("metrics") or {}).items()):
         by_pair = {p: (e.get("threshold") if e.get("available") else "NA") for p, e in (entry.get("by_pair") or {}).items()}
         print(f"    阈值[{name}]: {by_pair}")
