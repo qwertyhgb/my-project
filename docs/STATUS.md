@@ -13,7 +13,7 @@
 
 | 项 | 值 |
 |---|---|
-| 最后更新 | 2026-09-18（PZ/TZ 链路 6 轮加固 + seg 哨兵兼容 + `--overfit` 运行时显存遥测；研究者已执行：3 例 prior dry-run + 全量 1500 例 prior 物化（B10 关闭）；**研究者已执行 G0-R Automated draft-0.2 真实运行（失败，见 B2）→ draft-0.3 修复已实现并完成合成测试**；阶段门状态未变：仍无任何正式模型结果） |
+| 最后更新 | 2026-09-18（**版本控制已启用：Git 基线 commit `23ca6cb`，B1 关闭**；PZ/TZ 链路 6 轮加固 + seg 哨兵兼容 + `--overfit` 运行时显存遥测；研究者已执行：3 例 prior dry-run + 全量 1500 例 prior 物化（B10 关闭）；**研究者已执行 G0-R Automated draft-0.2 真实运行（失败，见 B2）→ draft-0.3 修复已实现并完成合成测试**；阶段门状态未变：仍无任何正式模型结果） |
 | 当前研究计划版本 | **v2.3.1**（含四项实质性新增条款，见 `docs/protocol_changelog.md`「v2.3.1」；本文件不重复其内容） |
 | 当前阶段 | G0-P = PASS；G0-R / G0-E / G0-SAP = PENDING（DRAFT，未冻结）；G1 未启动；G2 = NOT YET EVALUATED |
 | 当前工程焦点 | M3/M4 的 plan-space PZ/TZ prior **工程产物已就绪**（1500 例全量物化完成，2026-09-17；B10 关闭）→ **真实 loader-smoke 复跑（含当前 reader 的逐例数组级复校验）** → M0/M4 显存实测 |
@@ -58,6 +58,7 @@
 | `scripts/evaluate/` 评测逻辑 | **未实现**（仅冻结载体工具） | `docs/protocols/G0_SAP.md` §9 |
 | G0-SAP 生命周期校验（SAP-A/B/C + `sap_b_results` + 方法块哈希/差异审计） | 已实现，合成测试覆盖合法与非法组合 | `src/.../protocols/g0_sap.py`、`tests/unit/test_g0_sap_freeze.py`、`tests/unit/test_g0_protocol_common.py` |
 | **G0-R Automated（自动对齐 QC）** | **draft-0.3 已实现 + 合成测试通过（44 项）；真实运行：draft-0.2 失败（32/32 类型错误 + 校准不通过，产物保留），draft-0.3 重跑未执行** | `src/.../protocols/g0_r_automated_qc.py`、`scripts/audit/run_picai_alignment_qc_automated.py`；配置 `configs/protocols/g0_r_alignment_qc_automated.yaml`（draft-0.3，旧版归档 `configs/protocols/archive/`）；协议 `docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`；运行事实见 `docs/experiment_log.md` |
+| **代码版本控制（Git）** | **已启用**（默认分支 `main`；基线 commit `23ca6cb`，2026-09-18，用户决定） | `.gitignore`（排除数据/产物/二进制；`third_party/nnUNet` 以 pin 记录）；无远端、未推送；`git status` 干净 |
 | 全量单元测试（合成 CPU，不读真实医学数据） | **733 passed / 0 failed**（2026-09-18；演进：499（G0-SAP 闭环）→ 647 → 655 → 658 → 659 → 691 → 706 → 714 → 733（G0-R draft-0.3）） | `docs/experiment_log.md` 2026-09-17/18 各条目 |
 | 全仓库 Ruff | 新增/重写文件 All checks passed；**全仓库仍有约 148 个既有告警**（legacy 文件） | `docs/Development_Log.md`「P2A 验收轮修复」 |
 | 增强对齐 `augmentation.pending_parity` | **6 项未对齐**（rotation/scaling/低分辨率模拟/noise/blur/gamma） | `docs/P2_M0_Implementation.md` §18 |
@@ -66,7 +67,7 @@
 
 | # | Blocker | 影响 | 处理归属 |
 |---|---|---|---|
-| B1 | **主项目目录不是 Git 仓库**（`git rev-parse` 返回 `not a repository`；仅 `third_party/nnUNet` 有固定 commit `74ceb68…`/tag `v2.6.2`） | 正式 run 无法记录代码 commit，复现性不足；`research_plan` §16 要求的「代码版本」目前只能人工记录 | **必须由用户决定**：初始化 Git 或采用替代的代码指纹记录（代理不得擅自 `git init`） |
+| B1 | ~~主项目目录不是 Git 仓库~~ → **已关闭（2026-09-18，用户决定启用 Git）**：`git init`（默认分支 `main`）已完成，基线 commit `23ca6cb`（196 文件 / 6.8 MB；`.git` 3.1 MB）；`.gitignore` 排除 `data/{raw,interim,processed}/`、`workdir/`、`outputs/` 产物与二进制（`*.pth/*.pt/*.npz/*.npy/*.pkl/*.h5/*.nii*/*.b2nd/*.mha`）；`third_party/nnUNet` 以 provenance 记录（tag `v2.6.2` / commit `74ceb68`），不 vendored | 正式 run 现可记录 commit；`research_plan` §16 的「用户先决定版本控制方案」要求已满足（该文件按要求保持未修改，状态以本文件为准） | 后续每个正式 run 记录 `git rev-parse HEAD` 与 `git status --porcelain`（干净工作区） |
 | B2 | G0-R 未冻结：draft-0.2 真实运行失败（工具缺陷）后已修复为 draft-0.3，但**真实 16 例重跑未执行** | 无法确认「仅重采样」是否足够；P2B / 正式 N0 / M0 不得启动 | 研究者执行 `docs/runbooks/g0_r_alignment_qc.md`（draft-0.3；先 `--dry-run`，输出目录为新 UTC 时间戳） |
 | B3 | G0-E 未冻结：候选证据 67 项缺失，`verdict=null` | 无独立最终 test；H3 无法进入确认性判定 | 研究者执行 `docs/runbooks/g0_e_candidate_audit.md` |
 | B4 | G0-SAP 的 SAP-A 未冻结：`--check-freeze` 报 27 个字段待填 + 评测逻辑未实现 | 不得查看任何正式 checkpoint 的论文指标 | 研究者执行 `docs/runbooks/g0_sap_freeze.md`（SAP-A → SAP-B → SAP-C） |
@@ -104,5 +105,5 @@
    → `docs/runbooks/p2b_m0_validation.md`
 5. **G1 / N0**：G0-R PASS + G0-E 冻结 + 预算/checkpoint 规则冻结后，启动唯一正式训练命令
    → `docs/runbooks/n0_training.md`
-6. **B1（Git）**：需用户先决定复现性方案，再进入任何正式 run
+6. ~~**B1（Git）**：需用户先决定复现性方案~~ → **✅ 已完成（2026-09-18）**：Git 已启用（基线 commit `23ca6cb`）；正式 run 记录 `git rev-parse HEAD` 即可
 7. **文献新颖性**：系统检索方法与截止日期尚未冻结（`docs/research_plan.md` §2.2 / 待冻结决策表 D10）

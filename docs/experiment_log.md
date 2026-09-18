@@ -614,3 +614,14 @@ echo "exit_code=$rc"
 
 - 全部为合成数组 / 合成 NIfTI / 静态检查；**未读取真实医学影像、未使用 GPU、未训练、未推理、未评测**；
 - **未运行**真实 G0-R（draft-0.3）——命令见 `docs/runbooks/g0_r_alignment_qc.md`，由研究者执行。
+
+
+### 版本控制启用（研究者指令；2026-09-18）
+
+| 项 | 记录 |
+|:--|:--|
+| 命令 | `git init`（默认分支 `main`）→ 增补 `.gitignore` → `git add -A` → 基线提交 |
+| 结果 | 基线 commit **`23ca6cb`**；196 文件、57,260 行插入、6.8 MB；`.git` 3.1 MB；提交后 `git status` 干净 |
+| 排除 | `data/{raw,interim,processed}/`（26 GB）、`workdir/`（45 GB）、`outputs/nnUNet_results/`（342 MB，含 341 MB checkpoint）、`outputs/` 其余运行产物；二进制兜底模式 |
+| 未做 | 未配置/修改 git config、未添加远端、未推送；未使用 GPU、未读真实医学影像、未训练/推理/评测 |
+| 影响 | `docs/STATUS.md` B1 关闭；正式 run 可记录 `git rev-parse HEAD` 作为「代码版本」证据 |

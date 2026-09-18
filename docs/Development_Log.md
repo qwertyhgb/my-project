@@ -1560,3 +1560,18 @@ M3/M4 仍**不是**训练就绪；6 项增强未开始。
 `configs/protocols/archive/README.md`（新增）、`docs/protocols/G0_R_ALIGNMENT_QC_AUTOMATED.md`、
 `docs/runbooks/g0_r_alignment_qc.md`、`docs/protocol_changelog.md`、`docs/STATUS.md`、
 `docs/experiment_log.md`、`README.md`、`docs/GLOSSARY.md`。
+
+
+### 版本控制启用（Git 基线；2026-09-18）
+
+- 依据用户指令执行 `git init`（默认分支 `main`；宿主 git 2.25.1，不支持 `git init -b`，改用
+  `git symbolic-ref HEAD refs/heads/main`）；**未修改任何 git config**（沿用既有全局身份），**未添加远端、未推送**；
+- 基线 commit `23ca6cb`：`chore(vcs): 启用 Git 版本控制并建立基线（用户决定；STATUS B1 关闭）`，
+  196 文件 / 57,260 行插入 / 6.8 MB（`.git` 3.1 MB）；
+- 跟踪范围：`src/`、`scripts/`、`configs/`、`tests/`、`docs/`、`AGENTS.md`、`README.md`、`.gitignore`、
+  `data/metadata/`（4 个冻结元数据文件，≤2.7 MB）、`data/splits/`（5 个 split 文件）、各空目录 `.gitkeep`；
+- 排除（`.gitignore` 增补，未删除既有规则）：`data/{raw,interim,processed}/`、`workdir/`、`outputs/` 运行产物
+  （含 342 MB 的 `outputs/nnUNet_results/`）、`logs/**`，以及二进制兜底
+  `*.pth/*.pt/*.npz/*.npy/*.pkl/*.h5/*.nii/*.nii.gz/*.b2nd/*.mha`；
+- 未入库的既有产物仍**原位保留**（含 `outputs/diagnostics/g0_r_automated/20260918_074219/` 失败证据、
+  代码快照目录），仅不进入版本库，由 `docs/experiment_log.md` 与哈希追溯。
