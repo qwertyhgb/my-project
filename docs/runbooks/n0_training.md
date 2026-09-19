@@ -12,17 +12,25 @@
 | `nnUNetTrainerPICAI_FLCE__nnUNetPlans__3d_fullres/` | 首次 FFT 崩溃 run（epoch 0 崩溃，日志原样保留） | 同上 |
 | `nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/` | **正式 N0** 输出身份 | 由本 runbook 启动后创建 |
 
-## 1. 启动前必须冻结的三件事
+## 1. 启动条件（**不阻断启动**）
 
-1. **G0-R 已通过**，且确认「仅重采样 / 额外固定刚体配准」的决策**不改变当前预处理身份**
-   （若改变 → 本 run 不得作为正式 N0）；
-2. **G0-E 已冻结独立测试路径**（路径 A 或 C）；
-3. **N0 训练预算与 checkpoint 规则**（`docs/research_plan.md` §9.4 / §20.2 D7）：
-   - 预算：N0 = 官方 1000 epoch（或改用官方自带变体 `nnUNetTrainer_250epochs`，官方无 200 epoch 变体）；
-   - 推理与评测固定使用 `checkpoint_final.pth`，**禁用 `--val_best`**；
-   - `Pseudo dice` 只是 online patch 指标，**不作为训练质量判据，也不作为 checkpoint 选择依据**。
+**训练随时可以启动，不需要任何前置批准。** 下面三项只决定这次 run 的**结果身份**，不决定能否运行：
 
-任一未满足时运行，产物只能标记为 **feasibility run**。
+| 项 | 现状 | 对结果的唯一影响 |
+|---|---|---|
+| G0-R（序列错位：仅重采样 / +固定刚体配准） | 未冻结 | 若最终判「需要额外刚体配准」→ 预处理身份变化，本 run 需重跑 |
+| G0-E（独立 test 路径） | 未冻结 | 若导致 split 重划 → 本 run 不得作为正式 N0 |
+| N0 预算 / checkpoint 规则（D7） | 未冻结 | N0 − M0 的差异不能作因果解释 |
+
+未冻结期间产出的产物身份一律记为 **feasibility run** —— 这是**如实标签**，不代表不能跑、也不代表结果无效。
+
+**三条与门状态无关、始终生效的规矩**：
+
+- 推理与评测固定使用 `checkpoint_final.pth`，**禁用 `--val_best`**；
+- `Pseudo dice` 只是 online patch 指标，**不作为训练质量判据，也不作为 checkpoint 选择依据**；
+- 既有失败 / 预实验 run 的目录与日志**不得删除或覆盖**。
+
+> 上述三项冻结完成后，本次 run 可升级为**正式 N0**（由研究者在 `docs/experiment_log.md` 登记一行即可）。
 
 ## 2. 命令（复制执行）
 

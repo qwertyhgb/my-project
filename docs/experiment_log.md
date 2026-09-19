@@ -675,3 +675,25 @@ echo "exit_code=$rc"
 | 未运行 / 未改动 | 未运行任何真实 QC、训练、推理、评测；未使用 GPU；未修改任何既有产物；**未改动任何阈值、位移集合、检出率要求或抽样清单**；`docs/research_plan.md` 未触碰 |
 
 > 该复核只收敛 D2 的可选项，**不改变任何门状态**：G0-R 仍为 `PENDING / DRAFT`，`frozen_decision` 仍未填写。
+
+### N0 基线训练启动（研究者执行；2026-09-19 11:15）
+
+| 项 | 记录 |
+|:--|:--|
+| 命令 | `cd /opt/data/private/lm/my-projects` → `conda activate lm` → `source scripts/env_nnunet.sh` → `CUDA_VISIBLE_DEVICES=0 python scripts/train/train_n0_picai_flce.py 605 3d_fullres 0` |
+| 输出目录 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**新建**；未覆盖既有 `nnUNetTrainer__…` 与 `nnUNetTrainerPICAI_FLCE__…`） |
+| 日志 | `training_log_2026_9_19_11_15_10.txt`（`Epoch 0` 于 11:15:17 开始） |
+| 进程与资源 | 1 个父进程 + 18 个子进程（12 train + 6 val dataloader，与 `debug.json` 一致）；GPU 约 6.3 GB（单 run） |
+| FFT 崩溃检查 | 日志中 `corrupted` / `free()` / `Traceback` / `Error` 命中 **0 次** → 关闭 FFT benchmark 的修复生效 |
+| 训练配置 | `Dataset605_PICAI` / `3d_fullres` / `nnUNetPlans`：patch `[16,320,320]`、batch 2、spacing `[3.0,0.5,0.5]`、PlainConvUNet 7 阶段、deep supervision 开；损失 = PI-CAI Focal+CE |
+| 预期与判据 | 1000 epoch × ≈53 s/epoch → **约 15 小时**；成功判据 = 日志出现 `Training done` + 产出 `checkpoint_final.pth` |
+| 结果身份 | 三项前置（G0-R / G0-E / D7）未冻结 → 本次 run 记为 **feasibility run**（不影响结果可用性；冻结完成后可升级为正式 N0） |
+| 本轮未做 | 未推理、未评测；未删除、未覆盖任何既有 run 与产物；未使用 NPZ/影像做任何额外处理 |
+
+### 文档与工作流简化（2026-09-19）
+
+| 项 | 变化 |
+|:--|:--|
+| 新增日常入口 | `docs/START_HERE.md`（一页：准备数据 / 训基线 / 训自研 / 记录分析 / 常见问题） |
+| 启动前置降级 | `docs/runbooks/n0_training.md` §1 与 `docs/STATUS.md` §3/§4.1：从「启动前必须冻结」改为「**不阻断启动**，只影响结果身份」；`docs/research_plan.md` 文本未改动 |
+| 缓存清理 | 删除 `.pytest_cache/`、`.ruff_cache/`、17 个 `__pycache__/`（约 200 K）与临时脚本；未删除任何数据、产物、日志或文档 |

@@ -13,7 +13,7 @@
 
 | 项 | 值 |
 |---|---|
-| 最后更新 | 2026-09-19（**版本控制已启用：Git 基线 commit `23ca6cb`，B1 关闭**；PZ/TZ 链路 6 轮加固 + seg 哨兵兼容 + `--overfit` 运行时显存遥测；研究者已执行：3 例 prior dry-run + 全量 1500 例 prior 物化（B10 关闭）；**G0-R Automated：draft-0.2 真实运行失败（见 B2）→ draft-0.3 → draft-0.4 修复（合成测试 52 项）→ draft-0.4 真实 16 例运行已由研究者执行完成**（2026-09-18 08:58–09:16，`outputs/diagnostics/g0_r_automated/20260918_085811/`，用时 1102.8 s：类型错误 **0/32** 已消除，但两个 pair 主指标检出率 0.667 < 0.9 → 校准不通过，候选 `INSUFFICIENT_EVIDENCE`，**`frozen_decision` 未填写**）；阶段门状态未变：仍无任何正式模型结果） |
+| 最后更新 | 2026-09-19（**版本控制已启用：Git 基线 commit `23ca6cb`，B1 关闭**；PZ/TZ 链路 6 轮加固 + seg 哨兵兼容 + `--overfit` 运行时显存遥测；研究者已执行：3 例 prior dry-run + 全量 1500 例 prior 物化（B10 关闭）；**G0-R Automated：draft-0.2 真实运行失败（见 B2）→ draft-0.3 → draft-0.4 修复（合成测试 52 项）→ draft-0.4 真实 16 例运行已由研究者执行完成**（2026-09-18 08:58–09:16，`outputs/diagnostics/g0_r_automated/20260918_085811/`，用时 1102.8 s：类型错误 **0/32** 已消除，但两个 pair 主指标检出率 0.667 < 0.9 → 校准不通过，候选 `INSUFFICIENT_EVIDENCE`，**`frozen_decision` 未填写**）；**2026-09-19：研究者已启动正式 N0 基线训练**（`nnUNetTrainerPICAI_FLCE_NoFFT`，11:15 起，见 `docs/experiment_log.md`；因三项前置未冻结，其身份记为 **feasibility run**）；**日常入口新增 `docs/START_HERE.md`；全部启动前置统一降级为「不影响启动、只影响结果标签」**；已清理 `.pytest_cache`/`.ruff_cache`/`__pycache__`） |
 | 当前研究计划版本 | **v2.3.1**（含四项实质性新增条款，见 `docs/protocol_changelog.md`「v2.3.1」；本文件不重复其内容） |
 | 当前阶段 | G0-P = PASS；G0-R / G0-E / G0-SAP = PENDING（DRAFT，未冻结）；G1 未启动；G2 = NOT YET EVALUATED |
 | 当前工程焦点 | M3/M4 的 plan-space PZ/TZ prior **工程产物已就绪**（1500 例全量物化完成，2026-09-17；B10 关闭）→ **真实 loader-smoke 复跑（含当前 reader 的逐例数组级复校验）** → M0/M4 显存实测 |
@@ -63,7 +63,10 @@
 | 全仓库 Ruff | 新增/重写文件 All checks passed；**全仓库仍有约 148 个既有告警**（legacy 文件） | `docs/Development_Log.md`「P2A 验收轮修复」 |
 | 增强对齐 `augmentation.pending_parity` | **6 项未对齐**（rotation/scaling/低分辨率模拟/noise/blur/gamma） | `docs/P2_M0_Implementation.md` §18 |
 
-## 3. 正式实验前的 Blocker
+## 3. 待冻结事项（**不阻断启动**）
+
+> **未冻结 ≠ 不能跑。** 下表各条只影响产物的**结果身份**（能否写成"正式 / 可引用"），
+> **不构成任何启动前置**。想直接开训请看 `docs/START_HERE.md`。
 
 | # | Blocker | 影响 | 处理归属 |
 |---|---|---|---|
@@ -80,7 +83,9 @@
 
 ## 4. 下一步（均由研究者执行；命令见 runbooks）
 
-### 4.1 工程优先路径（当前实际推进顺序；不改变任何门的状态判定）
+### 4.1 建议顺序（**不阻断任何 run**；只影响结果标签与证据强度）
+
+> 训练不需要按这个顺序；本节只是"如果想把结论写得更硬，先做哪件"的建议。
 
 1. ~~**PZ/TZ prior 物化**（关闭 B10）~~：**✅ 已完成**——3 例 dry-run 通过，全量 1500 例物化于 2026-09-17 成功
    （`ok=1500 failed=0`，canonical manifest 已发布；运行记录见 `docs/experiment_log.md`，命令见
