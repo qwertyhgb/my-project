@@ -41,6 +41,7 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train/train_n0_picai_flce.py 605 3d_fullre
 - 中断后续训：末尾加 `--continue-training`；
 - 日志：`outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/training_log_*.txt`；
 - 规模与耗时：1000 epoch、约 53 s/epoch、显存约 6 GB → **约 15 小时**；成功标志 = 日志出现 `Training done` + 产出 `checkpoint_final.pth`；
+- **训练结束后评测**：`python scripts/evaluate/evaluate_n0_validation.py`（默认评测该 fold 的 223 例 validation，结果写入 `outputs/metrics/n0_validation_<时间戳>/`：`metrics.json` + `per_case.csv` + `summary.md`）；
 - 细节（隔离规则、失败处理）：`docs/runbooks/n0_training.md`。
 
 ---
@@ -86,7 +87,8 @@ python scripts/train/train_m0.py --config configs/experiments/m0_resenc_picai_3d
 | 看 N0 训练进度 | `tail -f <training_log_*.txt>`；对比 `progress.png` |
 | M0 架构/参数量统计 | `python scripts/train/summarize_m0_resenc_architecture.py` |
 | M0 显存实测 | `--overfit` 产出的 `outputs/diagnostics/<model>/<run>/diagnostics/gpu_memory_profile.json` |
-| **论文指标（lesion-level AP / PI-CAUC）** | **尚未实现**：`scripts/evaluate/` 目前只有 SAP 冻结载体工具；要评测需先写评测脚本（`docs/protocols/G0_SAP.md` 定义了口径） |
+| **评测 nnU-Net validation** | `python scripts/evaluate/evaluate_n0_validation.py` —— 默认评测 fold 0 的 223 例；输出 `outputs/metrics/<name>_<时间戳>/`（Dice、检出、患者级混淆矩阵、基于概率分数的代理 AP / AUC），并会明确标出哪些是代理指标 |
+| **官方论文指标（lesion-level AP / PI-CAUC）** | 还差两步：① `picai_eval` **本环境未安装**（需先安装）；② 评测口径须按 `docs/protocols/G0_SAP.md` 先冻结 —— 在此之前只能报**代理指标**，不得写成官方口径 |
 
 ---
 

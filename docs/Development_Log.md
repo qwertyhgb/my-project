@@ -1632,3 +1632,34 @@ M3/M4 仍**不是**训练就绪；6 项增强未开始。
 > 协议哈希 `13e7be50…`）：`REGISTRATION_DIAGNOSTIC_FAILED` **0/32**（本轮的 SimpleITK 缺陷已消除），
 > 但两个 pair 主指标 `detection_rate@2.0mm = 0.667 < 0.9` → 校准不通过、候选 `INSUFFICIENT_EVIDENCE`。
 > 运行事实见 `docs/experiment_log.md`、`docs/STATUS.md`。
+
+### 新增：validation 结果评测脚本（2026-09-19）
+
+**新增文件**：`scripts/evaluate/evaluate_n0_validation.py`（+ `tests/unit/test_evaluate_n0_validation.py`，8 项合成测试）
+
+**目的**：补上「训练完却算不出指标」的缺口 —— 之前 `scripts/evaluate/` 只有 G0-SAP 冻结载体工具。
+
+**能力**：
+- 读 `splits_final.json` 的 fold val 病例 → 对比 nnU-Net `validation/<case>.nii.gz` 与
+  `gt_segmentations/<case>.nii.gz`；
+- 逐例：Dice、IoU、TP/FP/FN 体素、体积（mm³）、`detected`、`predicted_positive`、最大概率分数；
+- 汇总：Dice（全体 / 有病灶例）、GT 阳性检出率、患者级混淆矩阵（敏感度/特异度/PPV/NPV/准确率）、
+  基于概率分数的代理 AP 与患者级 ROC-AUC；
+- 输出：`outputs/metrics/<name>_<时间戳>/{metrics.json, per_case.csv, summary.md}`。
+
+**设计要点（fail-closed）**：
+1. **两个"检出"定义分开**：`detected`（与 GT 病灶重叠，仅对 GT 阳性例有意义）vs
+   `predicted_positive`（预测非空，用于患者级假阳性）——若混用，GT 阴性病例永远不可能重叠，
+   假阳性恒为 0、特异度虚高（该缺陷在合成冒烟测试中被捕获并修正）；
+2. 未导出概率图（`validation/<case>.npz`）时**不计算**任何基于分数的指标，且**禁止**用二值掩膜
+   伪装成分数；
+3. 预测/GT 尺寸或 spacing 不一致 → 直接 `SystemExit`（拒绝静默重采样）；
+4. 缺失病例不静默跳过：列出 `missing`，`complete=false`，进程退出码 1；
+5. 只读、CPU、不初始化 CUDA；输出目录经 `pc.ensure_output_dir` 做隔离校验（不落入训练产物目录）。
+
+**未做 / 边界**：本环境**未安装** `picai_eval`，因此 `official_metrics_computed=false`，报告内
+所有分数类指标均标注为**代理指标**；官方 lesion-level AP / PI-CAUC 须先安装 `picai_eval` 并
+按 G0-SAP 冻结口径接入。未运行任何真实评测（训练尚在进行，`validation/` 尚未生成）。
+
+**验证**：`python -m pytest -q tests/unit/test_evaluate_n0_validation.py` → 8 passed；
+`ruff check` 两个新文件 → All checks passed；`compileall` OK。
