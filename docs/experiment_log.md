@@ -638,6 +638,40 @@ echo "exit_code=$rc"
 | 5 | `--dry-run`（研究者允许；读取 manifest 元数据与文件是否存在，**不读影像体素、不写文件**） | 协议 `G0-R-AUTOMATED / draft-0.4`、`schema=g0-r-automated/0.4`、`hash=13e7be50752db794…`；16 例 × 2 对 = 32 行，三序列齐全；**输出目录未创建**（已核对 `test -e` 为假） |
 
 - 全部为合成数组 / 合成 NIfTI / 静态检查；**未读取真实医学影像、未使用 GPU、未训练、未推理、未评测**；
-- **未运行**真实 G0-R（draft-0.4）：draft-0.3 从未在真实数据上运行；draft-0.2 失败运行产物保持原样；
+- 代理**未运行**真实 G0-R（draft-0.4）；**研究者已于同日 08:58 执行真实 16 例运行**（记录见下节 `20260918_085811`）；draft-0.3 从未在真实数据上运行；draft-0.2 失败运行产物保持原样；
 - 预注册数值（位移/方向/min_detectable/检出率/multiplier/单调性/FPR 上限/min_edge_voxels/
   输入与隐私策略）**均未修改**，并有逐项比对测试锁定。
+
+### G0-R Automated draft-0.4：首次真实全量运行（研究者执行；2026-09-18）
+
+| 项 | 记录 |
+|:--|:--|
+| 完整命令 | 证据：`/root/.bash_history` 末段（tmux 会话内执行；**dry-run 与正式运行共用同一 `G0R_RUN` 变量**，故写入同一时间戳目录）——<br>`cd /opt/data/private/lm/my-projects` → `conda activate lm` → `source scripts/env_nnunet.sh`<br>`G0R_MANIFEST="outputs/diagnostics/g0_r/20260915_093819/sampling_manifest.json"`<br>`G0R_RUN="outputs/diagnostics/g0_r_automated/$(date -u +%Y%m%d_%H%M%S)"`<br>`python scripts/audit/run_picai_alignment_qc_automated.py --config configs/protocols/g0_r_alignment_qc_automated.yaml --sampling-manifest "$G0R_MANIFEST" --out-dir "$G0R_RUN" --dry-run`<br>`python scripts/audit/run_picai_alignment_qc_automated.py --config configs/protocols/g0_r_alignment_qc_automated.yaml --sampling-manifest "$G0R_MANIFEST" --out-dir "$G0R_RUN"` |
+| 输出目录 | `outputs/diagnostics/g0_r_automated/20260918_085811/`（10 个文件；**只读保留，未修改任何字段/CSV/报告/哈希**） |
+| 协议身份 | `protocol.version=draft-0.4`、`rule_version=0.4`、`output_schema_version=g0-r-automated/0.4`、`protocol_hash=13e7be50752db794e94c2d69dda3e2cf7dff8a42f6c8a23abb862e996a977b75`；`config_sha256=571cc6a3e204d9c430392056a4fdd59fd949cc109220d7d4fd7fb06a90573721`（**与当前 canonical 配置实测 SHA256 逐字节一致**） |
+| 规模与耗时 | 16 例 × 2 对 = 32 case×pair；跳过 0；**用时 1102.8 s**（≈18m23s）；`run_metadata.created_at=2026-09-18T09:16:42` |
+| 结果 | **`REGISTRATION_DIAGNOSTIC_FAILED` = 0/32**（draft-0.2 为 32/32；SimpleITK 类型强转缺陷已消除）；`INVALID_INPUT` = 0；FOV 不足 = 0；32/32 行状态均为 `INSUFFICIENT_EVIDENCE`；`calibration_passed=false`；候选 `INSUFFICIENT_EVIDENCE`；`data_written_back=false` |
+| 校准（draft-0.4 口径） | unit = `(case_id, pair)`；零位移 `within_unit_mean`、噪声参考 `leave_one_out`；6 个 unit（每 pair 3 个）全部 complete、min-detectable 覆盖 6/6；条件 18 条；记录 108 条；主指标 `sigma1.5.edge_f1_at_1.0mm`：T2W-ADC `detection_rate@2.0mm = 0.667`、T2W-HBV `= 0.667`，均 < 0.9 → **两个 pair 主指标均不通过**；`zero_false_positive_rate = 0.0`、`monotonicity = 1.0` |
+| 分 pair 阈值 | `edge_f1_at_1.0mm`：ADC 0.2168153899264315 / HBV 0.22974296477213557；`edge_f1_at_2.0mm`：ADC 0.34065889485812384 / HBV 0.31421439591208933；`chamfer_mm`：ADC 4.338266237742856 / HBV 5.741749641307042（聚合方法 `median of paired unit midpoints by pair`） |
+| 归因 | **不是工具缺陷**，而是主指标在真实跨模态边缘数据上**对 2 mm 合成位移不够敏感**（检出率 0.667 < 0.9）→ 按协议 fail-closed 得到 `INSUFFICIENT_EVIDENCE` |
+| 退出码 | **未留存**（命令未含 `rc=$?`，stdout 未落盘）；判定依据：10 个产物齐全且 `qc_report.md` / `run_metadata.json` 均由流程末尾写出、`created_at` 已写入 |
+| 已知小缺陷 | `qc_report.md` 的标题与 §5 标题仍硬编码「Automated v0.3」字样（正文与元数据均为 draft-0.4）；仅文本层，不影响数值、阈值与哈希 |
+| 代理只读复核（2026-09-19） | 仅读 JSON/CSV/报告元数据（未读影像体素）：核对上述哈希、计数、阈值、原因字段与产物清单 |
+| 本轮**未**做 | 未修改或覆盖任何失败产物；**`frozen_decision` 未填写**；未训练/推理/评测；该工具为 CPU 路径（未使用 GPU） |
+
+> 门状态：G0-R 仍为 **PENDING / DRAFT**；自动候选为 DRAFT，**不等于** G0-R PASS（见 `docs/STATUS.md` §1）。
+> 是否转人工 landmark 复核 / 更换主指标 / 扩大抽样属 `docs/research_plan.md` §20.2 **D2**，由研究者决定。
+
+### G0-R draft-0.4 结果复核与 D2 选项收敛（代理只读核查；2026-09-19）
+
+| 项 | 事实 |
+|:--|:--|
+| 复核对象 | `outputs/diagnostics/g0_r_automated/20260918_085811/`（只读 JSON/CSV/报告元数据；**未读影像体素**） |
+| 三个指标的实测灵敏度（`detection_rate@2.0mm`，要求 ≥ 0.9） | 主指标 `sigma1.5.edge_f1_at_1.0mm`：T2W-ADC **0.667** / T2W-HBV **0.667**；`sigma1.5.edge_f1_at_2.0mm`：0.667 / 0.667；`sigma1.5.chamfer_mm`：**0.778** / **0.444** → **无任何指标达标**（`monotonicity = 1.0`、`zero_false_positive_rate = 0.0` 均满足） |
+| 2 mm 退化量级（主指标，T2W-ADC） | 每 unit 均值 +0.0194 / +0.0088 / +0.0034（对应零位移基线 0.348 / 0.221 / 0.212）；**个别方向样本退化为负值**（min −0.0084）→ 检出率被这些方向拉低 |
+| **校准集构成（新发现）** | 抽样清单 `outputs/diagnostics/g0_r/20260915_093819/sampling_manifest.json`：`per_stratum_counts` 含 `geometry_suspect: 5`，且该层 `selection_order` = **0–4**；配置 `calibration.max_cases: 3` 规定「从 manifest 顺序取前 N 例（确定性）」→ 校准 3 例 `10057_1000057 / 10161_1000164 / 10489_1000497` **全部**是 P0A `geometry_audit.csv` 中 `severity = 2` 的病例（2 例 `geometry_suspect`、1 例 `partial_physical_overlap`） |
+| 后果 | draft-0.4 的结论「主指标对 2 mm 位移不敏感」**被几何异常混杂**；不能据此断言该指标在几何干净（`severity = 0`）病例上也不敏感。这是**未决前置**，不是新结论 |
+| 已排除的 D2 选项 | ① 人工 landmark 复核：**不可行**（研究者 2026-09-19 声明）；② 更换主指标：**实测关闭**（三个指标在两个 pair 上无一达标） |
+| 未运行 / 未改动 | 未运行任何真实 QC、训练、推理、评测；未使用 GPU；未修改任何既有产物；**未改动任何阈值、位移集合、检出率要求或抽样清单**；`docs/research_plan.md` 未触碰 |
+
+> 该复核只收敛 D2 的可选项，**不改变任何门状态**：G0-R 仍为 `PENDING / DRAFT`，`frozen_decision` 仍未填写。

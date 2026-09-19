@@ -1626,3 +1626,9 @@ M3/M4 仍**不是**训练就绪；6 项增强未开始。
 `docs/runbooks/g0_r_alignment_qc.md`、`docs/protocol_changelog.md`、`docs/STATUS.md`、
 `docs/experiment_log.md`、`README.md`、`docs/GLOSSARY.md`、
 `outputs/diagnostics/code_snapshots/g0_r_v02_before_fix_20260918_081501/RESTORE.md`（校验命令修正）。
+
+> **后续（研究者执行，2026-09-18 08:58–09:16）**：研究者用该版本配置与代码执行真实 16 例运行
+> （`outputs/diagnostics/g0_r_automated/20260918_085811/`；`config_sha256=571cc6a3…` 与当前配置一致、
+> 协议哈希 `13e7be50…`）：`REGISTRATION_DIAGNOSTIC_FAILED` **0/32**（本轮的 SimpleITK 缺陷已消除），
+> 但两个 pair 主指标 `detection_rate@2.0mm = 0.667 < 0.9` → 校准不通过、候选 `INSUFFICIENT_EVIDENCE`。
+> 运行事实见 `docs/experiment_log.md`、`docs/STATUS.md`。

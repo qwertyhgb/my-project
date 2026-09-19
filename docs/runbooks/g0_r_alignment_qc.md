@@ -94,8 +94,10 @@ outputs/diagnostics/g0_r_automated/<UTC 时间戳>/
 - 抽样仅 16 例：**样本量与证据充分性属于待冻结决策**（`docs/research_plan.md` §20.2 D2），
   本 runbook 不对「是否足以支撑配准决策」下结论；是否追加人工 landmark 复核或扩大抽样由研究者决定；
 - 合成位移只验证"指标对额外位移的响应"，**不能**证明真实病例解剖学对齐；观察到的 0 mm 状态不等价于真值；
-- draft-0.2 的失败运行（`outputs/diagnostics/g0_r_automated/20260918_074219/`）**原样保留**为历史证据，
-  不得修改、不得与 draft-0.4 结果合并比较；
+- 两次真实运行均**原样保留**为历史证据，不得修改、不得互相合并比较：
+  draft-0.2（`outputs/diagnostics/g0_r_automated/20260918_074219/`，32/32 类型错误、校准不通过）与
+  draft-0.4（`outputs/diagnostics/g0_r_automated/20260918_085811/`，2026-09-18，0/32 类型错误、
+  两 pair 主指标 `detection_rate@2.0mm = 0.667 < 0.9` → 校准不通过、候选 `INSUFFICIENT_EVIDENCE`）；
 - v0.4 的两种新失败原因（`insufficient_complete_units` / `incomplete_unit_condition_grid` /
   `metric_unusable`）表示**该数据/该尺度不足以支撑判定**；不得通过放宽 `min_edge_voxels`、
   `min_complete_units_per_pair`、删除失败 unit 或降低检出率要求来"让它通过"。
