@@ -1626,3 +1626,19 @@ M3/M4 仍**不是**训练就绪；6 项增强未开始。
 `docs/runbooks/g0_r_alignment_qc.md`、`docs/protocol_changelog.md`、`docs/STATUS.md`、
 `docs/experiment_log.md`、`README.md`、`docs/GLOSSARY.md`、
 `outputs/diagnostics/code_snapshots/g0_r_v02_before_fix_20260918_081501/RESTORE.md`（校验命令修正）。
+
+
+### 操作暂停与前置规定作废：文档记录（2026-09-19）
+
+> 本轮**只改文档**：未启动任何操作（无数据转换/物化/QC/验证/推理/评测/训练），未读取真实医学影像，
+> 未使用 GPU，未修改任何数据或既有产物。
+
+- 新增 `docs/PAUSE_AND_VOID_20260919.md`：记录研究者「全部操作暂停 + 前置规定作废」指令的**内容、范围、
+  被作废条目（逐条对应原文位置）、证据等级后果、原样保留清单、文件整理结果与撤销方法**；
+- `docs/STATUS.md`：顶部新增 ⛔ 声明块；`当前阶段` 行标注「门控作为启动前置的效力已作废（门本身未改判）」；
+  §3 Blocker 表与 §4 下一步各加注「前置效力作废 / 操作暂停」；
+- `docs/protocol_changelog.md`：新增「前置规定作废声明（2026-09-19）」条目与专节，明确这是**执行约束处置**
+  而非条款修订，并记录证据等级的客观后果；
+- `docs/experiment_log.md`：记录本次事件（无事发生型记录：无 run）；
+- 整理：`git status` 干净、顶层无散落临时文件、代理侧 `/tmp` 辅助脚本已清理；
+  **未移动/删除/重命名任何既有文件**。

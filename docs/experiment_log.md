@@ -641,3 +641,15 @@ echo "exit_code=$rc"
 - **未运行**真实 G0-R（draft-0.4）：draft-0.3 从未在真实数据上运行；draft-0.2 失败运行产物保持原样；
 - 预注册数值（位移/方向/min_detectable/检出率/multiplier/单调性/FPR 上限/min_edge_voxels/
   输入与隐私策略）**均未修改**，并有逐项比对测试锁定。
+
+
+### 事件记录：全部操作暂停 + 前置规定作废（研究者指令；2026-09-19）
+
+| 项 | 记录 |
+|:--|:--|
+| 指令 | 研究者：全部文件整理、所有操作暂停、规定全部作废 |
+| 本轮实际执行 | **仅文档记录**：新增 `docs/PAUSE_AND_VOID_20260919.md`，更新 `docs/STATUS.md` / `docs/protocol_changelog.md` / 本日志；无任何 run |
+| 未运行 | 未运行真实 G0-R、未训练、未推理、未评测、未做 GPU 实测、未物化任何数据 |
+| 保留 | 全部数据与既有产物原样保留（含 `outputs/diagnostics/g0_r_automated/20260918_074219/`、两次旧 N0 run、代码快照、前缀归档配置） |
+| 运行状态快照 | 本项目无任何运行作业；GPU 空闲（24257 MiB free，0% util）；`tmux lm` 中为**另一项目**（`/opt/data/private/sh/nnunet_tinyIA_tuning`，Dataset508_WMC），已于 09:55 完成 validation，本项目未干预 |
+| 证据等级提醒 | 门未冻结期间产出的结果只能记为 **exploratory / feasibility**，不得写成「官方基线复现」或「H3 独立确认」 |
