@@ -15,21 +15,8 @@
 |---|---|
 | 最后更新 | 2026-09-18（**版本控制已启用：Git 基线 commit `23ca6cb`，B1 关闭**；PZ/TZ 链路 6 轮加固 + seg 哨兵兼容 + `--overfit` 运行时显存遥测；研究者已执行：3 例 prior dry-run + 全量 1500 例 prior 物化（B10 关闭）；**G0-R Automated：draft-0.2 真实运行失败（见 B2）→ draft-0.3 修复 → 审查发现两项 fail-open → draft-0.4 修复已实现并完成合成测试（真实重跑仍未执行）**；阶段门状态未变：仍无任何正式模型结果） |
 | 当前研究计划版本 | **v2.3.1**（含四项实质性新增条款，见 `docs/protocol_changelog.md`「v2.3.1」；本文件不重复其内容） |
-| 当前阶段 | G0-P = PASS；G0-R / G0-E / G0-SAP = PENDING（DRAFT，未冻结）；G1 未启动；G2 = NOT YET EVALUATED。⛔ **2026-09-19：全部门控作为「启动前置」的效力已由研究者声明作废（门本身未改判）；所有操作暂停** |
-| 当前工程焦点 | ⛔ **全部操作暂停**（2026-09-19 研究者指令）；原工程优先路径（prior → loader-smoke → 显存实测）已暂停 |
-
-> ## ⛔ 全部操作暂停 + 前置规定作废（2026-09-19，研究者指令）
->
-> 1. **所有操作暂停**：代理不再启动任何新操作（数据转换 / 物化 / QC / 验证 / 推理 / 评测 / 训练），
->    直到研究者解除；
-> 2. **前置规定作废**：`research_plan` §14 / §14.1 与各 runbook 中「冻结前不得启动 P2B / 正式 M0 / N0」
->    等**顺序与前置约束不再构成启动前置**；§3 的 B2 / B3 / B4 / B6 / B7 / B8 / B9 不再阻塞任何 run 启动；
-> 3. **门的技术状态未被改判**：G0-R / G0-E / G0-SAP 仍为 PENDING / DRAFT（§1）；
->    `docs/research_plan.md` 文本**未修改**，其效力以本声明与本文件为准；
-> 4. **证据等级**：未冻结状态下产出的任何结果只能记为 **exploratory / feasibility**，不得表述为
->    「官方基线复现」「确认性比较」或「H3 独立确认」；升级为确认性证据须在**看结果前**重新冻结并登记
->    `docs/protocol_changelog.md`；
-> 5. 声明内容、被作废条目、原样保留清单与撤销方法：**`docs/PAUSE_AND_VOID_20260919.md`**。 |
+| 当前阶段 | G0-P = PASS；G0-R / G0-E / G0-SAP = PENDING（DRAFT，未冻结）；G1 未启动；G2 = NOT YET EVALUATED |
+| 当前工程焦点 | M3/M4 的 plan-space PZ/TZ prior **工程产物已就绪**（1500 例全量物化完成，2026-09-17；B10 关闭）→ **真实 loader-smoke 复跑（含当前 reader 的逐例数组级复校验）** → M0/M4 显存实测 |
 
 > **状态唯一来源声明**：本文件是「当前状态/动态事实」的唯一权威来源。`docs/research_plan.md`、`docs/protocols/`
 > 只写协议状态（`DRAFT`/`FROZEN`）与要求；`docs/runbooks/` 只写前置条件与命令；
@@ -78,10 +65,6 @@
 
 ## 3. 正式实验前的 Blocker
 
-> ⛔ **2026-09-19 研究者声明**：本表全部 blocker 的**前置效力已作废**——不再阻塞任何 run 的启动；
-> 但各条描述的技术事实仍然成立（缺证据 / 未冻结 / 未实测），其证据等级后果见
-> `docs/PAUSE_AND_VOID_20260919.md` §3。
-
 | # | Blocker | 影响 | 处理归属 |
 |---|---|---|---|
 | B1 | ~~主项目目录不是 Git 仓库~~ → **已关闭（2026-09-18，用户决定启用 Git）**：`git init`（默认分支 `main`）已完成，基线 commit `23ca6cb`（196 文件 / 6.8 MB；`.git` 3.1 MB）；`.gitignore` 排除 `data/{raw,interim,processed}/`、`workdir/`、`outputs/` 产物与二进制（`*.pth/*.pt/*.npz/*.npy/*.pkl/*.h5/*.nii*/*.b2nd/*.mha`）；`third_party/nnUNet` 以 provenance 记录（tag `v2.6.2` / commit `74ceb68`），不 vendored | 正式 run 现可记录 commit；`research_plan` §16 的「用户先决定版本控制方案」要求已满足（该文件按要求保持未修改，状态以本文件为准） | 后续每个正式 run 记录 `git rev-parse HEAD` 与 `git status --porcelain`（干净工作区） |
@@ -96,9 +79,6 @@
 | B9 | **G0-E 配置在清点运行后被修订**：`configs/protocols/g0_e_independent_test.yaml` 的 `config_sha256` 由清点时的 `90953cba3660f71858bbe19a7112574a7e380d1d9ace791635e3aa5f58cc16ce` 变为现状 `9960a4522eec2354c90736ca5ef705390ac6bde589226800fee83980e53d1595` | 若以「新配置」冻结，必须重新运行清点并记录新哈希；既有清点产物对**已记录内容**仍然有效 | 见 `docs/protocol_changelog.md`「2026-09-17」 |
 
 ## 4. 下一步（均由研究者执行；命令见 runbooks）
-
-> ⛔ **2026-09-19 起本节的「顺序」不再是前置约束**（研究者声明作废）；且**当前所有操作处于暂停状态**，
-> 解除与重启顺序由研究者决定。以下列表仅保留原记录。
 
 ### 4.1 工程优先路径（当前实际推进顺序；不改变任何门的状态判定）
 
