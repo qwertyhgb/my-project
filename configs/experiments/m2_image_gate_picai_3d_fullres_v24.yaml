@@ -6,7 +6,8 @@
 #   - **独立的 run/output 身份**：experiment.name 与 paths.output_root 均与 legacy 不同，绝不共用输出目录。
 #
 # 除 encoder 身份外，训练/验证/损失/预算协议与 legacy 完全一致（复用已验证的基础设施）：
-#   Focal+CE（与正式 N0 对齐）、max_epochs=200 固定预算、每 5 epoch 全体积验证、禁用 early stopping。
+#   Focal+CE（与正式 N0 对齐）、max_epochs=1000 固定预算（与 N0 epoch 预算对齐）、每 50 epoch 全体积验证
+#   （最后一个 epoch 必验证）、禁用 early stopping。预算与验证调度变更见 docs/protocol_changelog.md（2026-09-20）。
 #
 # 状态：P2A 只完成实现与合成回归；**本配置的真实数据 setup/loader-smoke/overfit/训练/验证均未运行**，
 #   G2 = NOT YET EVALUATED，须由研究者在 G0-R 冻结预处理身份后执行（见 docs/P2_M0_ResidualEncoder_v23.md）。
@@ -73,7 +74,7 @@ scheduler:
   power: 0.9
 
 training:
-  max_epochs: 200
+  max_epochs: 1000
   iterations_per_epoch: 250
   diagnostic_validation_iterations: 50
   amp: true
@@ -83,7 +84,7 @@ training:
 
 validation:
   mode: full_volume
-  every_n_epochs: 5
+  every_n_epochs: 50
   checkpoint_metric: val_positive_casewise_dice_mean
   maximize: true
   expected_cases: 223

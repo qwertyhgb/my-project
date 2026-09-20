@@ -67,6 +67,10 @@ python scripts/train/train_m0.py --config configs/experiments/m0_resenc_picai_3d
 python scripts/train/train_m0.py --config configs/experiments/m0_resenc_picai_3d_fullres_v23.yaml
 ```
 
+> **正式预算（2026-09-20 起）**：`max_epochs=1000`（与 N0 的 epoch 预算对齐）、全体积验证每 **50** epoch
+> （**最后一个 epoch 必验证**）。单模型墙钟成本 ≈ 训练 17–25 h + 验证 20 轮 × ≈11 min ≈ **1 天量级**。
+> 变更登记见 `docs/protocol_changelog.md`（2026-09-20）。
+
 可选配置（`configs/experiments/`）：
 
 | 模型 | 配置 |

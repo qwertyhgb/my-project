@@ -179,3 +179,33 @@ def test_repo_config_declares_formal_protocol():
     assert (cfg.early_stopping.min_epochs, cfg.early_stopping.patience) == (50, 8)
     assert cfg.early_stopping.min_delta == pytest.approx(1e-4)
     assert cfg.inference.mirror_tta is False
+
+
+def test_formal_resenc_family_declares_1000_epoch_protocol():
+    """正式消融族（M0-resenc + M1–M4）必须声明 1000-epoch 固定预算 + 每 50 epoch 低频验证。
+
+    2026-09-20 协议变更（见 `docs/protocol_changelog.md`）：预算 200 → 1000（与 N0 的 epoch 预算对齐）、
+    验证调度 5 → 50。legacy `m0_picai_3d_fullres.yaml` 保持 v2.2 冻结值（200/5）不动，
+    因此 `test_repo_config_declares_formal_protocol` 仍针对 legacy 文件断言 200/5。
+    """
+    family = (
+        "m0_resenc_picai_3d_fullres_v23.yaml",
+        "m1_equal_picai_3d_fullres_v24.yaml",
+        "m2_image_gate_picai_3d_fullres_v24.yaml",
+        "m3_zone_input_picai_3d_fullres_v24.yaml",
+        "m4_conditioned_gate_picai_3d_fullres_v24.yaml",
+    )
+    for name in family:
+        cfg = load_experiment_config(PROJECT_ROOT / "configs/experiments" / name)
+        assert cfg.training.max_epochs == 1000, name
+        assert cfg.training.iterations_per_epoch == 250, name
+        assert cfg.validation.mode == "full_volume", name
+        assert cfg.validation.every_n_epochs == 50, name
+        assert (
+            cfg.validation.expected_cases,
+            cfg.validation.expected_positive_cases,
+            cfg.validation.expected_negative_cases,
+        ) == (223, 63, 160), name
+        assert cfg.validation.checkpoint_metric == "val_positive_casewise_dice_mean", name
+        assert cfg.validation.maximize is True, name
+        assert cfg.early_stopping.enabled is False, name

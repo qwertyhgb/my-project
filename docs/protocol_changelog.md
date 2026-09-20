@@ -335,3 +335,36 @@
     见 `docs/STATUS.md` B9）；
   - `configs/protocols/g0_sap.yaml` 新增非必填的映射字段与生命周期字段，不改变 `endpoints.primary` 与
     冻结就绪判据的字段清单（判据见 `docs/protocols/G0_SAP.md` §9；实测就绪状态见 `docs/STATUS.md`）。
+
+## 自研消融族预算与验证调度变更（2026-09-20；**预注册**，D7 部分处置）
+
+| 项 | 变更前 | 变更后 |
+|---|---|---|
+| `training.max_epochs`（`m0_resenc_picai_3d_fullres_v23` + `m1`–`m4`，共 5 个配置） | 200 | **1000** |
+| `validation.every_n_epochs`（同上 5 个配置） | 5 | **50** |
+
+**理由（基于正式 N0 的实测曲线，非结果后调整）**：正式 N0 在 1000-epoch 预算下，`Pseudo dice` 直到
+**epoch 600 之后**才进入正常区间（首个非零 epoch 43；epoch 0–200 非零仅 81/200、峰值 0.090；
+最后 200 epoch 才 200/200 非零、峰值 0.767 且仍未见收敛）。若 M0–M4 仍用 200 epoch，整段预算
+将与 N0 的"双方均欠训练"状态重叠，`N0 vs M0` 的差距无法解释。同时把每 5 epoch 的全体积验证
+（223 例 ≈ 11 min/轮）放宽为每 50 epoch，以控制单模型墙钟成本（验证轮数 40 → 20）。
+
+**不变的规则**：**最后一个 epoch 必验证**（代码实现：`epoch == self.epochs - 1`）；
+`checkpoint_metric = val_positive_casewise_dice_mean`、`maximize=true`、禁用"连续无改善"early stopping、
+`expected_cases = 223 / 63 / 160`、`step_fraction=0.5`、`gaussian=true`、`mirror_tta=false` 全部不变。
+
+**预注册声明**：本变更在**任何 M0–M4 训练结果产生之前**完成并登记（此前 M0–M4 从未训练，
+`outputs/checkpoints/` 仅含 `.gitkeep`），因此**不属于**「结果产生后调整」。变更后首次运行即为
+该预算下的正式（或 feasibility 身份的）run。
+
+**仍不配平、因此仍待 D7 处置的部分**：骨干仍为 Residual-Encoder（N0 为 PlainConv）→
+`N0 − M0` 差异**仍不能作单一因果解释**；D7 的「增加 matched-protocol run」（例如再跑一版 N0 的
+官方 250-epoch 变体做对照）仍开放，须由研究者在看正式结果前决定。
+
+**保留不动**：legacy `configs/experiments/m0_picai_3d_fullres.yaml`（v2.2 PlainConv，已排除的历史配置）
+继续使用冻结的 200 epoch / 每 5 epoch 值；`tests/unit/test_train_m0_script.py::
+test_repo_config_declares_formal_protocol` 仍针对该 legacy 文件断言 200/5。
+
+**影响面**：5 个配置的内容哈希变化（这些配置从未训练过，故无既有 run 受影响）；`PolyLR` 终点由
+`build_scheduler(..., epochs=total_epochs)` 自动跟随 `max_epochs`，无需改代码；新增测试
+`test_formal_resenc_family_declares_1000_epoch_protocol` 锁定本次冻结值。

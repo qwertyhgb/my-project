@@ -8,7 +8,7 @@
 - checkpoint：last（每 epoch）/ best（**checkpoint 指标**改善）/ 周期（每 N epoch）/ interrupt（Ctrl-C）；
 - **两种验证模式**：
   - `diagnostic_patch`：随机 validation patch（仅用于 loader smoke / small-overfit 诊断），每个 epoch 都验证；
-  - `formal_full_volume`：按 `validation_every_n_epochs`（正式 M0–M4 = 5）**低频**调用 `FullVolumeValidator`，
+  - `formal_full_volume`：按 `validation_every_n_epochs`（正式 M0–M4 = 50，2026-09-20 起）**低频**调用 `FullVolumeValidator`，
     遍历 fold 0 全部 validation study 做完整 3D 滑窗推理；**最后一个 epoch 即使不是 N 的倍数也必验证**；
     非验证 epoch 不调用 validator、不解析 checkpoint 指标、不更新 best/patience，日志标记 `validation_skipped=1`，
     但 `checkpoint_last` 与周期 checkpoint 仍正常保存（正式训练必须用这个模式）；
@@ -182,7 +182,7 @@ class M0Trainer:
             raise ValueError("epochs / iterations_per_epoch / validation_iterations 必须 >= 1")
         if self.validation_every_n_epochs < 1:
             raise ValueError(
-                f"validation_every_n_epochs 必须 >= 1（0 或负数非法；正式 M0–M4 使用 5），"
+                f"validation_every_n_epochs 必须 >= 1（0 或负数非法；正式 M0–M4 使用 50），"
                 f"收到 {self.validation_every_n_epochs}"
             )
         if not self.checkpoint_metric:

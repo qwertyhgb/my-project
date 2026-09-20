@@ -1,4 +1,4 @@
-"""评估层：低频全体积验证（v2.2：正式 M0–M4 每 `every_n_epochs=5` 一次，最后一个 epoch 必验证）。
+"""评估层：低频全体积验证（2026-09-20 起：正式 M0–M4 每 `every_n_epochs=50` 一次，最后一个 epoch 必验证）。
 
 - `FullVolumeValidator`：对 fold 0 全部 validation study 做完整 3D 滑窗推理，产出 case-wise Dice 与
   阴性假阳性统计；

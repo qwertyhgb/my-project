@@ -191,7 +191,7 @@
 | **B5** | 峰值显存未实测（可能超出 GPU 上限）——**运行时遥测工具已就绪**（`--overfit` → `gpu_memory_profile.json`），实测待执行 |
 | **B10** | plan-space PZ/TZ prior 物化 —— **已关闭（2026-09-17 完成全量 1500 例；编号保留供追溯）**：`data/processed/picai_zonal_yuan_v1/`（1500 NPZ + 1500 病例 JSON + canonical manifest）；剩余工程工作为读取端逐例数组级复校验与 loader-smoke（命令见 `p2a_zonal_prior_materialization.md`，状态见 `docs/STATUS.md`） |
 | **B6** | 增强 `pending_parity` 6 项未对齐（M0–M4 与 N0 不完全配平） |
-| **B7** | N0（1000 epoch/PlainConv）与 M0–M4（200 epoch/Residual-Encoder）预算与骨干不配平 |
+| **B7** | N0（1000 epoch/PlainConv）与 M0–M4（**2026-09-20 起 1000 epoch**/Residual-Encoder）：**epoch 预算已对齐，骨干差异仍不配平** |
 | **B8** | 分区先验训练数据与目标病例的重叠未审计（影响 H3 归因） |
 | **B9** | G0-E 配置哈希在清点运行后被修订 → 若以新配置冻结须重跑清点 |
 

@@ -1,7 +1,7 @@
 """低频全体积验证（P2-A3；v2.2 迁移为每 N epoch 一次）。
 
 正式训练的验证协议（research_plan §9.4 / §11）：
-- 每 `every_n_epochs`（正式 M0–M4 = 5）个完整 epoch 结束后，对 fold 0 的**全部** validation
+- 每 `every_n_epochs`（正式 M0–M4 = 50，2026-09-20 起）个完整 epoch 结束后，对 fold 0 的**全部** validation
   study（冻结划分：223 例）逐个做**完整 3D 体积** sliding-window 推理，不使用随机 validation patch 代替；
   无论是否恰逢 N 的倍数，正常训练的**最后一个 epoch** 必须执行一次全体积验证（调度在 trainer 侧）；
 - 验证不做任何随机数据增强；
@@ -78,7 +78,7 @@ class ValidationProtocol:
             raise ValueError(f"validation.mode 必须是 {VALIDATION_MODES} 之一，收到 {self.mode!r}")
         if int(self.every_n_epochs) < 1:
             raise ValueError(
-                f"validation.every_n_epochs 必须 >= 1（0 或负数非法；正式 M0–M4 使用 5），"
+                f"validation.every_n_epochs 必须 >= 1（0 或负数非法；正式 M0–M4 使用 50），"
                 f"收到 {self.every_n_epochs}"
             )
         if any(

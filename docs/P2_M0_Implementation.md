@@ -13,8 +13,8 @@
 > `docs/P2_M0_ResidualEncoder_v23.md` 为准。
 
 > **v2.2 状态更新（2026-09-15，取代原 v2.1 覆盖说明）**：v2.1 宣布的低频验证迁移**已完成并落地**——
-> `validation.every_n_epochs=5`（第 5、10…个 epoch 验证，**最后一个 epoch 必验证**）、非验证 epoch 不调用
-> validator/不更新 best/patience、**正式主实验禁用“连续无改善”early stopping 的固定 200-epoch 预算**、
+> `validation.every_n_epochs=50`（第 50、100…个 epoch 验证，**最后一个 epoch 必验证**；2026-09-20 起由 5 改为 50）、非验证 epoch 不调用
+> validator/不更新 best/patience、**正式主实验禁用“连续无改善”early stopping 的固定 1000-epoch 预算**（2026-09-20 起由 200 改为 1000）、
 > resume 恢复 validation-event/best 状态、协议变化默认拒绝 resume（显式放行时重置选模状态）。
 > 以上由合成 CPU 回归测试与仓库配置自检锁定，见 `docs/research_plan.md` §9.4.1 与本文 §18。
 > 下文 §8/§16/§18 已同步为 v2.2 目标值；其他章节中的历史记录（如 §15 复审记录、§16.5 旧标题注释）仅用于

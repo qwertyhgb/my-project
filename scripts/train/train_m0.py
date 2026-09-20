@@ -6,7 +6,7 @@
                       **不训练、不做 forward、不使用 GPU**；
 2. `--overfit`       （命令 C）用少量阳性病例做固定 iteration 的小样本过拟合（**诊断**：随机 patch 验证），
                       输出独立 diagnostic 目录（checkpoint + loss 曲线），不与正式训练目录混用；
-3. 默认模式           **正式训练**（max_epochs 见配置，正式 200），按 `validation.every_n_epochs`（正式 5）
+3. 默认模式           **正式训练**（max_epochs 见配置，正式 1000），按 `validation.every_n_epochs`（正式 50）
                       低频对 fold 0 的全部 validation study（223 例）做**完整 3D 体积**滑窗推理（最后一个 epoch
                       即使不是 5 的倍数也必验证），按 `val_positive_casewise_dice_mean` 最大化保存 best checkpoint；
                       正式 M0–M4 使用固定 200-epoch 预算，**禁用**“连续无改善”early stopping（只保留 NaN/Inf/

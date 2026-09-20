@@ -57,8 +57,9 @@ def test_v23_config_declares_residual_architecture():
     assert cfg.architecture.encoder_type == "residual_encoder"
     assert cfg.architecture.architecture_name == "m0_resenc_picai_3d_fullres"
     assert cfg.architecture.config_path.endswith("configs/architectures/m0_resenc_v23.yaml")
-    # 训练/验证协议与 legacy 一致（复用同一基础设施）
-    assert cfg.training.max_epochs == 200 and cfg.validation.every_n_epochs == 5
+    # 训练/验证协议与 legacy 一致（复用同一基础设施）；预算与验证调度按 2026-09-20 预注册变更
+    # （200 → 1000 epoch、5 → 50；见 docs/protocol_changelog.md），legacy 配置仍保持 200/5。
+    assert cfg.training.max_epochs == 1000 and cfg.validation.every_n_epochs == 50
     assert cfg.loss.name == "focal_ce" and cfg.early_stopping.enabled is False
 
 
