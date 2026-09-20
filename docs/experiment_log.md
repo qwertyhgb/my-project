@@ -697,3 +697,18 @@ echo "exit_code=$rc"
 | 新增日常入口 | `docs/START_HERE.md`（一页：准备数据 / 训基线 / 训自研 / 记录分析 / 常见问题） |
 | 启动前置降级 | `docs/runbooks/n0_training.md` §1 与 `docs/STATUS.md` §3/§4.1：从「启动前必须冻结」改为「**不阻断启动**，只影响结果身份」；`docs/research_plan.md` 文本未改动 |
 | 缓存清理 | 删除 `.pytest_cache/`、`.ruff_cache/`、17 个 `__pycache__/`（约 200 K）与临时脚本；未删除任何数据、产物、日志或文档 |
+
+### N0 基线训练完成（研究者执行；2026-09-19 11:15 → 2026-09-20 02:48）
+
+| 项 | 记录 |
+|:--|:--|
+| 输出目录 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| 完成判据 | 日志出现 `Training done`（1 次）；产出 `checkpoint_final.pth`（341 MB，02:37:35）+ `checkpoint_best.pth`（02:25）；`progress.png`；无未处理 Error |
+| 规模与耗时 | **1000 epoch**；1000 条 Pseudo dice 记录；09-19 11:15:10 → 09-20 02:37 ≈ **15.4 h**（≈55 s/epoch）；validation 223 例 02:37→02:48（≈11 min） |
+| 训练配置 | `Dataset605_PICAI` / `3d_fullres` / `nnUNetPlans`；损失 = PI-CAI Focal(γ=2, α=None)+CE 各 0.5；`benchmark=False`（NoFFT 修复）；patch `[16,320,320]`、batch 2、oversample 0.33、deep supervision 开 |
+| **`Pseudo dice` 轨迹**（patch 级在线指标） | 首个非零在 **epoch 43**；分区间非零比例与峰值：0-200 → 81/200（max 0.090）、200-400 → 59/200（0.143）、400-600 → 38/200（0.203）、600-800 → 132/200（0.702）、**800-1000 → 200/200（0.767）**；最后 5 个 epoch：0.664 / 0.702 / 0.426 / 0.500 / 0.383 |
+| **nnU-Net 全量 validation（223 例）** | `Mean Validation Dice = 0.1682`，IoU 0.1235；逐例均值 TP 1053 / FN 1546 / FP 512（**欠分割**）；`n_ref` 均值 2599 vs `n_pred` 均值 1565 |
+| 逐例结构（来自 `validation/summary.json` 元数据） | **预测为空 181/223**；GT 为空 160/223（63 例 GT 阳性，占 28.3%，与已知 csPCa 阳性率一致 → **标签映射在病例级别看起来正常**）；GT 阳性且预测非空仅 **31** 例（中位 Dice 0.415、最大 0.869），**32 个 GT 阳性例被完全漏掉**；GT 非空例中 Dice≥0.5 仅 14 例、≥0.7 仅 6 例 |
+| 概率图 | **未导出**（`validation/*.npz` = 0；启动时未加 `--export-validation-probabilities`）→ 基于分数的 AP/AUC 暂不可算 |
+| 结果身份 | 三项前置（G0-R / G0-E / D7）未冻结 → **feasibility run**；不得表述为「官方基线复现」 |
+| 未做 | 未跑评测脚本（`scripts/evaluate/evaluate_n0_validation.py`）、未跑 `diagnose_n0_zero_dice.py`、未推理（仅训练自带 validation）、未评测；未修改或删除任何既有产物 |
