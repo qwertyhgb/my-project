@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -209,3 +208,93 @@ def test_formal_resenc_family_declares_1000_epoch_protocol():
         assert cfg.validation.checkpoint_metric == "val_positive_casewise_dice_mean", name
         assert cfg.validation.maximize is True, name
         assert cfg.early_stopping.enabled is False, name
+
+
+def test_preflight_diagnostics_do_not_block_fresh_formal_run(tmp_path: Path, script):
+    """回归：手册顺序（先 setup/loader-smoke 预检，再正式训练）不得被目录守卫阻断。
+
+    历史缺陷：`diagnostics` 目录被无条件视为"已存在内容"，而 `validate_m0_setup.py`
+    （`setup_check.json`）与 `--loader-smoke`（`loader_smoke_*.json`）正好写入该目录
+    → 照手册先做预检后，正式训练直接拒绝启动。
+    """
+    run_dir = tmp_path / "run"
+    metrics_dir = tmp_path / "metrics"
+    diagnostics_dir = tmp_path / "diagnostics"
+    diagnostics_dir.mkdir()
+    (diagnostics_dir / "setup_check.json").write_text("{}")
+    (diagnostics_dir / "loader_smoke_20260920_092435.json").write_text("{}")
+
+    # 只含预检产物 → 放行
+    script.ensure_fresh_run_dirs(
+        run_dir, metrics_dir, diagnostics_dir, preflight_tolerant=(diagnostics_dir,)
+    )
+
+    # 训练产物一律拒绝（即使声明了预检豁免）
+    (diagnostics_dir / "run_manifest.json").write_text("{}")
+    with pytest.raises(SystemExit, match="拒绝启动"):
+        script.ensure_fresh_run_dirs(
+            run_dir, metrics_dir, diagnostics_dir, preflight_tolerant=(diagnostics_dir,)
+        )
+
+    # 未声明豁免时恢复原语义：预检产物同样拒绝
+    (diagnostics_dir / "run_manifest.json").unlink()
+    with pytest.raises(SystemExit, match="拒绝启动"):
+        script.ensure_fresh_run_dirs(run_dir, metrics_dir, diagnostics_dir)
+
+
+def test_diagnostic_trainer_receives_callable_batch_sources(tmp_path: Path, mini_plan, script, monkeypatch):
+    """回归：`train_batches` / `val_batches` 必须是**可调用**的 batch source 工厂。
+
+    历史缺陷：诊断模式把 `TorchBatchProvider` 实例直接传给 `val_batches` → trainer 内部
+    `iter(source())` 抛 `TypeError: 'TorchBatchProvider' object is not callable`
+    （small-overfit 在 validation 阶段失败，显存遥测记为 ERROR）。
+    """
+    import torch
+
+    cfg = load_experiment_config(write_config(tmp_path, mini_plan, n_val=2))
+    store = FakeStore(("c", "d"))
+    store.train_ids = ("a", "b")  # type: ignore[attr-defined]
+    validator, val_provider = script.build_validation_components(
+        cfg,
+        mini_plan,
+        store,
+        mode="diagnostic_patch",
+        device="cpu",
+        progress=False,
+        metrics_dir=tmp_path / "metrics",
+    )
+    assert validator is None and val_provider is not None
+    captured: dict = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(script, "M0Trainer", _Recorder)
+    monkeypatch.setattr(
+        script,
+        "build_model_and_loss",
+        lambda cfg, plan: (torch.nn.Linear(1, 1), torch.nn.CrossEntropyLoss()),
+    )
+    script.build_trainer(
+        cfg,
+        mini_plan,
+        device="cpu",
+        progress=False,
+        run_dir=tmp_path / "run",
+        metrics_dir=tmp_path / "metrics",
+        diagnostics_dir=tmp_path / "diagnostics",
+        validation_mode="diagnostic_patch",
+        validator=validator,
+        store=store,
+        train_cases=("a", "b"),
+    )
+    # trainer 内部：source = self.val_batches; iterator = iter(source())
+    from zonal_reliability_fusion.data import TorchBatchProvider
+
+    assert callable(captured["train_batches"])
+    assert captured["val_batches"] is not None
+    assert callable(captured["val_batches"])
+    # 调用后必须返回一个可直接 `iter()` 的 provider（build_trainer 内部自建，与上面的 val_provider 非同一对象）
+    assert isinstance(captured["val_batches"](), TorchBatchProvider)
+    assert isinstance(captured["train_batches"](), TorchBatchProvider)

@@ -36,6 +36,7 @@ import csv as _csv
 import json
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -242,14 +243,51 @@ def build_store(cfg: M0ExperimentConfig) -> PreprocessedStore:
     )
 
 
-def ensure_fresh_run_dirs(*dirs: Path, resume_from: str = "") -> None:
+#: 预检产物文件名（`validate_m0_setup.py` 写出）——不视为"已存在的训练 run"
+PREFLIGHT_DIAGNOSTIC_FILES = ("setup_check.json",)
+#: 预检产物文件名前缀（`--loader-smoke` 的按时间戳落盘）——同上
+PREFLIGHT_DIAGNOSTIC_PREFIXES = ("loader_smoke_",)
+
+
+def preflight_only_diagnostics(directory: Path) -> bool:
+    """`diagnostics` 目录是否**只**包含预检产物（不含任何训练 run 产物）。
+
+    预检产物由研究者按手册在正式训练**之前**执行：
+    `validate_m0_setup.py`（`setup_check.json`）与 `--loader-smoke`（`loader_smoke_<时间戳>.json`）。
+    它们不构成"已存在的训练 run"，因此不得阻止正式训练启动（否则照手册顺序先跑预检就无法开训）。
+    """
+    if not directory.exists():
+        return True
+    for entry in directory.iterdir():
+        name = entry.name
+        if name in PREFLIGHT_DIAGNOSTIC_FILES or any(
+            name.startswith(prefix) for prefix in PREFLIGHT_DIAGNOSTIC_PREFIXES
+        ):
+            continue
+        return False
+    return True
+
+
+def ensure_fresh_run_dirs(
+    *dirs: Path,
+    resume_from: str = "",
+    preflight_tolerant: Sequence[Path] = (),
+) -> None:
     """正式 run 的安全检查：目标目录非空且未显式 resume → 拒绝启动。
 
     避免向旧 CSV 追加、覆盖旧 checkpoint 或污染历史实验。
+
+    `preflight_tolerant` 中的目录允许**只包含预检产物**（见 `preflight_only_diagnostics`）；
+    任何训练产物（`run_manifest.json`、checkpoint、epoch CSV、loss 曲线等）仍一律拒绝。
     """
     if resume_from:
         return
-    non_empty = [str(d) for d in dirs if d.exists() and any(d.iterdir())]
+    tolerant = {Path(p) for p in preflight_tolerant}
+    non_empty = [
+        str(d)
+        for d in dirs
+        if d.exists() and any(d.iterdir()) and not (Path(d) in tolerant and preflight_only_diagnostics(Path(d)))
+    ]
     if non_empty:
         raise SystemExit(
             "[m0 train] 以下输出目录已存在内容且未指定 --resume-from，拒绝启动（不覆盖/不追加旧实验）:\n  "
@@ -483,7 +521,9 @@ def build_trainer(
         scheduler=scheduler,
         device=device,
         train_batches=lambda: train_provider,
-        val_batches=val_provider,
+        # trainer 契约：batch source 必须是**可调用**工厂（内部 `iter(source())`）；直接传 provider
+        # 实例会得到 `TypeError: 'TorchBatchProvider' object is not callable`（overfit 曾在 validation 阶段失败）。
+        val_batches=None if val_provider is None else (lambda: val_provider),
         run_dir=run_dir,
         metrics_dir=metrics_dir,
         diagnostics_dir=diagnostics_dir,
@@ -873,7 +913,15 @@ def run_training(args, cfg: M0ExperimentConfig, plan) -> None:
     model_key = str(cfg.experiment.model_id).lower()  # m0 / m1 / m2 / m3 / m4（M0 目录保持不变）
     metrics_dir = PROJECT_ROOT / "outputs/metrics" / model_key / run_name
     diagnostics_dir = PROJECT_ROOT / "outputs/diagnostics" / model_key / run_name
-    ensure_fresh_run_dirs(run_dir, metrics_dir, diagnostics_dir, resume_from=args.resume_from)
+    # diagnostics 目录同时承载预检产物（setup_check.json / loader_smoke_*.json）→ 仅对"只含预检产物"
+    # 的情况放行；任何训练产物仍会拒绝启动。
+    ensure_fresh_run_dirs(
+        run_dir,
+        metrics_dir,
+        diagnostics_dir,
+        resume_from=args.resume_from,
+        preflight_tolerant=(diagnostics_dir,),
+    )
 
     progress = resolve_progress(args.no_progress, cfg.training.progress)
     store = build_store(cfg)
