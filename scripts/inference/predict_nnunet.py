@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""最小项目预测入口：把三个项目 Trainer 名映射到项目类后，调用 nnU-Net 官方预测入口。
+"""最小项目预测入口：把项目 Trainer 名映射到项目类后，调用 nnU-Net 官方预测入口。
 
 **不自写推理器**：滑窗推理、预处理、导出全部由官方 ``nnUNetPredictor`` 与
 ``predict_entry_point_modelfolder`` 完成；本脚本只做两件事：
 
 1. 在**进程内**替换 ``nnunetv2.inference.predict_from_raw_data.recursive_find_python_class``，
    使官方 ``initialize_from_trained_model_folder`` 在读取 checkpoint 的 ``trainer_name`` 后，
-   能直接定位到项目自定义 Trainer 类（对三个已知名做直接映射，**不做递归扫描**；未知名字
-   仍委托给 nnU-Net 原函数）。不修改 third_party/nnUNet。
+   能直接定位到项目自定义 Trainer 类（对已知项目 Trainer 名做直接映射，**不做递归扫描**；
+   未知名字仍委托给 nnU-Net 原函数）。不修改 third_party/nnUNet。
 2. 校验固定 nnU-Net 运行时（``check_fixed_nnunet_runtime``），然后调用官方 entry point。
 
 用法（长任务由研究者运行；先 conda activate lm && source scripts/env_nnunet.sh）：
@@ -23,11 +23,18 @@ from __future__ import annotations
 
 import sys
 
-#: 项目三个 Trainer 的类名（与 checkpoint 中的 ``trainer_name`` 一致）；模块级常量，便于测试
+#: 项目十个 Trainer 的类名（与 checkpoint 中的 ``trainer_name`` 一致）；模块级常量，便于测试
 PROJECT_TRAINER_NAMES = (
     "nnUNetTrainerPICAI_FLCE_NoFFT",
+    "nnUNetTrainerPICAI_DiceCE_NoFFT",
     "nnUNetTrainerPICAI_ImageGate",
     "nnUNetTrainerPICAI_AnatomyGate",
+    "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
+    "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT",
+    "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT",
+    "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT",
+    "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT",
+    "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT",
 )
 
 _ORIGINAL_RECURSIVE_FIND = None

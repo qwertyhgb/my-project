@@ -41,23 +41,56 @@
 - 进度条不替代结构化日志：任务结束仍须输出 成功数/失败数/跳过数/耗时/输出路径。
 - 新增或修改相关脚本时，检查进度是否覆盖主要耗时循环；默认开启，可提供 `--no-progress`。
 
-## 5. nnU-Net-first
+## 5. nnU-Net-centered 与受控扩展
 
-- 项目采用 **nnU-Net-first**：planning/preprocessing、dataloader、patch sampling、augmentation、
-  deep supervision、optimizer/调度、training loop、checkpoint/resume、validation、sliding-window
-  inference、prediction export 全部由固定版本 nnU-Net（`third_party/nnUNet`，v2.6.2，只读）负责。
-- **不重复实现** nnU-Net 已有功能：不得再写第二套 trainer、checkpoint、滑窗推理、验证器、patch
-  sampler、optimizer 或学习率调度器，也不得复制 nnU-Net 的 U-Net encoder/decoder。
-- 项目扩展只允许：PI-CAI Focal+CE 损失、NoFFT blur 修复、基于原生网络的轻量 reliability gate、
-  必要的 PZ/TZ 输入适配、统一训练入口、最少量的数据准备代码。
-- 禁止直接修改 `third_party/nnUNet`。所有训练从 `scripts/train/train_nnunet.py` 进入。
+- 项目以固定版本 nnU-Net（`third_party/nnUNet`，v2.6.2，只读）为中心：默认优先复用其
+  planning/preprocessing、网络 plans、训练主循环、optimizer、LR scheduler、deep
+  supervision、checkpoint/resume、validation、sliding-window inference 与 prediction
+  export。
+- 当 nnU-Net 原生机制不能满足**明确的研究假设**时，允许在项目代码中实现受控扩展，
+  包括：病例级采样概率、阳性/阴性病例平衡、lesion-centred patch sampling、
+  boundary-aware 或 hard-example patch sampling，以及与研究问题直接相关的输入、
+  损失或轻量网络模块。
+- 允许项目侧第二套 dataloader/patch sampler，但必须同时满足：
+  - 不修改 `third_party/nnUNet`（仍绝对禁止）；
+  - 优先继承或包装原生 `nnUNetDataLoader`；
+  - 复用 nnU-Net 预处理数据与 `class_locations`（不自行重采样原始医学图像、
+    不读取原始 NIfTI）；
+  - 不重新实现训练循环、optimizer、LR scheduler、checkpoint、验证器或滑窗推理；
+  - 对缺失 metadata、无阳性病例、非法病例 ID 一律 fail-closed，不得静默当阴性；
+  - 训练采样与验证采样明确分离，验证集默认保持 nnU-Net 原生采样行为（无验证泄漏）；
+  - 有纯合成测试覆盖采样比例、前景保证与数据安全；
+  - 使用不同 Trainer 类名与独立输出目录，不覆盖既有产物。
+- 每个自定义采样策略必须对应一个明确研究假设；不得为提高单次结果同时混入多个
+  不可归因的修改（如同时改采样、损失、patch size 与优化器）。
+- 仍禁止复制 nnU-Net 的完整训练器、U-Net encoder/decoder、验证器和推理器。
+- 所有训练从 `scripts/train/train_nnunet.py` 进入。
 
 ## 6. 文档纪律
 
-- 活跃文档只有四份：`README.md`、`docs/Research_Plan.md`、`docs/Development_Log.md`、
-  `docs/Training_Log.md`。
+- **治理文档五份**：`README.md`、`docs/Research_Plan.md`、`docs/Development_Log.md`、
+  `docs/Training_Log.md`、`docs/Findings.md`。
+  - `docs/Findings.md` 只记录**跨实验**的观察、问题优先级与下一步判据，是所有实验记录的横向汇总；
+    单实验详情仍分别写入 `docs/experiments/` 下各自的文件。
+- **实验详情文档**位于 `docs/experiments/`，**每个实验一份**，文件名即 variant 名
+  （如 `baseline.md`、`image_gate.md`）。每份只记录该实验自身：标识、一次性配置、运行事实、
+  训练动态、验证结果、产物、观察与限制、待办、后续记录模板。
+  - 各实验文档**互相独立**：不写跨实验对比、不互相引用；要对比由读者自行并列阅读。
+  - 分工：治理文档记录跨实验的事实与索引，实验文档记录单实验详情。
 - 不再建立阶段门（G0/G1/G2/SAP/P2A/P2B 等）或步骤/runbook/readiness/gate 文档，也不为每个模型
   维护大 YAML；网络差异由 Trainer 类名与少量代码常量表达，结构参数继续来自 `nnUNetPlans.json`。
-- `docs/Research_Plan.md` 只记录研究问题、科学假设、研究内容、方法机制与研究边界，不写实验流程、
-  数据划分、训练参数、评价指标、运行命令、阶段门或实施步骤。
+- `docs/Research_Plan.md` 可以记录研究问题、科学假设、方法机制、研究边界，以及**预先定义的论文
+  报告指标**；不记录具体实验流程、数据划分、训练参数、运行命令或已发生的实验结果。已发生的结果
+  继续归 `Training_Log` / `Findings` / `experiments`。
 - 代码/架构变更记入 `docs/Development_Log.md`；训练与验证的运行事实记入 `docs/Training_Log.md`。
+
+## 7. 文件创建权限
+
+- **只有用户的明确命令才能创建新文件。** 代理不得自行、顺手或"顺便"创建任何文件，包括但不限于：
+  文档、说明、总结、报告、README、配置、YAML、脚本、测试、示例、模板、临时笔记。
+- 允许创建的唯一情形：用户在当前对话中**明确指示或明确授权**创建该文件（含内容与位置）。
+  用户要求实现某个功能时，只有该功能**必需**、且无法通过修改既有文件达成的文件才可以创建；
+  能改既有文件的一律改既有文件。
+- 新建文件的理由成立但用户未明确要求时，**先说明理由并征得同意**，不得先建后报。
+- 新建文件前先确认它不落在 `data/`、`workdir/`、`outputs/`、`third_party/` 内（见 §2）。
+- 本规则与 §6 一致：`docs/experiments/` 下的实验文档同样只能由用户命令创建。

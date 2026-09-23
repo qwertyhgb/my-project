@@ -280,6 +280,13 @@ def test_zonal_success_five_channels_nonorm(tmp_path):
         "0003": "noNorm",
         "0004": "noNorm",
     }
+    # description 术语：算法生成的 zonal membership，而非过强的 fractional occupancy
+    desc = doc["description"]
+    assert "zonal membership" in desc
+    assert "fractional occupancy" not in desc
+    assert "[0,1]" in desc and "noNorm" in desc
+    assert "not calibrated probabilities" in desc
+    assert "prior_source=zonal_yuan" in desc
     assert (ds_dir / "imagesTr" / "1_10_0003.nii.gz").exists()
     assert (ds_dir / "imagesTr" / "1_10_0004.nii.gz").exists()
 
@@ -425,4 +432,7 @@ def test_zonal_overwrite_regenerates_for_new_source(tmp_path):
     exp[2, 2, 2] = 1.0  # hevi 的 PZ
     got = _read_prior(ds / "imagesTr" / "1_10_0003.nii.gz").astype("float32")
     assert np.array_equal(got, exp)
-    assert "zonal_hevi" in json.loads((ds / "dataset.json").read_text())["description"]
+    desc = json.loads((ds / "dataset.json").read_text())["description"]
+    assert "prior_source=zonal_hevi" in desc
+    assert "zonal membership" in desc
+    assert "fractional occupancy" not in desc

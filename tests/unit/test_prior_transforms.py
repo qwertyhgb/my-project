@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from batchgeneratorsv2.transforms.intensity.brightness import (
     MultiplicativeBrightnessTransform,
@@ -18,7 +19,10 @@ from batchgeneratorsv2.transforms.spatial.spatial import SpatialTransform
 from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
 from batchgeneratorsv2.transforms.utils.random import RandomTransform
 
-from zonal_reliability_fusion.nnunet.trainers import nnUNetTrainerPICAI_AnatomyGate
+from zonal_reliability_fusion.nnunet.trainers import (
+    nnUNetTrainerPICAI_AnatomyGate,
+    nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+)
 from zonal_reliability_fusion.nnunet.transforms import (
     INTENSITY_TRANSFORM_TYPES,
     MRIChannelRestrictedTransform,
@@ -139,8 +143,15 @@ def test_mirror_transform_flips_all_channels_together():
 
 
 # --------------------------------------------------------------------------- anatomy Trainer 集成
-def test_anatomy_training_transforms_restrict_intensity_but_not_spatial():
-    transforms = nnUNetTrainerPICAI_AnatomyGate.get_training_transforms(
+@pytest.mark.parametrize(
+    "trainer",
+    [
+        nnUNetTrainerPICAI_AnatomyGate,
+        nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+    ],
+)
+def test_anatomy_training_transforms_restrict_intensity_but_not_spatial(trainer):
+    transforms = trainer.get_training_transforms(
         patch_size=np.array([8, 16, 16]),
         rotation_for_DA=(-0.1, 0.1),
         deep_supervision_scales=[[1, 1, 1], [0.5, 0.5, 0.5]],

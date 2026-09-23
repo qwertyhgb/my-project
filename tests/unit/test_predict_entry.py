@@ -1,6 +1,6 @@
 """项目预测入口的纯合成测试（不读取真实数据、不跑真实推理）。
 
-重点验证：三个 checkpoint 里的 ``trainer_name`` 都能被预测入口解析到项目 Trainer 类
+重点验证：每个 checkpoint 里的 ``trainer_name`` 都能被预测入口解析到项目 Trainer 类
 （即官方 ``initialize_from_trained_model_folder`` 内部调用的 ``recursive_find_python_class``
 在安装解析器后能返回项目类），而不是只测 ``build_network_architecture``。
 """
@@ -17,8 +17,27 @@ PREDICT_SCRIPT = PROJECT_ROOT / "scripts" / "inference" / "predict_nnunet.py"
 
 EXPECTED = {
     "nnUNetTrainerPICAI_FLCE_NoFFT": "nnUNetTrainerPICAI_FLCE_NoFFT",
+    "nnUNetTrainerPICAI_DiceCE_NoFFT": "nnUNetTrainerPICAI_DiceCE_NoFFT",
     "nnUNetTrainerPICAI_ImageGate": "nnUNetTrainerPICAI_ImageGate",
     "nnUNetTrainerPICAI_AnatomyGate": "nnUNetTrainerPICAI_AnatomyGate",
+    "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
+    ),
+    "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT"
+    ),
+    "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT"
+    ),
+    "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT"
+    ),
+    "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT"
+    ),
+    "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT"
+    ),
 }
 
 
@@ -34,24 +53,55 @@ def _load_predict_entry():
 def _project_classes() -> dict:
     from zonal_reliability_fusion.nnunet.trainers import (
         nnUNetTrainerPICAI_AnatomyGate,
+        nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_NoFFT,
+        nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FLCE_NoFFT,
+        nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_ImageGate,
+        nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
     )
 
     return {
         "nnUNetTrainerPICAI_FLCE_NoFFT": nnUNetTrainerPICAI_FLCE_NoFFT,
+        "nnUNetTrainerPICAI_DiceCE_NoFFT": nnUNetTrainerPICAI_DiceCE_NoFFT,
         "nnUNetTrainerPICAI_ImageGate": nnUNetTrainerPICAI_ImageGate,
         "nnUNetTrainerPICAI_AnatomyGate": nnUNetTrainerPICAI_AnatomyGate,
+        "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+        ),
+        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT
+        ),
+        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT
+        ),
+        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT
+        ),
+        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT
+        ),
+        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT
+        ),
     }
 
 
-def test_predict_entry_declares_three_trainer_names():
+def test_predict_entry_declares_every_project_trainer_name():
     module = _load_predict_entry()
     assert tuple(module.PROJECT_TRAINER_NAMES) == tuple(EXPECTED)
 
+    # PROJECT_TRAINER_NAMES 与实际注册表必须一致，避免漏加新 Trainer
+    from zonal_reliability_fusion.nnunet.trainers import PROJECT_TRAINERS
 
-def test_predict_entry_resolves_all_three_checkpoint_trainer_names():
-    """resolve_project_trainer 必须把三个 trainer_name 映射到对应项目类。"""
+    assert set(module.PROJECT_TRAINER_NAMES) == set(PROJECT_TRAINERS)
+
+
+def test_predict_entry_resolves_all_checkpoint_trainer_names():
+    """resolve_project_trainer 必须把每个 trainer_name 映射到对应项目类。"""
     module = _load_predict_entry()
     classes = _project_classes()
     for name in EXPECTED:

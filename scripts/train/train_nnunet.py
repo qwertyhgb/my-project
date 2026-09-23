@@ -2,16 +2,42 @@
 """统一 nnU-Net 训练入口：variant -> Trainer 类 -> nnU-Net 官方 run_training。
 
 本脚本**只做映射与调用**，不实现任何训练循环、checkpoint、滑窗推理或验证逻辑；这些都由
-固定版本 nnU-Net（third_party/nnUNet，v2.6.2）负责。三个 variant：
+固定版本 nnU-Net（third_party/nnUNet，v2.6.2）负责。十个 variant：
 
-    baseline      -> nnUNetTrainerPICAI_FLCE_NoFFT   原生 PlainConvUNet + 3 个 MRI 通道
-    image_gate    -> nnUNetTrainerPICAI_ImageGate    3 个 MRI 通道 + image reliability gate
-    anatomy_gate  -> nnUNetTrainerPICAI_AnatomyGate  5 通道（MRI + PZ/TZ）+ anatomy gate
+    baseline                     -> nnUNetTrainerPICAI_FLCE_NoFFT   原生 PlainConvUNet + 3 MRI + PI-CAI Focal+CE
+    optimized_baseline           -> nnUNetTrainerPICAI_DiceCE_NoFFT 原生 PlainConvUNet + 3 MRI + 原生 Dice+CE
+    image_gate                   -> nnUNetTrainerPICAI_ImageGate    3 MRI + image gate（Focal+CE，原生采样）
+    anatomy_gate                 -> nnUNetTrainerPICAI_AnatomyGate  5 通道（MRI + PZ/TZ）+ anatomy gate（Focal+CE，原生采样）
+    positive_sampling            -> nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+                                    FLCE baseline + 每批固定一个阳性病灶 patch（验证 loader 保持原生）
+    image_gate_positive_sampling -> nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT
+                                    image gate + 阳性病例采样（与 positive_sampling 配对 = RQ1）
+    anatomy_gate_positive_sampling -> nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT
+                                    anatomy gate + 阳性病例采样（与 image_gate_positive_sampling 配对 = RQ2）
+    feature_no_gate_positive_sampling -> nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT
+                                    三个独立浅层 stem + 投影，无 gate（隔离浅层编码/投影本身）
+    feature_image_gate_positive_sampling -> nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT
+                                    feature gate（只读 stem 特征）+ 阳性病例采样（与 feature_no_gate 配对）
+    feature_anatomy_gate_positive_sampling -> nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT
+                                    feature gate + PZ/TZ 条件（与 feature_image_gate 配对 = RQ4）
+
+`baseline` 与 `optimized_baseline` 是两个独立分支，唯一差异是损失；旧 `image_gate` /
+`anatomy_gate` 使用原生采样，与 `positive_sampling` **不能**直接用于「只归因于 gate」的比较
+（公平匹配见 `README.md`）。三个 `feature_*` 是同层级的一组条件（Research Plan §8.10），
+同样使用阳性病例采样。十个 Trainer 的类名互不相同，输出目录由 nnU-Net 按 Trainer
+类名自然隔离（不手工拼接路径）。
 
 用法（长任务由研究者本人运行）：
     python scripts/train/train_nnunet.py baseline 605 3d_fullres 0
+    python scripts/train/train_nnunet.py optimized_baseline 605 3d_fullres 0
     python scripts/train/train_nnunet.py image_gate 605 3d_fullres 0
     python scripts/train/train_nnunet.py anatomy_gate 606 3d_fullres 0
+    python scripts/train/train_nnunet.py positive_sampling 605 3d_fullres 0
+    python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0
+    python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0
+    python scripts/train/train_nnunet.py feature_no_gate_positive_sampling 605 3d_fullres 0
+    python scripts/train/train_nnunet.py feature_image_gate_positive_sampling 605 3d_fullres 0
+    python scripts/train/train_nnunet.py feature_anatomy_gate_positive_sampling 606 3d_fullres 0
 
 可选：--continue-training / --validation-only / --export-validation-probabilities / --device
 运行前须：cd 项目根目录 && conda activate lm && source scripts/env_nnunet.sh
@@ -21,11 +47,28 @@ from __future__ import annotations
 
 import argparse
 
-#: variant -> Trainer 类名（三个类名互不相同，nnU-Net 据此隔离 output folder）
+#: variant -> Trainer 类名（十个类名互不相同，nnU-Net 据此隔离 output folder）
 VARIANT_TO_TRAINER = {
     "baseline": "nnUNetTrainerPICAI_FLCE_NoFFT",
+    "optimized_baseline": "nnUNetTrainerPICAI_DiceCE_NoFFT",
     "image_gate": "nnUNetTrainerPICAI_ImageGate",
     "anatomy_gate": "nnUNetTrainerPICAI_AnatomyGate",
+    "positive_sampling": "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
+    "image_gate_positive_sampling": (
+        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT"
+    ),
+    "anatomy_gate_positive_sampling": (
+        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT"
+    ),
+    "feature_no_gate_positive_sampling": (
+        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT"
+    ),
+    "feature_image_gate_positive_sampling": (
+        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT"
+    ),
+    "feature_anatomy_gate_positive_sampling": (
+        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT"
+    ),
 }
 
 
@@ -37,7 +80,30 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument(
-        "variant", choices=sorted(VARIANT_TO_TRAINER), help="模型 variant"
+        "variant",
+        choices=sorted(VARIANT_TO_TRAINER),
+        help=(
+            "模型 variant："
+            "baseline = Dataset605 + 原生 PlainConvUNet + PI-CAI Focal+CE + NoFFT（已完成的 N0）；"
+            "optimized_baseline = Dataset605 + 原生 PlainConvUNet + 原生 Dice+CE + NoFFT"
+            "（相对 baseline 的单变量改动：只换损失，用户已中止）；"
+            "image_gate = Dataset605 + 3 MRI + image gate + PI-CAI Focal+CE（原生采样）；"
+            "anatomy_gate = Dataset606 + 5 通道（MRI + PZ/TZ）+ anatomy gate + PI-CAI Focal+CE"
+            "（原生采样）；"
+            "positive_sampling = Dataset605 + FLCE baseline + 每批固定一个阳性病灶 patch"
+            "（只改训练采样，验证 loader 保持原生）；"
+            "image_gate_positive_sampling = Dataset605 + image gate + 阳性病例采样"
+            "（与 positive_sampling 配对用于 RQ1 公平比较；尚未训练）；"
+            "anatomy_gate_positive_sampling = Dataset606 + anatomy gate + 阳性病例采样"
+            "（与 image_gate_positive_sampling 配对用于 RQ2 公平比较；尚未训练）；"
+            "feature_no_gate_positive_sampling = Dataset605 + 三个独立浅层 3×3×3 stem + "
+            "1×1×1 投影到 3 通道 + 原生 backbone（无 gate）+ 阳性病例采样；"
+            "feature_image_gate_positive_sampling = Dataset605 + 同上，但 feature gate 只读"
+            "拼接后的 stem 特征（末层零初始化，初始 S≡1）；"
+            "feature_anatomy_gate_positive_sampling = Dataset606 + 同上，但 feature gate 额外"
+            "以 clamp(0,1) 后的 PZ/TZ 为条件（PZ/TZ 不进入 stem/投影/backbone）"
+            "（三个 feature 条件尚未训练；README「浅层特征融合」有比较边界说明）"
+        ),
     )
     parser.add_argument(
         "dataset", help="数据集 ID 或名称，例如 605 / 606 / Dataset606_PICAI_Zonal"

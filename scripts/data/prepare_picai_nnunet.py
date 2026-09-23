@@ -9,8 +9,8 @@ subcommand：
 
     baseline  组织 Dataset605_PICAI（3 通道 T2W/ADC/HBV）的 nnU-Net raw 数据集（符号链接，不复制体素）。
     zonal     组织 Dataset606_PICAI_Zonal（5 通道：T2W/ADC/HBV + PZ/TZ）。MRI 与标签沿用符号链接；
-              PZ/TZ 由分区标签 zonal_<source>.nii.gz 派生为两个 [0,1] 连续占用通道（noNorm），
-              与对应病例 T2W 网格严格一致。
+              PZ/TZ 由分区标签 zonal_<source>.nii.gz 派生为两个算法生成的 [0,1] 分区隶属通道
+              （zonal membership；非校准概率、非几何体素占比；noNorm），与对应病例 T2W 网格严格一致。
     splits    把冻结划分 data/splits/picai_train_val_split.json 转换为某数据集的 splits_final.json（单 fold）。
 
 安全：默认不覆盖已有内容；``--resume`` 跳过/补齐，``--overwrite`` 强制重建；派生文件原子写入；
@@ -542,8 +542,9 @@ def cmd_zonal(args: argparse.Namespace) -> None:
         failures=failures,
         channel_names=channel_names,
         description=(
-            "PI-CAI csPCa (T2W/ADC/HBV) + PZ/TZ zonal prior channels "
-            f"(fractional occupancy [0,1], noNorm; prior_source=zonal_{args.zonal_source})"
+            "PI-CAI csPCa (T2W/ADC/HBV) + algorithm-derived PZ/TZ zonal membership channels "
+            "([0,1], not calibrated probabilities or geometric occupancy; noNorm; "
+            f"prior_source=zonal_{args.zonal_source})"
         ),
         required_suffixes=tuple(s for s, _, _ in MRI_CHANNELS)
         + tuple(s for s, _ in PRIOR_CHANNELS),
