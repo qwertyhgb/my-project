@@ -653,6 +653,35 @@ def test_combined_anatomy_zero_init_scales_and_prior_clamp(synthetic_arch):
     assert not torch.allclose(net.compute_gate_scales(x_swapped), scales_oob)
 
 
+def test_combined_anatomy_gate_synthetic_dry_run(synthetic_arch):
+    """``anatomy_gate_positive_sampling`` 的启动前 dry-run（纯合成、CPU、秒级）。
+
+    覆盖用户启动前检查清单中**尚未被其他测试覆盖**的一环：
+    5 通道网络在 ``deep_supervision=True`` 下 forward 出 DS 列表 -> 用项目 FLCE 算损失 ->
+    ``backward`` 成功，且梯度确实流过 gate（证明网络可训练、gate 在计算图中）。
+    不实例化 Trainer（那需要真实 plans/dataset.json 与预处理数据）；Trainer 接线由本文件
+    的 MRO / hook / 通道契约测试守护，checkpoint 目录冲突由磁盘状态检查负责。
+    """
+    cls = nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT
+    net = _build_combined(cls, synthetic_arch, 5, deep_supervision=True)
+    net.train()
+    torch.manual_seed(23)
+    x = torch.randn(2, 5, 8, 16, 16)
+    outputs = net(x)
+    assert isinstance(outputs, list) and len(outputs) == 2  # 合成 3-stage → 2 个分辨率
+    assert [tuple(out.shape[1:]) for out in outputs] == [(2, 8, 16, 16), (2, 4, 8, 8)]
+
+    target = torch.randint(0, 2, outputs[0].shape[:1] + outputs[0].shape[2:])
+    loss = PiCAIFocalCrossEntropyLoss()(outputs[0], target)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert net.gate.conv2.weight.grad is not None
+    assert torch.isfinite(net.gate.conv2.weight.grad).all()
+    assert any(param.grad is not None for param in net.backbone.parameters()), (
+        "backbone 未收到梯度"
+    )
+
+
 # ===========================================================================
 # 浅层序列特异特征融合（Research Plan §8.10）：三个 Trainer 的接线
 # ===========================================================================
