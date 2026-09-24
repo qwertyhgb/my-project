@@ -5,6 +5,46 @@
 
 ---
 
+## 2026-09-23 — 新增 Prostate158 独立外测输入准备与外测分割评估（仅代码 + 合成测试）
+
+为已完成的 Dataset605 模型增加 Prostate158 跨域外测管线。**本轮只实现代码与纯合成测试，
+未运行任何真实数据 audit / prepare / 推理 / 评估，未触碰正在训练的进程。**
+
+### 新增脚本
+
+- `scripts/data/prepare_prostate158_external.py`（CSV 驱动，两个子命令）：
+  - `audit` 只读：逐例核对 t2/adc/dwi 与主参考 `adc_tumor_reader1` 的存在/可读性、size / spacing /
+    origin / direction / 物理 FOV、标签 0/1 取值与阴阳性；分类为 `linkable` / `grid_mismatch`
+    （附 `resample_candidate` 与阻塞原因）/ `failed`。阴性必须由字段非空、可读、合法且**经验证
+    为空**的掩膜确定（如 `empty.nii.gz`）；CSV 空字段 / 缺文件 / 读取失败一律 fail-closed。
+  - `prepare` 在**独立新目录**（暂存目录构建后原子改名）生成 `images/<P158_{queue}_{ID}>_000x.nii.gz`：
+    默认仅相对软链接（创建前后校验 realpath 仍在允许根内；标签不进输入目录，只写
+    `external_input_manifest.json`）；`--allow-resample` 默认关闭，开启后仅对同一物理坐标系、
+    方向正交归一且 FOV 覆盖 T2 的 adc/dwi 用 SimpleITK 线性插值派生到 T2 网格（记录源/目标几何，
+    不做配准、不动原始文件）。派生 ID `P158_{test|train|valid}_{ID:03d}` 稳定唯一可反查 CSV 行；
+    绝对路径 / `..` 越界 / 重复 ID 拒绝；输出目录已存在非空拒绝覆盖；带 tqdm 与结构化结束汇总。
+  - 通道映射 `_0000=t2 / _0001=adc / _0002=dwi`，审计报告与清单都写入跨域声明
+    （Prostate158 DWI 不等同于训练用 HBV）。
+- `scripts/evaluate_external_segmentation.py`：独立外测评估入口，**不依赖** `validation/summary.json`。
+  读取 prepare 清单（含 `manifest_id`）、原始参考标签路径与独立预测目录；复用
+  `scripts/evaluate_segmentation.py` 的**纯函数**（importlib 加载，未改其 CLI / 指标 / 测试行为）。
+  - 指标口径与内部评估一致：阳性 macro Dice（完全漏分记 0）、median/micro Dice、体素召回、
+    仅阳性 precision、含阴性假阳的 overall precision、完全漏分（含空预测/错位拆分）、
+    阴性假阳病例数与体积分布；队列无阴性时这些指标记 `not_applicable`（null）而非 0。
+  - 预测与参考异网格时：仅在同一物理坐标系、方向正交归一且预测 FOV 覆盖参考网格时，把**派生
+    预测掩膜**最近邻映射到参考网格（原始参考从不重采样，不做数组索引强比），对齐事实逐例记录；
+    不可信即非零退出。多模型比较强制同清单版本 / 同读者 / 同病例集合 / 同参考路径，否则拒绝；
+    `--reader reader2` 只在有可核对 reader2 的子集上出敏感性结果，缺预测不回退 reader1。
+- `tests/unit/test_prostate158_external.py`：20 个纯合成 CPU 用例（tmp_path + 合成 NIfTI），
+  覆盖通道顺序与软链接目标、稳定 ID、越界/重复/缺通道/缺主标签、空字段阴性 fail-closed、
+  size 相同但 origin/direction 不同不算对齐、可验证重采样与不可对齐 fail-closed、完美/部分/漏分/
+  错位/阴性假阳指标、异网格最近邻评估对齐、读者不一致与集合不一致拒绝比较、输出拒覆盖、
+  失败不留半成品、原始输入与参考标签不被修改。
+- README 新增「Prostate158 独立外测」小节：audit → prepare（默认软链接）→ 现有 predict 入口
+  （固定模型/checkpoint）→ 独立外测评估的可复制命令，三队列分开，附成功判据与停止条件。
+
+---
+
 ## 2026-09-23 — 实现 Research Plan §8.10 的浅层序列特异特征融合候选（三个未训练条件）
 
 把计划 §8.10 的 `Feature no gate` / `Feature image gate` / `Feature anatomy gate` 落成三个新的、

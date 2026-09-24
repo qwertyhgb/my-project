@@ -360,6 +360,79 @@ python scripts/evaluate_segmentation.py \
   错误汇总（写明总条数，若截断会明确标注未显示条数）再非零退出，且**不发布**输出 JSON、不留临时
   文件；`--output` 指向已存在文件时拒绝覆盖；`--nsd-tolerance-mm` 必须是正的有限数（nan/inf 拒绝）。
 
+### Prostate158 独立外测（跨域外部数据；原始影像只读）
+
+用 Prostate158 在**不重训、不微调、不新建 Dataset ID** 的前提下外测已完成的 Dataset605 模型。
+通道映射固定 `_0000=t2 / _0001=adc / _0002=dwi`；**Prostate158 DWI 只是第三通道（训练时为
+HBV）的跨域输入，不宣称与 HBV 等价**。原始 Prostate158 影像与标注绝不修改：默认只在独立目录
+建相对软链接；只有三通道网格不一致且物理坐标关系可信、覆盖完整，并**显式**加
+`--allow-resample` 时，才在派生目录内对 adc/dwi 做线性重采样（T2 为参考网格；绝不自动配准）。
+主参考固定 `adc_tumor_reader1`；`adc_tumor_reader2` 仅在可核对子集上做单独的读者敏感性分析。
+**official test / 原作者 train / valid 三队列分开报告，不合并。** 以下均为长任务，由研究者运行。
+
+```bash
+# 0) 环境（每条命令前都应处于此状态）
+cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
+
+P158=/opt/data/private/lm/data/Prostate/Prostate158
+MODEL=outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres
+# 注意：先固定模型与 checkpoint（默认 checkpoint_final.pth），看到 Prostate158 结果后不得更换。
+
+# 1) official test 只读审计（不生成推理输入；逐例 header/标签/网格，进度条 + 结束汇总）
+python scripts/data/prepare_prostate158_external.py audit \
+    --csv  "$P158/test/prostate158_test/test.csv" --queue test \
+    --output outputs/reports/prostate158_audit_test.json
+# 成功判据：退出码 0，汇总 failed=0；查看 linkable / grid_mismatch(resample_candidate) 计数。
+# 停止条件：failed>0（退出码 2）时先修数据问题；有 grid_mismatch 时**先停下来看审计明细再决定**，
+#           绝不直接上 --allow-resample。
+
+# 2) 默认 prepare：仅 linkable 病例，软链接到独立新目录（标签不进输入目录，只写清单）
+python scripts/data/prepare_prostate158_external.py prepare \
+    --csv  "$P158/test/prostate158_test/test.csv" --queue test \
+    --output-dir workdir/external/prostate158_test
+# 成功判据：退出码 0，images/ 下每例三个 _0000/_0001/_0002 软链接，external_input_manifest.json
+#           记录参考标签路径与 skipped_cases；输出目录已存在非空会被拒绝（换新目录，勿加覆盖）。
+# 仅当审计确认所有 grid_mismatch 都 resample_candidate=true 且你明确接受派生重采样时，
+# 才改用：上条命令末尾加 --allow-resample（派生真实文件写入同一独立目录，原始影像不动）。
+
+# 3) 用现有官方预测入口推理（不改滑窗；nnU-Net 按 plans 自动预处理/归一化）
+python scripts/inference/predict_nnunet.py \
+    -i workdir/external/prostate158_test/images \
+    -o outputs/external_predictions/prostate158_test/positive_sampling \
+    -m "$MODEL" -f 0 -device cuda
+# 成功判据：每个病例生成一个 <P158_test_NNN>.nii.gz；数量与 manifest cases 一致。
+
+# 4) 独立外测分割评估（清单驱动，不读/不写 validation/summary.json；只评分割，无 AUROC/FROC）
+python scripts/evaluate_external_segmentation.py \
+    --manifest workdir/external/prostate158_test/external_input_manifest.json \
+    --model positive_sampling=outputs/external_predictions/prostate158_test/positive_sampling \
+    --reader reader1 \
+    --output outputs/reports/external_prostate158_test_positive_sampling_reader1.json \
+    --note "Dataset605 FLCE_PositiveSampling, checkpoint_final, Prostate158 official test (cross-domain channel3=DWI)"
+# 成功判据：退出码 0；输出含阳性 macro/median/micro Dice、召回、两种 precision、完全漏分、
+#           阴性假阳病例数/体积；evaluation_grid_alignment 记录是否发生最近邻评估对齐。
+# 停止条件：病例缺失、标签非 0/1、几何不可信或 FOV 不覆盖 → 非零退出且不发布 JSON。
+# 多模型比较：重复 --model name=目录；病例集合/读者/清单版本不一致会被拒绝（不在交集上退化）。
+
+# 5) 读者敏感性（仅对有 adc_tumor_reader2 的子集；不与 reader1 混组）
+python scripts/evaluate_external_segmentation.py \
+    --manifest workdir/external/prostate158_test/external_input_manifest.json \
+    --model positive_sampling=outputs/external_predictions/prostate158_test/positive_sampling \
+    --reader reader2 \
+    --output outputs/reports/external_prostate158_test_positive_sampling_reader2.json
+
+# 6) 原作者 train / valid 队列（阴性病例主要在这里；只做阴性假阳分析时同样分开跑）
+python scripts/data/prepare_prostate158_external.py audit  --csv "$P158/train/prostate158_train/train.csv" --queue train --output outputs/reports/prostate158_audit_train.json
+python scripts/data/prepare_prostate158_external.py prepare --csv "$P158/train/prostate158_train/train.csv" --queue train --output-dir workdir/external/prostate158_train
+python scripts/inference/predict_nnunet.py -i workdir/external/prostate158_train/images -o outputs/external_predictions/prostate158_train/positive_sampling -m "$MODEL" -f 0 -device cuda
+python scripts/evaluate_external_segmentation.py \
+    --manifest workdir/external/prostate158_train/external_input_manifest.json \
+    --model positive_sampling=outputs/external_predictions/prostate158_train/positive_sampling \
+    --output outputs/reports/external_prostate158_train_positive_sampling.json
+# valid 队列把上面的 train 全部替换为 valid（CSV: train/prostate158_train/valid.csv）。
+# official test 与 train/valid 的结果**不得合并后当作官方测试集结果引用**。
+```
+
 ## 输出目录
 
 以下目录由 Trainer 类名自动隔离，互不覆盖（不要手工拼接输出路径）：
