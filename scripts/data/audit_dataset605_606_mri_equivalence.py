@@ -130,16 +130,29 @@ def missing_preprocessed_files(case_folder: Path, case_identifier: str) -> list[
 # --------------------------------------------------------------------------- 元数据
 
 
-def _load_json(path: Path) -> dict:
+def _load_json(path: Path):
+    """读取 JSON 文件，**不限定顶层类型**：``splits_final.json`` 顶层是数组，``dataset.json`` 是对象。
+
+    顶层类型由各自的比较函数校验（``compare_splits`` 要求非空 list，``compare_metadata`` 由
+    调用方保证拿到 dict），这里只负责「存在、可解析」。
+    """
     if not path.is_file():
         raise AuditError(f"缺少必需文件：{path}")
     try:
         with path.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
+            return json.load(handle)
     except Exception as exc:  # 统一转为 AuditError，避免静默继续
         raise AuditError(f"无法解析 {path}: {exc}") from exc
+
+
+def _load_json_object(path: Path) -> dict:
+    """读取并要求顶层为 JSON 对象（``dataset.json`` 这类）。"""
+    payload = _load_json(path)
     if not isinstance(payload, dict):
-        raise AuditError(f"{path} 的内容不是 JSON 对象")
+        raise AuditError(
+            f"{path} 的内容不是 JSON 对象（顶层类型 {type(payload).__name__}），"
+            "无法作为 dataset.json 使用。"
+        )
     return payload
 
 
@@ -768,8 +781,8 @@ def main(argv: list[str] | None = None) -> int:
     source_606 = PreprocessedCaseSource(dir_606, args.configuration)
     splits_605 = _load_json(dir_605 / "splits_final.json")
     splits_606 = _load_json(dir_606 / "splits_final.json")
-    dataset_json_605 = _load_json(dir_605 / "dataset.json")
-    dataset_json_606 = _load_json(dir_606 / "dataset.json")
+    dataset_json_605 = _load_json_object(dir_605 / "dataset.json")
+    dataset_json_606 = _load_json_object(dir_606 / "dataset.json")
 
     report = run_audit(
         source_605=source_605,

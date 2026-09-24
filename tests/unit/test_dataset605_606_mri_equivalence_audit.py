@@ -576,3 +576,133 @@ def test_cli_parser_defaults() -> None:
     assert args.max_cases is None
     assert args.overwrite is False
     assert args.no_progress is False
+
+
+# --------------------------------------------- 真实文件路径（磁盘上的合成预处理目录）
+
+
+def test_load_json_accepts_top_level_array(tmp_path: Path) -> None:
+    """``splits_final.json`` 顶层是数组：``_load_json`` 不得要求 JSON 对象。"""
+    path = tmp_path / "splits_final.json"
+    path.write_text(json.dumps([{"train": ["a"], "val": ["b"]}]), encoding="utf-8")
+    assert isinstance(audit._load_json(path), list)
+    object_path = tmp_path / "dataset.json"
+    object_path.write_text(json.dumps({"a": 1}), encoding="utf-8")
+    assert isinstance(audit._load_json(object_path), dict)
+    with pytest.raises(audit.AuditError):
+        audit._load_json_object(path)  # dataset.json 必须是对象
+
+
+def _write_preprocessed_dataset(
+    root: Path,
+    name: str,
+    cases: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> Path:
+    """用 nnU-Net 自己的 ``save_case`` 写真实格式的 ``.b2nd`` / ``.pkl``（磁盘端到端测试用）。"""
+    from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetBlosc2
+
+    dataset_dir = root / name
+    case_folder = dataset_dir / "nnUNetPlans_3d_fullres"
+    case_folder.mkdir(parents=True)
+    for case_identifier, (data, seg) in cases.items():
+        nnUNetDatasetBlosc2.save_case(
+            data,
+            seg,
+            {"case_identifier": case_identifier},
+            str(case_folder / case_identifier),
+        )
+    return dataset_dir
+
+
+def _run_cli_on_disk(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    cases_605: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    cases_606: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+):
+    """在磁盘上造出完整预处理目录 + dataset.json/splits_final.json，然后跑 ``main()``。"""
+    root = tmp_path / "nnUNet_preprocessed"
+    dataset605 = _write_preprocessed_dataset(
+        root, "Dataset605_PICAI", _cases_605() if cases_605 is None else cases_605
+    )
+    dataset606 = _write_preprocessed_dataset(
+        root, "Dataset606_PICAI_Zonal", _cases_606() if cases_606 is None else cases_606
+    )
+    for dataset_dir, dataset_json in (
+        (dataset605, _dataset_json_605()),
+        (dataset606, _dataset_json_606()),
+    ):
+        (dataset_dir / "dataset.json").write_text(
+            json.dumps(dataset_json), encoding="utf-8"
+        )
+        (dataset_dir / "splits_final.json").write_text(
+            json.dumps(_splits()), encoding="utf-8"
+        )
+    monkeypatch.setenv("nnUNet_preprocessed", str(root))
+    output = tmp_path / "report.json"
+    exit_code = audit.main(["--output", str(output), "--no-progress"])
+    return exit_code, output, dataset605, dataset606
+
+
+def test_cli_end_to_end_pass_on_real_b2nd_files(tmp_path: Path, monkeypatch) -> None:
+    """端到端：磁盘上的合成预处理目录（真实 .b2nd/.pkl）→ PASS + 报告落盘。"""
+    exit_code, output, dataset605, dataset606 = _run_cli_on_disk(tmp_path, monkeypatch)
+
+    assert exit_code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == audit.STATUS_PASS
+    assert report["n_cases_605"] == len(CASE_IDS)
+    assert report["n_cases_606"] == len(CASE_IDS)
+    assert report["n_cases_checked"] == len(CASE_IDS)
+    assert report["n_cases_mismatch"] == 0
+    assert report["inputs_modified"] is False
+    for name in audit.MRI_CHANNEL_NAMES:
+        assert report["per_channel"][name]["exact_equal_cases"] == len(CASE_IDS)
+    # 真实读取路径走的是 nnU-Net 自己的 dataset 类，报告须记录实际目录
+    assert report["case_folder_605"] == str(dataset605 / "nnUNetPlans_3d_fullres")
+    assert report["case_folder_606"] == str(dataset606 / "nnUNetPlans_3d_fullres")
+    assert report["splits"]["fold_0"]["train_set_equal"] is True
+
+
+def test_cli_end_to_end_fail_still_writes_report(tmp_path: Path, monkeypatch) -> None:
+    """端到端：单个 voxel 不同 → FAIL、退出码 2，报告仍写出并含 mismatch 明细。"""
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_c"]
+    data = data.copy()
+    data[1, 0, 0, 0] += 0.25
+    cases_606["case_c"] = (data, seg)
+
+    exit_code, output, _, _ = _run_cli_on_disk(
+        tmp_path, monkeypatch, cases_606=cases_606
+    )
+
+    assert exit_code == 2
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == audit.STATUS_FAIL
+    assert report["per_channel"]["ADC"]["mismatch_cases"] == 1
+    detail = [item for item in report["mismatched_cases"] if item["channel"] == "ADC"]
+    assert detail and detail[0]["case_id"] == "case_c"
+    assert detail[0]["unequal_voxels"] == 1
+
+
+def test_cli_end_to_end_rejects_non_object_dataset_json(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """dataset.json 顶层不是对象时必须 fail-closed（真实报错路径）。"""
+    root = tmp_path / "nnUNet_preprocessed"
+    dataset_dir = _write_preprocessed_dataset(root, "Dataset605_PICAI", _cases_605())
+    _write_preprocessed_dataset(root, "Dataset606_PICAI_Zonal", _cases_606())
+    (dataset_dir / "dataset.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    (dataset_dir / "splits_final.json").write_text(
+        json.dumps(_splits()), encoding="utf-8"
+    )
+    (root / "Dataset606_PICAI_Zonal" / "dataset.json").write_text(
+        json.dumps(_dataset_json_606()), encoding="utf-8"
+    )
+    (root / "Dataset606_PICAI_Zonal" / "splits_final.json").write_text(
+        json.dumps(_splits()), encoding="utf-8"
+    )
+    monkeypatch.setenv("nnUNet_preprocessed", str(root))
+    with pytest.raises(audit.AuditError):
+        audit.main(["--output", str(tmp_path / "report.json"), "--no-progress"])
