@@ -79,7 +79,7 @@
 | image_gate | Dataset605 / 3d_fullres / 0 | 已完成 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/` |
 | anatomy_gate | Dataset606 / 3d_fullres / 0 | 数据已就绪，训练未运行 | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
 | positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
@@ -150,8 +150,36 @@
   评估口径不同的打分方式，**不得**据此单独声称某个机制的收益。
 - 详细记录：`docs/experiments/positive_sampling.md`
 
-### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
+### image_gate_positive_sampling（**已完成**：训练 + actual validation）
 
+- variant / Trainer：`image_gate_positive_sampling` → `nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT`
+- 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0（1277 train / 223 val，与
+  `positive_sampling` 同一划分）
+- 设计：与 `positive_sampling` **唯一**差异是输入级 3→8→3 image gate（末层零初始化）；
+  RQ1 的公平匹配臂
+- 命令：`python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0 --device cuda`
+- 日志：
+  `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/training_log_2026_9_23_06_55_30.txt`
+- 训练：2026-09-23 06:55 UTC → 22:35 UTC（**15 h 40 min**）；**1000 epoch 全部完成**，
+  `checkpoint_final.pth` 已生成；无 warning / error / NaN
+- 验证：2026-09-23 22:36 → 22:47 UTC（约 11 min）；223 例；使用 `checkpoint_final.pth`（epoch 999）
+- **nnU-Net Mean Validation Dice = 0.20935**（`foreground_mean.Dice` = 0.20934826；同文件 IoU
+  = 0.14883646）；该数字的分母为 **90 例** = 63 阳性 + **27 例假阳阴性**（133 例真阴记 NaN 被剔除）
+- 阳性病例口径（与 `positive_sampling` 同口径）：macro Dice **0.299069**（median 0.288758）、
+  micro Dice **0.539691**、体素召回 **0.398901**、`positive_voxel_precision` **0.834071**、
+  `all_prediction_voxel_precision` **0.746372**
+- 检出结构：阳性 63 例中有任意重叠 **40 例**（63.5%）、完全无重叠 **23 例**（其中 21 例整例无预测）；
+  阴性 160 例中 27 例出现预测（假阳体素合计 32,575）
+- 与 `positive_sampling` 的配对比较（RQ1）登记在 `docs/Findings.md` §3.10：配对均值 delta
+  = −0.0077、CI95 含 0，**未观察到明确的分割增量效用**，但工作点更保守（precision 升高、
+  假阳减少、漏检略增）
+- validation probabilities：**未导出**
+- checkpoint（**勿删除/覆盖**）：`checkpoint_final.pth`、`checkpoint_best.pth`
+- 输出目录（勿删除/覆盖）：
+  `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
+- 详细记录：`docs/experiments/image_gate_positive_sampling.md`
+
+### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
 - variant / Trainer：
   `feature_no_gate_positive_sampling` → `nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT`；
   `feature_image_gate_positive_sampling` → `nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT`；
@@ -173,6 +201,11 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
 - `workdir/nnUNet_preprocessed/Dataset606_PICAI_Zonal/`：含 `nnUNetPlans.json` 与 `nnUNetPlans_3d_fullres`
 - `splits_final.json`（raw 与 preprocessed 各一份）：1 fold，**train=1277，val=223**
 - anatomy_gate：数据已就绪，**训练未运行**
+- **Dataset605 ↔ Dataset606 前三 MRI 通道逐数组一致性审计**：工具已实现
+  （`scripts/data/audit_dataset605_606_mri_equivalence.py`，含纯合成单元测试），
+  **真实数据审计尚未执行** —— 启动 `anatomy_gate_positive_sampling` 前必须先由研究者本人运行并取得
+  `status=MRI_ARRAY_AUDIT_PASS`。配置层面（split 集合与顺序、spacing、patch/batch、前三个 MRI
+  通道的 normalization 与 per-channel intensity fingerprint）已核对一致，但这不等于数组一致。
 
 ---
 

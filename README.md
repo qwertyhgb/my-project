@@ -91,7 +91,7 @@ weight/bias 零初始化；`weights = softmax(logits,1)`（W，通道和为 1，
   1000 epoch 全部完成 → 22:42 UTC actual validation 完成）。运行事实与真实数字见
   `docs/Training_Log.md`。
 
-#### 公平匹配的 gate 组合（`image_gate_positive_sampling` / `anatomy_gate_positive_sampling`，**代码已实现，尚未训练**）
+#### 公平匹配的 gate 组合（`image_gate_positive_sampling` **已完成训练 + validation**；`anatomy_gate_positive_sampling` **代码已实现，尚未训练**）
 
 Research Plan 规定核心门控比较必须固定损失、病例/patch 采样、增强、optimizer、LR scheduler、
 split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 与原生采样）本身仍是**原生采样
@@ -115,7 +115,14 @@ split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 
   （split / spacing / patch size / batch size / 前三个 MRI 通道 normalization 与 fingerprint）
   已核对一致（见下），但在完成前三个 MRI 通道的**逐数组一致性审计**之前，不能宣称唯一差异
   是 PZ/TZ；
-- **尚未训练**：本节只登记代码与命令，不含任何训练结果。
+- **`image_gate_positive_sampling` 已完成训练 + actual validation**（2026-09-23 06:55 → 22:47 UTC；
+  1000 epoch；223 例 validation 已落盘）：nnU-Net `foreground_mean.Dice` = 0.20935、阳性病例
+  macro Dice 0.2991、micro Dice 0.5397、`positive_voxel_precision` 0.8341；**RQ1 配对比较的结论、
+  全部指标与复现命令见 `docs/Findings.md` §3.10**（配对均值 delta −0.0077、CI95 含 0 ⇒
+  本次单次运行**未观察到明确的分割增量效用**，但工作点更保守：precision ↑、假阳 ↓、漏检略增）；
+  运行事实见 `docs/Training_Log.md`，逐实验细节见 `docs/experiments/image_gate_positive_sampling.md`；
+- **`anatomy_gate_positive_sampling` 尚未训练**：其启动前置条件是 Dataset605/606 前三 MRI 通道的
+  真实数据逐数组审计取得 `MRI_ARRAY_AUDIT_PASS`（工具与命令见下节）。
 
 #### 浅层特征融合（`feature_*_positive_sampling`，**代码已实现，三个都尚未训练**）
 
@@ -178,11 +185,31 @@ validation 与滑窗推理，构成一组同层级比较：
 
 #### Dataset605 与 Dataset606 的一致性边界
 
-配置层面已核对一致：冻结 split（1277 train / 223 val）、`3d_fullres` 的 spacing `[3.0, 0.5, 0.5]`、
-patch size `[16, 320, 320]`、batch size 2、前三个 MRI 通道的 normalization scheme 与 per-channel
-强度 fingerprint 均一致；差异仅在 Dataset606 新增的第 4/5 通道（PZ/TZ，`noNorm`）。
+配置层面已核对一致：冻结 split（1277 train / 223 val，**具体病例 ID 与顺序逐 fold 相同**）、
+`3d_fullres` 的 spacing `[3.0, 0.5, 0.5]`、patch size `[16, 320, 320]`、batch size 2、前三个 MRI
+通道的 normalization scheme 与 per-channel 强度 fingerprint 均一致；两个 `nnUNetPlans.json` 的
+全部差异只有 `dataset_name`、新增的第 4/5 通道（PZ/TZ，`noNorm`）及其两条 per-channel 属性。
 但**这不等同于完成真实数据逐数组审计**：尚未对两数据集的 MRI 体素做逐数组比较，也没有重新
 物化 Dataset606。任何把两个数据集的结果并列解释为「只差 PZ/TZ 通道」的结论都必须先完成该审计。
+
+#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置，**真实数据尚未执行**）
+
+工具：`scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed，含纯合成单元测试）。
+它逐病例比较预处理后前三个 MRI 通道（T2W/ADC/HBV）的 `np.array_equal` 与浮点差值统计，并审计
+病例集合、`splits_final.json`、lesion label；**PZ/TZ 不参与数值一致性判定**（仅记录取值范围）。
+不修复数据、不重建 Dataset606、不重新 preprocessing。
+
+```bash
+cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
+
+python scripts/data/audit_dataset605_606_mri_equivalence.py \
+    --output outputs/reports/dataset605_606_mri_equivalence_audit.json
+```
+
+成功判据：退出码 `0`、`status=MRI_ARRAY_AUDIT_PASS`、`n_cases_mismatch=0`、
+`per_channel.*.exact_equal_cases = n_cases_checked`（PASS 之外退出码为非零，报告仍会写出）。
+报告已存在时默认拒绝覆盖，需显式加 `--overwrite`。`--max-cases N` 只用于烟雾测试，此时 status
+恒为 `MRI_ARRAY_AUDIT_PARTIAL`，**永不判 PASS**。
 
 #### 为什么暂时不采用 DiceTopK / batch_dice=true / 类别权重 / patch size 或优化器修改
 
@@ -222,8 +249,10 @@ python scripts/train/train_nnunet.py optimized_baseline 605 3d_fullres 0  # 原�
 python scripts/train/train_nnunet.py image_gate 605 3d_fullres 0
 python scripts/train/train_nnunet.py anatomy_gate 606 3d_fullres 0        # 需先准备并预处理 Dataset606
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py positive_sampling 605 3d_fullres 0
-# 公平匹配的 gate 组合（尚未训练；与 positive_sampling 共用 FLCE + 阳性病例采样）
+# 公平匹配的 gate 组合（均与 positive_sampling 共用 FLCE + 阳性病例采样）
+# image_gate_positive_sampling 已完成（2026-09-23，见 Training_Log / Findings §3.10）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0
+# anatomy_gate_positive_sampling 尚未训练；启动前必须先做 Dataset605/606 MRI 数组审计（见「一致性边界」）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0
 # 浅层特征融合三条件（尚未训练；同一 stem/投影/损失/采样，见「浅层特征融合」小节）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_no_gate_positive_sampling 605 3d_fullres 0
@@ -274,7 +303,8 @@ python scripts/inference/predict_nnunet.py \
     -f 0 -device cuda
 ```
 
-`-m` 换成对应 variant 的输出目录即可（image_gate / anatomy_gate / positive_sampling）。该入口在
+`-m` 换成对应 variant 的输出目录即可（image_gate / anatomy_gate / positive_sampling /
+image_gate_positive_sampling）。该入口在
 进程内把 checkpoint 的
 `trainer_name` 映射到项目 Trainer 类，随后调用 nnU-Net 官方 `nnUNetPredictor`；滑窗推理与导出全部
 沿用官方实现，未自写推理器，未修改 `third_party/nnUNet`。其余参数与官方
@@ -446,8 +476,9 @@ python scripts/evaluate_external_segmentation.py \
 - anatomy_gate：`outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/`
 - positive_sampling（**已完成**：训练 2026-09-22 07:16 → 22:31 UTC，validation 22:42 UTC 完成）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
-- image_gate_positive_sampling / anatomy_gate_positive_sampling（代码已实现，**尚未训练**，目录尚未创建）：
-  `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`、
+- image_gate_positive_sampling（**已完成**：训练 2026-09-23 06:55 → 22:35 UTC，validation 22:47 UTC 完成）：
+  `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
+- anatomy_gate_positive_sampling（代码已实现，**尚未训练**，目录尚未创建）：
   `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - feature_no_gate_positive_sampling / feature_image_gate_positive_sampling /
   feature_anatomy_gate_positive_sampling（代码已实现，**尚未训练**，目录尚未创建）：

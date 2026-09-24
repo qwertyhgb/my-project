@@ -5,7 +5,74 @@
 
 ---
 
-## 2026-09-23 — 新增 Prostate158 独立外测输入准备与外测分割评估（仅代码 + 合成测试）
+## 2026-09-24 — Dataset605/606 MRI 数组审计工具 + Anatomy Gate 启动前校验与文档同步
+
+为 `anatomy_gate_positive_sampling`（RQ2 公平匹配臂）的正式启动做前置准备：**只新增一个只读审计
+工具与其测试、补齐启动前 dry-run 测试、同步文档**；未修改模型数学形式、损失、采样算法、
+optimizer / LR / epoch / 增强 / patch / batch / deep supervision，未新增 research question，
+未启动任何 1000 epoch 训练。
+
+### 新增
+
+- `scripts/data/audit_dataset605_606_mri_equivalence.py`：Dataset605 与 Dataset606 **预处理后**
+  前三个 MRI 通道（`0000`/`0001`/`0002` = T2W/ADC/HBV）的逐数组一致性审计。只读、fail-closed，
+  通过 nnU-Net 自己的 `infer_dataset_class` + `load_case` 读取（与训练看到的数组完全一致，不自行
+  解析 `.b2nd`）。逐例检查：array shape / 通道数 / dtype / NaN·Inf / 三个 MRI 通道的
+  `np.array_equal` 与浮点差值统计（max、mean、unequal voxels、fraction）/ lesion label
+  （shape、dtype、唯一值、逐值相等）；并审计病例集合、`splits_final.json`（fold 数、逐 fold
+  train/val 的集合与顺序、交叉污染）与 `dataset.json`（前三个通道名、labels 定义）。
+  **PZ/TZ 不参与数值一致性判定**（只记录取值范围作为信息性诊断）。status 取值
+  `MRI_ARRAY_AUDIT_PASS` / `MRI_ARRAY_AUDIT_FAIL` / `MRI_ARRAY_AUDIT_PARTIAL`（用了
+  `--max-cases` 的子集运行**永不判 PASS**），报告落
+  `outputs/reports/dataset605_606_mri_equivalence_audit.json`，已存在时默认拒绝覆盖。
+  不修复数据、不重建 Dataset606、不重新 preprocessing（`inputs_modified: false` 写入报告）。
+  自带 tqdm 进度与结束汇总（成功/失败/耗时/路径）。
+- `tests/unit/test_dataset605_606_mri_equivalence_audit.py`：21 项纯合成 CPU 测试（`tmp_path` +
+  内存数组 + 占位文件，不读真实医学数据），覆盖完全一致→PASS、单 voxel 不同→FAIL、shape /
+  通道数 / dtype / 标签越界 / NaN·Inf →FAIL、缺病例→FAIL、缺预处理文件→FAIL、split 集合不同→FAIL
+  而**仅顺序不同不判 FAIL**（记录顺序差异）、fold 数不同→FAIL、lesion label 不同→FAIL、
+  PZ/TZ 完全不参与前三 MRI 判定、报告可 JSON 序列化且含 mismatch 明细、**输入文件与输入数组
+  逐字节/逐值未被修改**、`--max-cases` 子集恒为 PARTIAL、CLI 在缺 `nnUNet_preprocessed` 时
+  fail-closed、报告已存在时拒绝覆盖。
+- `tests/unit/test_nnunet_trainers.py` 新增 `test_combined_anatomy_gate_synthetic_dry_run`：
+  `anatomy_gate_positive_sampling` 的启动前 dry-run —— 5 通道网络在 `deep_supervision=True` 下
+  forward 出 DS 列表（合成 3-stage → 2 个分辨率）→ 项目 FLCE 算损失 → `backward` 成功，且 gate 与
+  backbone 都收到有限梯度。
+
+### 修复（审计工具自身，由测试与真实接线验证发现）
+
+- 审计脚本原先只用「case 集合 / split / label / 各 MRI 通道聚合」推导 status，**会漏掉逐例结构性
+  失配**（通道数、空间形状、dtype、NaN/Inf、越界标签等只进入 `mismatched_cases` 而未进入
+  `problems`）→ 会产生 fail-open 的 `PASS`。现改为：只要 `n_cases_checked − n_cases_exact_equal > 0`
+  即记 FAIL 并写出结构性不一致条目；该缺陷由 `test_channel_count_difference_fails` 等测试暴露。
+- 元数据检查原先假设 `dataset.json` 的通道键是 `"0"/"1"/"2"`，但**真实预处理 dataset.json 用的是
+  `"0000"/"0001"/...`** ⇒ 会把键格式差异误判成「前三个通道名不匹配」而使审计 FAIL。现按通道序号
+  排序后取前三个，兼容两种键格式；已用真实 `workdir/nnUNet_preprocessed/*/dataset.json` 复验通过
+  （`mri_channel_names_equal=True`，`T2W/ADC/HBV`）。新增
+  `test_zero_padded_channel_keys_pass` 守护该格式。该缺陷由**不读数组的真实路径接线验证**发现。
+
+### 文档同步
+
+- `docs/Training_Log.md`：`image_gate_positive_sampling` 从「未运行」改为「已完成」，补齐训练 /
+  validation 时间、关键指标与产物路径；登记审计工具「tooling ready, real-data audit not yet
+  executed」。
+- `docs/Findings.md`：新增 §3.10「RQ1 公平匹配比较」（配对 delta、CI95、改善/平局/变差计数、
+  新增/丢失重叠、阴性假阳与假阳体素、复现命令），§1 / §2 / §3.4 / §3.5 / §3.6 / §4 / §5.2 / §5.3 /
+  §6 / §7 同步为四个 run 的口径；结论按证据克制表述（无明确增量、工作点更保守），明确禁止
+  「gate 无效 / 证明 gate 没有作用」等表述。
+- `README.md`：variant 状态与输出目录、命令注释、一致性边界与新增审计命令段落同步。
+- `docs/Findings.md` §3.2：删除小病灶分箱表里 `(< 0.75 mL)` 等**不可换算**的物理体积标注，改为
+  纯体素口径 + 单位限制说明（与研究者在 `docs/experiments/image_gate_positive_sampling.md` 中
+  对同一问题的更正一致：逐例导出几何不同，体素≠统一 mm³）。
+- `docs/Research_Plan.md` **未修改**（本轮实现与其表述不冲突）。
+
+### 未执行 / 未改动
+
+- **真实数据审计未执行**（需研究者本人运行，见 README「Dataset605 ↔ Dataset606 前三 MRI 通道
+  逐数组审计」）；`anatomy_gate_positive_sampling` 正式训练未启动。
+- 未删除、未覆盖任何既有产物；Prostate158 管线保持不动、未扩大。
+
+---
 
 为已完成的 Dataset605 模型增加 Prostate158 跨域外测管线。**本轮只实现代码与纯合成测试，
 未运行任何真实数据 audit / prepare / 推理 / 评估，未触碰正在训练的进程。**
