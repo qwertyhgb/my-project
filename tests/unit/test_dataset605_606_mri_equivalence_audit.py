@@ -1,9 +1,18 @@
 """Dataset605/606 前三 MRI 通道审计脚本的纯合成单元测试。
 
 只使用 ``tmp_path`` 与内存中的合成数组（占位文件仅用于存在性检查），**不读取任何真实医学数据**，
-也不触碰 ``workdir/`` 与 ``outputs/``。覆盖：完全一致→PASS、单 voxel/形状/缺病例/split/label/
-NaN/Inf/dtype/标签越界→FAIL、PZ/TZ 不参与前三 MRI 数值判定、报告含 mismatch 明细、输入文件不被修改、
-``--max-cases`` 只跑子集时永不判 PASS、CLI 的覆盖保护与环境变量 fail-closed。
+也不触碰 ``workdir/`` 与 ``outputs/``。
+
+覆盖的语义核心：**「原始 seg 逐值相同」与「进入训练损失的有效标签相同」是两个不同的判定**。
+
+- 预处理 seg 的合法原始取值是 {-1, 0, 1}（-1 来自 nnU-Net ``crop_to_nonzero`` 的裁剪填充）；
+- 两侧 seg 完全相同（即使都含 -1）→ raw_identical，PASS；
+- 同一位置 -1 与 0 不同 → 原始差异记为**信息性**（有效标签相同，不影响 PASS）；
+- 0↔1、-1↔1、{-1,0,1} 之外的取值（含 2、NaN、Inf、无符号回绕值 255）、形状/dtype 差异 → FAIL；
+- MRI 任一体素不同 → FAIL；
+- 缺病例 / 缺预处理文件 / split 不同 / ``--max-cases`` 子集 → 永不 PASS；
+- CLI 端到端测试用 nnU-Net 自己的 ``save_case`` 写真实 ``.b2nd``/``.pkl`` 与真实 JSON 顶层结构
+  （``splits_final.json`` 为数组、``dataset.json`` 为对象），防止此前的顶层类型缺陷再次漏检。
 """
 
 from __future__ import annotations
@@ -71,19 +80,39 @@ def _prior_channels(seed: int, shape=(2, 2, 2, 2)) -> np.ndarray:
 
 
 def _seg(shape=(2, 2, 2)) -> np.ndarray:
+    """uint8 的 0/1 任务标签（不含 -1）。"""
     seg = np.zeros(shape, dtype=np.uint8)
     seg[0, 0, 0] = 1
     return seg
 
 
-def _cases_605() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+def _seg_int8(
+    shape=(2, 2, 2),
+    *,
+    minus_one_positions=(),
+    ones_positions=((0, 0, 0),),
+) -> np.ndarray:
+    """int8 seg：可同时含 -1（裁剪填充）、0、1（任务前景），模拟真实预处理取值。"""
+    seg = np.zeros(shape, dtype=np.int8)
+    for pos in minus_one_positions:
+        seg[pos] = -1
+    for pos in ones_positions:
+        seg[pos] = 1
+    return seg
+
+
+def _cases_605(seg_factory=None) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    if seg_factory is None:
+        seg_factory = lambda _seed: _seg()  # 默认工厂不使用 seed
     return {
-        cid: (_mri_data(seed), _seg()) for seed, cid in enumerate(CASE_IDS, start=1)
+        cid: (_mri_data(seed), seg_factory(seed))
+        for seed, cid in enumerate(CASE_IDS, start=1)
     }
 
 
 def _cases_606(
-    *, mri_source: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
+    *,
+    mri_source: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     base = _cases_605() if mri_source is None else mri_source
     out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -127,6 +156,8 @@ def _run(
     cases_606=None,
     splits_605=None,
     splits_606=None,
+    dataset_json_605=None,
+    dataset_json_606=None,
     **kwargs,
 ):
     source_605 = FakePreprocessedCaseSource(
@@ -140,8 +171,12 @@ def _run(
         source_606=source_606,
         splits_605=_splits() if splits_605 is None else splits_605,
         splits_606=_splits() if splits_606 is None else splits_606,
-        dataset_json_605=_dataset_json_605(),
-        dataset_json_606=_dataset_json_606(),
+        dataset_json_605=_dataset_json_605()
+        if dataset_json_605 is None
+        else dataset_json_605,
+        dataset_json_606=_dataset_json_606()
+        if dataset_json_606 is None
+        else dataset_json_606,
         metadata_605={
             "dataset_name": "Dataset605_PICAI",
             "configuration": "3d_fullres",
@@ -171,11 +206,16 @@ def test_identical_arrays_pass(tmp_path: Path) -> None:
     report = _run(tmp_path)
     assert report["status"] == audit.STATUS_PASS
     assert report["problems"] == []
-    assert report["case_set_equal"] and report["split_equal"] and report["label_equal"]
+    assert report["case_set_equal"] and report["split_equal"]
+    assert report["effective_labels_equal"] and report["mri_exact_equal_all"]
     assert report["n_cases_checked"] == len(CASE_IDS)
-    assert report["n_cases_exact_equal"] == len(CASE_IDS)
-    assert report["n_cases_mismatch"] == 0
+    assert report["n_cases_raw_identical"] == len(CASE_IDS)
+    assert report["n_cases_effective_equal"] == len(CASE_IDS)
+    assert report["n_cases_effective_input_mismatch"] == 0
+    assert report["n_cases_raw_label_difference"] == 0
+    assert report["n_cases_foreground_equal"] == len(CASE_IDS)
     assert report["mismatched_cases"] == []
+    assert report["raw_label_differences"] == []
     for name in audit.MRI_CHANNEL_NAMES:
         entry = report["per_channel"][name]
         assert entry["exact_equal_cases"] == len(CASE_IDS)
@@ -183,6 +223,26 @@ def test_identical_arrays_pass(tmp_path: Path) -> None:
         assert entry["global_max_abs_diff"] == 0.0
         assert entry["global_mean_abs_diff"] == 0.0
     assert report["channels"] == ["T2W", "ADC", "HBV"]
+    assert report["allowed_raw_seg_labels"] == [-1, 0, 1]
+    assert report["effective_label_remap"] == {"-1": 0}
+
+
+def test_identical_segs_containing_minus_one_pass(tmp_path: Path) -> None:
+    """两侧 seg 完全相同且都含 -1：原始逐值相同（raw_identical），PASS。"""
+    cases_605 = _cases_605(
+        lambda seed: _seg_int8(minus_one_positions=((1, 1, 1), (0, 1, 0)))
+    )
+    cases_606 = _cases_606(mri_source=cases_605)  # 同 dtype（int8）、逐值相同
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_PASS
+    assert report["problems"] == []
+    assert report["n_cases_raw_identical"] == len(CASE_IDS)
+    assert report["n_cases_effective_input_mismatch"] == 0
+    assert report["n_cases_raw_label_difference"] == 0
+    for entry in report["per_case_seg_summary"]:
+        assert entry["raw_seg_equal"] is True
+        assert entry["effective_labels_equal"] is True
+        assert entry["classification"] == "raw_identical"
 
 
 def test_prior_channels_are_excluded_from_mri_equivalence(tmp_path: Path) -> None:
@@ -195,8 +255,76 @@ def test_prior_channels_are_excluded_from_mri_equivalence(tmp_path: Path) -> Non
         cases_606[cid] = (data, seg)
     report = _run(tmp_path, cases_606=cases_606)
     assert report["status"] == audit.STATUS_PASS
-    assert report["n_cases_mismatch"] == 0
+    assert report["n_cases_effective_input_mismatch"] == 0
     assert report["per_channel"]["T2W"]["mismatch_cases"] == 0
+
+
+def test_minus_one_vs_zero_is_informational_not_failure(tmp_path: Path) -> None:
+    """同一位置 -1 与 0 不同：有效标签相同 → PASS，原始差异被如实记录为信息性。"""
+    cases_605 = _cases_605(lambda seed: _seg_int8(minus_one_positions=((1, 1, 1),)))
+    cases_606 = _cases_606(mri_source=cases_605)  # 同 dtype（int8）
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[1, 1, 1] = 0  # 605 该位置是 -1，606 是 0（映射后两侧都是 0）
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+
+    assert report["status"] == audit.STATUS_PASS
+    assert report["problems"] == []
+    assert report["effective_labels_equal"] is True
+    assert report["n_cases_effective_input_mismatch"] == 0
+    assert report["n_cases_raw_label_difference"] == 1
+    assert report["n_cases_effective_equal"] == len(CASE_IDS)
+    assert report["n_cases_raw_identical"] == len(CASE_IDS) - 1
+
+    diff = report["raw_label_differences"]
+    assert len(diff) == 1
+    entry = diff[0]
+    assert entry["case_id"] == "case_a"  # seed=1 的病例
+    assert entry["kind"] == "raw_seg_difference_effectively_equal"
+    assert entry["unequal_voxels"] == 1
+    assert entry["raw_diff_pairs"] == {"-1→0": 1}
+    assert entry["effective_labels_equal"] is True
+    assert entry["foreground_equal"] is True
+    # FAIL 列表里不得出现该信息性差异
+    assert all(
+        item["kind"] != "raw_seg_difference_effectively_equal"
+        for item in report["mismatched_cases"]
+    )
+
+
+def test_minus_one_to_zero_counts_accurate_across_two_cases(tmp_path: Path) -> None:
+    """一例 1 个体素、一例 11 个体素的 -1→0 差异：有效比较 PASS，原始计数逐例准确。"""
+    eleven = [(i, j, k) for i in (0, 1) for j in (0, 1) for k in (0, 1, 2)][:11]
+
+    def seg_factory_605(seed: int) -> np.ndarray:
+        if seed == 1:  # case_a：1 个 -1
+            return _seg_int8(minus_one_positions=((1, 1, 1),))
+        if seed == 2:  # case_b：11 个互不相同的 -1（形状 2×2×3 才容得下 11 个）
+            return _seg_int8(
+                shape=(2, 2, 3),
+                minus_one_positions=eleven,
+                ones_positions=((1, 1, 2),),
+            )
+        return _seg_int8()  # case_c：int8、无 -1，保持两侧 dtype 一致
+
+    cases_605 = _cases_605(seg_factory_605)
+    cases_606 = _cases_606(mri_source=cases_605)  # 同 dtype（int8）
+    for cid in ("case_a", "case_b"):
+        data, seg = cases_606[cid]
+        seg = seg.copy()
+        seg[seg == -1] = 0  # 606 把 -1 全部记为 0（映射后与 605 的有效标签相同）
+        cases_606[cid] = (data, seg)
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_PASS
+    assert report["n_cases_raw_label_difference"] == 2
+    assert report["n_cases_effective_input_mismatch"] == 0
+    counts = {entry["case_id"]: entry for entry in report["raw_label_differences"]}
+    assert counts["case_a"]["unequal_voxels"] == 1
+    assert counts["case_a"]["raw_diff_pairs"] == {"-1→0": 1}
+    assert counts["case_b"]["unequal_voxels"] == 11
+    assert counts["case_b"]["raw_diff_pairs"] == {"-1→0": 11}
+    assert all(entry["foreground_equal"] for entry in counts.values())
 
 
 # --------------------------------------------------------------------- FAIL 路径
@@ -212,13 +340,16 @@ def test_single_voxel_difference_fails_with_detail(tmp_path: Path) -> None:
 
     assert report["status"] == audit.STATUS_FAIL
     assert report["n_cases_checked"] == len(CASE_IDS)
-    assert report["n_cases_exact_equal"] == len(CASE_IDS) - 1
-    assert report["n_cases_mismatch"] == 1
+    assert report["n_cases_effective_input_mismatch"] == 1
+    assert report["n_cases_effective_equal"] == len(CASE_IDS) - 1
+    assert report["n_cases_raw_label_difference"] == 0
     assert report["per_channel"]["ADC"]["mismatch_cases"] == 1
     assert report["per_channel"]["ADC"]["global_max_abs_diff"] == pytest.approx(
         1e-3, rel=1e-4
     )
     assert report["per_channel"]["T2W"]["mismatch_cases"] == 0
+    assert report["effective_labels_equal"] is False
+    assert report["mri_exact_equal_all"] is False
 
     details = [m for m in report["mismatched_cases"] if m["channel"] == "ADC"]
     assert len(details) == 1
@@ -232,6 +363,164 @@ def test_single_voxel_difference_fails_with_detail(tmp_path: Path) -> None:
     assert audit.STATUS_PASS not in report["status"]
 
 
+def test_zero_to_one_label_difference_fails(tmp_path: Path) -> None:
+    """0↔1 属于有效标签差异：必须 FAIL，且原始差异对被如实记录。"""
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[1, 1, 1] = 1  # 605 该位置是 0，606 是 1
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert report["effective_labels_equal"] is False
+    assert report["n_cases_effective_input_mismatch"] == 1
+    details = [m for m in report["mismatched_cases"] if m["channel"] == "SEG"]
+    assert details and details[0]["kind"] == "effective_label_values_differ"
+    assert details[0]["unequal_voxels"] == 1
+    assert details[0]["raw_diff_pairs"] == {"0→1": 1}
+    summary = {e["case_id"]: e for e in report["per_case_seg_summary"]}["case_a"]
+    assert summary["foreground_equal"] is False
+    assert summary["classification"] == "effective_mismatch"
+
+
+def test_minus_one_to_one_label_difference_fails(tmp_path: Path) -> None:
+    """-1↔1 属于有效标签差异：必须 FAIL。"""
+    cases_605 = _cases_605(lambda seed: _seg_int8(minus_one_positions=((1, 1, 1),)))
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    seg = seg.astype(np.int8).copy()
+    seg[1, 1, 1] = 1  # 605 是 -1，606 是 1
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    details = [m for m in report["mismatched_cases"] if m["channel"] == "SEG"]
+    assert details and details[0]["kind"] == "effective_label_values_differ"
+    assert details[0]["raw_diff_pairs"] == {"-1→1": 1}
+
+
+def test_zero_to_minus_one_is_also_informational(tmp_path: Path) -> None:
+    """反方向：605=0、606=-1。映射后两侧都是 0 → 有效标签相同，仍是信息性差异。
+
+    锁定该语义不回退：信息性只取决于「有效标签是否相同」，与差异方向无关。
+    """
+    cases_605 = _cases_605(lambda seed: _seg_int8(ones_positions=((0, 0, 0),)))
+    cases_606 = _cases_606(mri_source=cases_605)  # 同 dtype（int8）
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[1, 1, 1] = -1  # 605 该位置是 0，606 是 -1（映射后两侧都是 0）
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_PASS
+    assert report["n_cases_raw_label_difference"] == 1
+    assert report["raw_label_differences"][0]["raw_diff_pairs"] == {"0→-1": 1}
+
+
+def test_unexpected_label_value_two_fails(tmp_path: Path) -> None:
+    """标签 2 不在 {-1, 0, 1} 内：结构化 FAIL，不能被截断成合法值。"""
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[0, 0, 1] = 2
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    details = [
+        m for m in report["mismatched_cases"] if m["kind"] == "unexpected_label_values"
+    ]
+    assert details
+    assert details[0]["case_id"] == "case_a"
+    assert details[0]["unexpected_values_606"] == [2]
+    assert details[0]["allowed_raw_labels"] == [-1, 0, 1]
+    # 非法值存在时不得再做逐值比较（避免把非法值当作 0/1 参与 diff）
+    assert all(
+        m["kind"] != "effective_label_values_differ" for m in report["mismatched_cases"]
+    )
+
+
+def test_unsigned_overflow_value_fails(tmp_path: Path) -> None:
+    """uint8 的 255（-1 的无符号回绕值）不是合法取值：不得因表示陷阱被判合法。"""
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[0, 0, 1] = 255
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    details = [
+        m for m in report["mismatched_cases"] if m["kind"] == "unexpected_label_values"
+    ]
+    assert details and details[0]["unexpected_values_606"] == [255]
+
+
+def test_seg_nan_fails_structurally(tmp_path: Path) -> None:
+    """seg 含 NaN：结构化 FAIL（seg_non_finite_values），不崩溃、不做任何 int 转换。"""
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    seg = seg.astype(np.float32).copy()
+    seg[0, 0, 0] = np.nan
+    cases_606["case_a"] = (data, seg)
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    details = [
+        m for m in report["mismatched_cases"] if m["kind"] == "seg_non_finite_values"
+    ]
+    assert details
+    assert details[0]["contains_nan_606"] is True
+    summary = {e["case_id"]: e for e in report["per_case_seg_summary"]}["case_a"]
+    assert summary["raw_seg_equal"] is None  # 未做逐值比较
+
+
+def test_seg_inf_fails_structurally(tmp_path: Path) -> None:
+    cases_605 = _cases_605(lambda seed: _seg().astype(np.float32))
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_b"]
+    seg = seg.astype(np.float32).copy()
+    seg[1, 1, 1] = np.inf
+    cases_606["case_b"] = (data, seg)
+    report = _run(tmp_path, cases_605=cases_605, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert any(m["kind"] == "seg_non_finite_values" for m in report["mismatched_cases"])
+
+
+def test_seg_dtype_difference_fails(tmp_path: Path) -> None:
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    cases_606["case_a"] = (data, seg.astype(np.int16))
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert "label_dtype_mismatch" in {m["kind"] for m in report["mismatched_cases"]}
+
+
+def test_seg_shape_difference_fails(tmp_path: Path) -> None:
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    cases_606["case_a"] = (data, seg[:, :1])
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert "label_shape_mismatch" in {m["kind"] for m in report["mismatched_cases"]}
+
+
+def test_mri_nan_and_inf_fail(tmp_path: Path) -> None:
+    for bad in (np.nan, np.inf):
+        cases_606 = _cases_606()
+        data, seg = cases_606["case_a"]
+        data = data.copy()
+        data[2, 0, 0, 0] = bad
+        cases_606["case_a"] = (data, seg)
+        report = _run(tmp_path, cases_606=cases_606)
+        assert report["status"] == audit.STATUS_FAIL
+        assert "non_finite_values" in {m["kind"] for m in report["mismatched_cases"]}
+
+
+def test_mri_dtype_difference_fails(tmp_path: Path) -> None:
+    cases_606 = _cases_606()
+    data, seg = cases_606["case_a"]
+    cases_606["case_a"] = (data.astype(np.float16), seg)
+    report = _run(tmp_path, cases_606=cases_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert "dtype_mismatch" in {m["kind"] for m in report["mismatched_cases"]}
+
+
 def test_spatial_shape_difference_fails(tmp_path: Path) -> None:
     cases_605 = _cases_605()
     mri, seg = cases_605["case_a"]
@@ -240,6 +529,7 @@ def test_spatial_shape_difference_fails(tmp_path: Path) -> None:
     assert report["status"] == audit.STATUS_FAIL
     kinds = {m["kind"] for m in report["mismatched_cases"]}
     assert "spatial_shape_mismatch" in kinds
+    assert "label_shape_mismatch" in kinds
 
 
 def test_channel_count_difference_fails(tmp_path: Path) -> None:
@@ -292,7 +582,7 @@ def test_missing_preprocessed_file_fails(tmp_path: Path) -> None:
         progress=False,
     )
     assert report["status"] == audit.STATUS_FAIL
-    assert report["label_equal"] is False
+    assert report["effective_labels_equal"] is False
     failures = report["load_failures"]
     assert len(failures) == 1
     assert failures[0]["kind"] == "missing_preprocessed_file"
@@ -324,78 +614,22 @@ def test_fold_count_difference_fails(tmp_path: Path) -> None:
     assert report["splits"]["n_folds_equal"] is False
 
 
-def test_label_difference_fails(tmp_path: Path) -> None:
-    cases_606 = _cases_606()
-    data, seg = cases_606["case_a"]
-    seg = seg.copy()
-    seg[1, 1, 1] = 1  # 标签多出一个前景体素
-    cases_606["case_a"] = (data, seg)
-    report = _run(tmp_path, cases_606=cases_606)
-    assert report["status"] == audit.STATUS_FAIL
-    assert report["label_equal"] is False
-    details = [m for m in report["mismatched_cases"] if m["channel"] == "SEG"]
-    assert details and details[0]["kind"] == "label_values_differ"
-    assert details[0]["unequal_voxels"] == 1
-
-
-def test_label_out_of_range_fails(tmp_path: Path) -> None:
-    cases_606 = _cases_606()
-    data, seg = cases_606["case_a"]
-    seg = seg.copy()
-    seg[0, 0, 1] = 2  # 越界标签（Dataset605/606 只有 0/1）
-    cases_606["case_a"] = (data, seg)
-    report = _run(tmp_path, cases_606=cases_606)
-    assert report["status"] == audit.STATUS_FAIL
-    kinds = {m["kind"] for m in report["mismatched_cases"]}
-    assert "unexpected_label_values" in kinds
-
-
-def test_non_finite_values_fail(tmp_path: Path) -> None:
-    for bad in (np.nan, np.inf):
-        cases_606 = _cases_606()
-        data, seg = cases_606["case_a"]
-        data = data.copy()
-        data[2, 0, 0, 0] = bad
-        cases_606["case_a"] = (data, seg)
-        report = _run(tmp_path, cases_606=cases_606)
-        assert report["status"] == audit.STATUS_FAIL
-        assert "non_finite_values" in {m["kind"] for m in report["mismatched_cases"]}
-
-
-def test_dtype_difference_fails(tmp_path: Path) -> None:
-    cases_606 = _cases_606()
-    data, seg = cases_606["case_a"]
-    cases_606["case_a"] = (data.astype(np.float16), seg)
-    report = _run(tmp_path, cases_606=cases_606)
-    assert report["status"] == audit.STATUS_FAIL
-    assert "dtype_mismatch" in {m["kind"] for m in report["mismatched_cases"]}
-
-
 def test_channel_name_mismatch_fails(tmp_path: Path) -> None:
     dataset_json_606 = _dataset_json_606()
     dataset_json_606["channel_names"]["1"] = "DWI"  # 第二通道不是 ADC
-    source_605 = FakePreprocessedCaseSource(tmp_path / "605", _cases_605())
-    source_606 = FakePreprocessedCaseSource(tmp_path / "606", _cases_606())
-    report = audit.run_audit(
-        source_605=source_605,
-        source_606=source_606,
-        splits_605=_splits(),
-        splits_606=_splits(),
-        dataset_json_605=_dataset_json_605(),
-        dataset_json_606=dataset_json_606,
-        metadata_605={
-            "dataset_name": "Dataset605_PICAI",
-            "configuration": "3d_fullres",
-        },
-        metadata_606={
-            "dataset_name": "Dataset606_PICAI_Zonal",
-            "configuration": "3d_fullres",
-        },
-        fold=0,
-        progress=False,
-    )
+    report = _run(tmp_path, dataset_json_606=dataset_json_606)
     assert report["status"] == audit.STATUS_FAIL
     assert report["metadata"]["mri_channel_names_equal"] is False
+
+
+def test_dataset_json_labels_outside_allowed_fails(tmp_path: Path) -> None:
+    """dataset.json 声明 {-1,0,1} 之外的任务标签 ⇒ 与审计约定冲突，fail-closed。"""
+    dataset_json_606 = _dataset_json_606()
+    dataset_json_606["labels"] = {"background": 0, "lesion": 1, "zone": 2}
+    report = _run(tmp_path, dataset_json_606=dataset_json_606)
+    assert report["status"] == audit.STATUS_FAIL
+    assert report["metadata"]["labels_within_allowed_raw"] is False
+    assert any("labels" in problem for problem in report["problems"])
 
 
 def test_zero_padded_channel_keys_pass(tmp_path: Path) -> None:
@@ -418,26 +652,7 @@ def test_zero_padded_channel_keys_pass(tmp_path: Path) -> None:
         "file_ending": ".nii.gz",
         "numTraining": len(CASE_IDS),
     }
-    source_605 = FakePreprocessedCaseSource(tmp_path / "605", _cases_605())
-    source_606 = FakePreprocessedCaseSource(tmp_path / "606", _cases_606())
-    report = audit.run_audit(
-        source_605=source_605,
-        source_606=source_606,
-        splits_605=_splits(),
-        splits_606=_splits(),
-        dataset_json_605=padded_605,
-        dataset_json_606=padded_606,
-        metadata_605={
-            "dataset_name": "Dataset605_PICAI",
-            "configuration": "3d_fullres",
-        },
-        metadata_606={
-            "dataset_name": "Dataset606_PICAI_Zonal",
-            "configuration": "3d_fullres",
-        },
-        fold=0,
-        progress=False,
-    )
+    report = _run(tmp_path, dataset_json_605=padded_605, dataset_json_606=padded_606)
     assert report["status"] == audit.STATUS_PASS
     metadata = report["metadata"]
     assert metadata["mri_channel_names_equal"] is True
@@ -445,6 +660,7 @@ def test_zero_padded_channel_keys_pass(tmp_path: Path) -> None:
     assert metadata["ordered_channel_names_606"][:3] == ["T2W", "ADC", "HBV"]
     assert metadata["n_channels_605"] == 3
     assert metadata["n_channels_606"] == 5
+    assert metadata["labels_within_allowed_raw"] is True
 
 
 # --------------------------------------------------------------------- 报告与只读性
@@ -467,13 +683,22 @@ def test_report_is_json_serializable_and_contains_required_keys(tmp_path: Path) 
         "n_cases_606",
         "case_set_equal",
         "split_equal",
-        "label_equal",
+        "effective_labels_equal",
+        "mri_exact_equal_all",
         "n_cases_checked",
-        "n_cases_exact_equal",
-        "n_cases_mismatch",
+        "n_cases_raw_identical",
+        "n_cases_effective_equal",
+        "n_cases_effective_input_mismatch",
+        "n_cases_raw_label_difference",
+        "n_cases_foreground_equal",
+        "allowed_raw_seg_labels",
+        "effective_label_remap",
         "channels",
         "per_channel",
         "mismatched_cases",
+        "raw_label_differences",
+        "per_case_seg_summary",
+        "prior_channels_606_info_only",
     ):
         assert key in payload, key
     for name in audit.MRI_CHANNEL_NAMES:
@@ -494,13 +719,22 @@ def test_report_is_json_serializable_and_contains_required_keys(tmp_path: Path) 
     ):
         assert key in mismatch, key
     assert payload["inputs_modified"] is False
+    assert payload["allowed_raw_seg_labels"] == [-1, 0, 1]
+    # 语义不矛盾：status=FAIL 时有效输入不一致数必须 > 0
+    assert payload["n_cases_effective_input_mismatch"] > 0
 
 
 def test_inputs_are_not_modified(tmp_path: Path) -> None:
     cases_605 = _cases_605()
     cases_606 = _cases_606()
-    cases_605["case_a"] = (cases_605["case_a"][0].copy(), cases_605["case_a"][1].copy())
-    cases_606["case_a"] = (cases_606["case_a"][0].copy(), cases_606["case_a"][1].copy())
+    cases_605["case_a"] = (
+        cases_605["case_a"][0].copy(),
+        cases_605["case_a"][1].copy(),
+    )
+    cases_606["case_a"] = (
+        cases_606["case_a"][0].copy(),
+        cases_606["case_a"][1].copy(),
+    )
     source_605 = FakePreprocessedCaseSource(tmp_path / "605", cases_605)
     source_606 = FakePreprocessedCaseSource(tmp_path / "606", cases_606)
     before_605 = _snapshot(source_605.case_folder)
@@ -576,6 +810,7 @@ def test_cli_parser_defaults() -> None:
     assert args.max_cases is None
     assert args.overwrite is False
     assert args.no_progress is False
+    assert args.output == "outputs/reports/dataset605_606_mri_equivalence_audit_v2.json"
 
 
 # --------------------------------------------- 真实文件路径（磁盘上的合成预处理目录）
@@ -621,7 +856,10 @@ def _run_cli_on_disk(
     cases_605: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
     cases_606: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ):
-    """在磁盘上造出完整预处理目录 + dataset.json/splits_final.json，然后跑 ``main()``。"""
+    """在磁盘上造出完整预处理目录 + dataset.json/splits_final.json，然后跑 ``main()``。
+
+    JSON 顶层结构与真实预处理产物一致：``splits_final.json`` 是数组、``dataset.json`` 是对象。
+    """
     root = tmp_path / "nnUNet_preprocessed"
     dataset605 = _write_preprocessed_dataset(
         root, "Dataset605_PICAI", _cases_605() if cases_605 is None else cases_605
@@ -646,7 +884,7 @@ def _run_cli_on_disk(
 
 
 def test_cli_end_to_end_pass_on_real_b2nd_files(tmp_path: Path, monkeypatch) -> None:
-    """端到端：磁盘上的合成预处理目录（真实 .b2nd/.pkl）→ PASS + 报告落盘。"""
+    """端到端：磁盘上的合成预处理目录（真实 .b2nd/.pkl + 真实 JSON 顶层结构）→ PASS + 报告落盘。"""
     exit_code, output, dataset605, dataset606 = _run_cli_on_disk(tmp_path, monkeypatch)
 
     assert exit_code == 0
@@ -655,7 +893,7 @@ def test_cli_end_to_end_pass_on_real_b2nd_files(tmp_path: Path, monkeypatch) -> 
     assert report["n_cases_605"] == len(CASE_IDS)
     assert report["n_cases_606"] == len(CASE_IDS)
     assert report["n_cases_checked"] == len(CASE_IDS)
-    assert report["n_cases_mismatch"] == 0
+    assert report["n_cases_effective_input_mismatch"] == 0
     assert report["inputs_modified"] is False
     for name in audit.MRI_CHANNEL_NAMES:
         assert report["per_channel"][name]["exact_equal_cases"] == len(CASE_IDS)
@@ -684,6 +922,30 @@ def test_cli_end_to_end_fail_still_writes_report(tmp_path: Path, monkeypatch) ->
     detail = [item for item in report["mismatched_cases"] if item["channel"] == "ADC"]
     assert detail and detail[0]["case_id"] == "case_c"
     assert detail[0]["unequal_voxels"] == 1
+
+
+def test_cli_end_to_end_informational_minus_one_difference(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """端到端：真实 .b2nd 里的 -1↔0 原始差异 → 退出码 0、PASS、信息性差异落盘。"""
+    cases_605 = _cases_605(lambda seed: _seg_int8(minus_one_positions=((1, 1, 1),)))
+    cases_606 = _cases_606(mri_source=cases_605)  # 同 dtype（int8）
+    data, seg = cases_606["case_a"]
+    seg = seg.copy()
+    seg[1, 1, 1] = 0
+    cases_606["case_a"] = (data, seg)
+    exit_code, output, _, _ = _run_cli_on_disk(
+        tmp_path, monkeypatch, cases_605=cases_605, cases_606=cases_606
+    )
+
+    assert exit_code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == audit.STATUS_PASS
+    assert report["n_cases_effective_input_mismatch"] == 0
+    assert report["n_cases_raw_label_difference"] == 1
+    assert report["raw_label_differences"][0]["raw_diff_pairs"] == {"-1→0": 1}
+    # 磁盘上的 seg 确实含 -1（int8 经 blosc2 往返无损）
+    assert report["per_case_seg_summary"][0]["raw_seg_equal"] is False
 
 
 def test_cli_end_to_end_rejects_non_object_dataset_json(

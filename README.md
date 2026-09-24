@@ -192,24 +192,39 @@ validation 与滑窗推理，构成一组同层级比较：
 但**这不等同于完成真实数据逐数组审计**：尚未对两数据集的 MRI 体素做逐数组比较，也没有重新
 物化 Dataset606。任何把两个数据集的结果并列解释为「只差 PZ/TZ 通道」的结论都必须先完成该审计。
 
-#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置，**真实数据尚未执行**）
+#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置；v1 已运行并 FAIL，判据已于 v2 修正）
 
 工具：`scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed，含纯合成单元测试）。
 它逐病例比较预处理后前三个 MRI 通道（T2W/ADC/HBV）的 `np.array_equal` 与浮点差值统计，并审计
-病例集合、`splits_final.json`、lesion label；**PZ/TZ 不参与数值一致性判定**（仅记录取值范围）。
+病例集合、`splits_final.json` 与 segmentation label；**PZ/TZ 不参与逐值相等判定，也不影响
+status/PASS**（仅记录取值范围与 `contains_non_finite`，均为信息性诊断）。
 不修复数据、不重建 Dataset606、不重新 preprocessing。
+
+seg 的两层语义（必须区分，不得混用）：
+
+- **原始 seg 逐值相同**（`raw_seg_equal`）：预处理 `_seg.b2nd` 的字节/数值完全一致，含两侧都含
+  `-1` 的情况。预处理 seg 的合法原始取值是 `{-1, 0, 1}`：`-1` 来自固定版本 nnU-Net 的
+  `crop_to_nonzero` 裁剪填充（`cropping.py:19,36`），不是任务标签；
+- **有效标签逐值相同**（`effective_labels_equal`）：`-1` 按本项目实际训练/验证变换
+  （`nnUNetTrainer.py:800,855` 的 `RemoveLabelTansform(-1, 0)`）映射为 0 后的标签逐值一致。
+
+因此纯 `-1↔0` 的原始差异是**信息性**（`n_cases_raw_label_difference` / `raw_label_differences`，
+不影响 PASS）；`0↔1`、`-1↔1`、`{-1,0,1}` 之外的取值（含 NaN/Inf/无符号回绕值）、MRI 任一体素
+差异、形状/dtype 差异一律 FAIL（`n_cases_effective_input_mismatch` / `mismatched_cases`）。
 
 ```bash
 cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
 
 python scripts/data/audit_dataset605_606_mri_equivalence.py \
-    --output outputs/reports/dataset605_606_mri_equivalence_audit.json
+    --output outputs/reports/dataset605_606_mri_equivalence_audit_v2.json
 ```
 
-成功判据：退出码 `0`、`status=MRI_ARRAY_AUDIT_PASS`、`n_cases_mismatch=0`、
-`per_channel.*.exact_equal_cases = n_cases_checked`（PASS 之外退出码为非零，报告仍会写出）。
-报告已存在时默认拒绝覆盖，需显式加 `--overwrite`。`--max-cases N` 只用于烟雾测试，此时 status
-恒为 `MRI_ARRAY_AUDIT_PARTIAL`，**永不判 PASS**。
+成功判据：退出码 `0`、`status=MRI_ARRAY_AUDIT_PASS`、`n_cases_effective_input_mismatch=0`、
+`effective_labels_equal=true`、`mri_exact_equal_all=true`、
+`per_channel.*.exact_equal_cases = n_cases_checked`；`n_cases_raw_label_difference` 允许 > 0
+（信息性）。PASS 之外退出码非零，报告仍会写出。报告已存在时默认拒绝覆盖，需显式加
+`--overwrite`。`--max-cases N` 只用于烟雾测试，此时 status 恒为 `MRI_ARRAY_AUDIT_PARTIAL`，
+**永不判 PASS**。v1 报告（`..._audit.json`，FAIL）按原样保留作追溯，不修改。
 
 #### 为什么暂时不采用 DiceTopK / batch_dice=true / 类别权重 / patch size 或优化器修改
 

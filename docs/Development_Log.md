@@ -5,6 +5,63 @@
 
 ---
 
+## 2026-09-24 — 审计工具 v2：区分「原始 seg 逐值相同」与「有效标签相同」
+
+v1 真实审计 FAIL 的直接原因：1487 例预处理 seg 含 `-1`，v1 误以 dataset.json 的 `{0, 1}` 为唯一
+合法取值而判非法。从固定版本 nnU-Net v2.6.2 源码核对的事实（只读）：
+
+- `-1` 的来源：`preprocessing/cropping/cropping.py:19` 定义 `crop_to_nonzero(..., nonzero_label=-1)`，
+  `:36` 执行 `seg[(seg == 0) & (~nonzero_mask)] = nonzero_label`（nonzero 裁剪框外写 -1）；
+  `preprocessing/preprocessors/default_preprocessor.py:66` 以默认参数调用。
+- `-1 → 0` 的映射：`training/nnUNetTrainer/nnUNetTrainer.py:800`（get_training_transforms）与
+  `:855`（get_validation_transforms）都追加 `RemoveLabelTansform(-1, 0)`
+  （batchgeneratorsv2 `RemoveLabelTansform._apply_to_segmentation` 将 `label_value` 改写为
+  `set_to`），即进入损失计算前 `-1` 已变为 0。
+
+### 修改（`scripts/data/audit_dataset605_606_mri_equivalence.py`）
+
+- 合法原始 seg 取值固定为 `{-1, 0, 1}`（模块常量 `ALLOWED_RAW_SEG_LABELS`，附源码出处）；
+  `dataset.json` 声明的任务标签必须落在该集合内（`labels_within_allowed_raw`），否则 fail-closed。
+- 检查顺序固定：shape → dtype → 有限性 → 取值合法性 →（全部通过后）才做整数转换与逐值比较；
+  NaN/Inf/非法值产生结构化失败条目（`seg_non_finite_values` / `unexpected_label_values`），
+  绝不异常崩溃、绝不截断成合法值。取值合法性在 float64 上判定（规避无符号/负数表示陷阱），
+  报告的取值从原始数组提取。
+- 逐例同时报告四件事并明确区分语义：`raw_seg_equal`（原始逐值相同）、`raw_unequal_voxels` 与
+  `raw_diff_pairs`（如 `"-1→0": 11`，只存汇总不存大数组）、`effective_labels_equal`（-1 映射为 0
+  后逐值相同）、`foreground_equal`（`(seg == 1)` 逐值相同）。逐例摘要落
+  `per_case_seg_summary`。
+- 分类与计数拆分，消除「status=PASS 但 n_cases_mismatch>0」的矛盾：
+  - `n_cases_effective_input_mismatch`（FAIL 驱动：MRI 任一体素差异、有效标签差异（含 0↔1、
+    -1↔1）、非法取值、形状/dtype/非有限值）→ `mismatched_cases`；
+  - `n_cases_raw_label_difference`（信息性：原始 seg 有差异但有效标签相同，即纯 `-1↔0`）→
+    `raw_label_differences`；
+  - `n_cases_raw_identical` / `n_cases_effective_equal` / `n_cases_foreground_equal`、
+    `effective_labels_equal`、`mri_exact_equal_all`；控制台同时打印有效不一致数与原始差异数。
+  - 删除歧义字段 `n_cases_mismatch`、`n_cases_exact_equal`、`label_equal`。
+- PASS 判据：完整检查全部共同病例（无 `--max-cases` 子集、无读取失败）＋ 病例集合与 split 一致
+  ＋ dataset.json 合法且两数据集一致 ＋ 前三个 MRI 通道逐数组完全相同 ＋ 所有 seg 合法且有效标签
+  逐值相同。原始 `-1↔0` 差异不计入失败。默认输出路径改为
+  `outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`；v1 报告按原样保留作追溯。
+- PZ/TZ：不参与前三 MRI 通道的逐值相等判定、不影响 status/PASS；`min/max` 改为 nan 感知并新增
+  `contains_non_finite`，在报告 note 与控制台中明确标注「仅信息性」。
+- v1 FAIL 报告中 1487 例 `unexpected_label_values`（labels `[-1]`）在 v2 语义下全部合法且原始逐值
+  相同；仅 10879_1000895（1 体素）与 10980_1000999（11 体素）为 `-1→0` 原始差异 → 信息性，
+  有效标签与 `(seg == 1)` 均逐值相同（用户已在真实数据上只读诊断核实）。
+
+### 测试（`tests/unit/test_dataset605_606_mri_equivalence_audit.py`，纯合成 CPU）
+
+38 项，新增/改写覆盖：两侧 seg 完全相同且都含 -1 → PASS；同一位置 -1↔0（含反向 0→-1）→
+PASS 且信息性记录（`raw_diff_pairs` 计数准确）；一例 1 个、一例 11 个 -1→0 → PASS 且计数准确；
+0↔1、-1↔1 → FAIL；标签 2、NaN、Inf、seg dtype/shape 差异、uint8 回绕值 255 → 结构化 FAIL；
+非法值存在时不再做逐值比较；`dataset.json` labels 越界 → FAIL；`--max-cases` 子集与缺文件/
+split 不同 → 永不 PASS；CLI 端到端（nnU-Net `save_case` 写真实 `.b2nd`/`.pkl`、真实 JSON 顶层
+结构：splits 数组 + dataset 对象）覆盖 PASS / FAIL / 信息性差异 / 非 dataset.json 崩溃路径。
+`pytest -q` 全仓 313 passed；`ruff check`、`ruff format --check`、`compileall`、`git diff --check`、
+`--help` 全部通过。未运行真实数据审计与任何训练；未修改 third_party、data、workdir、outputs 中
+任何现有文件；Research_Plan、Findings、Training_Log 与实验记录文档未改动。
+
+---
+
 ## 2026-09-24 — Dataset605/606 MRI 数组审计工具 + Anatomy Gate 启动前校验与文档同步
 
 为 `anatomy_gate_positive_sampling`（RQ2 公平匹配臂）的正式启动做前置准备：**只新增一个只读审计
