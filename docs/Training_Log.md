@@ -80,7 +80,7 @@
 | anatomy_gate | Dataset606 / 3d_fullres / 0 | 数据已就绪，训练未运行 | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
 | positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
@@ -178,6 +178,47 @@
 - 输出目录（勿删除/覆盖）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - 详细记录：`docs/experiments/image_gate_positive_sampling.md`
+
+### anatomy_gate_positive_sampling（**已完成**：训练 + actual validation）
+
+- variant / Trainer：`anatomy_gate_positive_sampling` →
+  `nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT`
+- 数据集 / 配置 / fold：Dataset606_PICAI_Zonal / `3d_fullres` / fold 0（1277 train / 223 val；
+  5 通道 = T2W/ADC/HBV + PZ/TZ，PZ/TZ 只进门控、不进分割 backbone）
+- 设计：与 `image_gate_positive_sampling` 的**预期主要差异**是门控条件（PZ/TZ）与数据集
+  （606 vs 605）；损失、采样、增强、optimizer、LR scheduler 与随机种子策略一致
+- RQ2 归因前置条件：Dataset605/606 前三 MRI 通道逐数组审计已通过
+  （`outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`，
+  `status = MRI_ARRAY_AUDIT_PASS`，2026-09-24 03:33 UTC，1500 例，0 mismatch），
+  早于本训练启动（同日 06:42 UTC）
+- 命令：`CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0`
+- 日志：
+  `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/training_log_2026_9_24_06_42_38.txt`
+- 启动时采样摘要（来自训练日志）：`training_cases=1277`、`positive_cases=362`、`negative_cases=915`、
+  `positive_cases_per_batch=1`、`batch_size=2`、`guaranteed_positive_patch_fraction=0.5`
+- 训练：2026-09-24 06:42 UTC → 22:41 UTC（**15 h 58 min 56 s**）；**1000 epoch 全部完成**，
+  `checkpoint_final.pth` 已生成；无 warning / error / NaN；epoch 耗时 mean 55.83 s
+- 优化过程观察（**只描述优化过程，不是病例级指标**）：首个非零 per-epoch pseudo Dice 在 epoch 3
+  （0.0002）；首次 ≥0.10 在 epoch 17、≥0.20 在 epoch 19；最佳 EMA pseudo Dice = **0.6236**
+  （epoch 952，21:56 UTC）
+- 验证：2026-09-24 22:41 → 22:52 UTC（约 11 min 18 s）；223 例；使用 `checkpoint_final.pth`
+  （epoch 999，内部 `current_epoch = 1000`）
+- **nnU-Net Mean Validation Dice = 0.201140**（`validation/summary.json` 的 `foreground_mean.Dice`
+  = 0.20113991；同文件 `foreground_mean.IoU = 0.14537463`）；该数字的分母为 **92 例** = 63 阳性
+  + **29 例假阳阴性**（131 例真阴记 NaN 被剔除）
+- 阳性病例口径：macro Dice **0.293728**（median 0.219963）、micro Dice **0.533166**、
+  体素召回 **0.411569**、`positive_voxel_precision` **0.756744**、
+  `all_prediction_voxel_precision` **0.681217**
+- 检出结构：阳性 63 例中有任意重叠 **37 例**（58.7%）、完全无重叠 **26 例**（其中 22 例整例无预测）；
+  阴性 160 例中 29 例出现预测（假阳体素合计 34,954）
+- validation probabilities：**未导出**（`validation/` 下无 `.npz`）
+- checkpoint（**勿删除/覆盖**）：`checkpoint_final.pth`（22:41 UTC）、`checkpoint_best.pth`
+  （epoch 952，21:56 UTC）
+- 输出目录（勿删除/覆盖）：
+  `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
+- 边界：`0.201140` 是 nnU-Net 的 `nanmean` 逐例口径（含假阳阴性病例的 0 分），**不是**阳性病例
+  Dice；本 variant 与其他 run 的配对比较尚未进行，跨 run 结论不得在本文件登记。
+- 详细记录：`docs/experiments/anatomy_gate_positive_sampling.md`
 
 ### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
 - variant / Trainer：
