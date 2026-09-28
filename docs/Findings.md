@@ -5,6 +5,13 @@
 
 所有数字均取自各实验自己的 `validation/summary.json` 与训练日志，并已独立复算核对。
 
+**研究定位更新**：下文已完成的输入级门控比较是新 [Research Plan](Research_Plan.md) §3 的
+preliminary evidence。§3.10 / §3.11 保留历史比较方向、数字和原有记录；其中“旧 RQ1 / 旧 RQ2”
+仅指计划重构前的输入级问题。新论文主线的 RQ1–RQ3 是
+`positive_sampling` → `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`
+→ `feature_anatomy_gate_positive_sampling`；后三个条件尚未训练，不能从本文件的历史结果推断
+新问题已有答案。阳性采样是统一的前景感知训练条件，不是主要方法贡献。
+
 ---
 
 ## 1. 核心判断
@@ -37,20 +44,21 @@
 - 五个 run 的 **micro Dice 都停在 0.52–0.55**（0.5212 / 0.5244 / 0.5449 / 0.5397 / 0.5332），体素召回率也只在
   0.39–0.43 之间：整体病灶体素匹配度几乎没有变化 ⇒ **改训练采样能减少「整例漏检」，但尚未突破
   「检出后覆盖不全」这一上限**（见第 3.4 节）。
-- **【RQ1 公平匹配比较：`positive_sampling` ↔ `image_gate_positive_sampling`】** 两者同为
+- **【旧 RQ1／输入级 MRI 门控比较：`positive_sampling` ↔ `image_gate_positive_sampling`】** 两者同为
   FLCE + 阳性采样、同分划，唯一结构差异是输入级 image gate。配对结果：macro Dice 0.3068 → 0.2991
   （配对均值 delta **−0.0077**，CI95 **[−0.0540, +0.0403] 含 0**），完全漏检 21 → 23、有重叠
   42 → 40；但 `positive_voxel_precision` 0.7522 → **0.8341**、阴性假阳病例 30 → **27**。
   即**在本 fold 的这次运行中未观察到明确的分割增量效用，看到的是工作点向更保守一侧移动**
   （precision↑、假阳↓、漏检略↑）。完整指标与判据见 §3.10；受单次运行与无随机种子限制，
   **不得**表述为「gate 无效」或「gate 降低性能」。
-- **【RQ2 公平匹配比较：`image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling`】**
+- **【旧 RQ2／输入级解剖条件比较：`image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling`】**
   两者同为 fold 0 / 同 223 例 / 同 FLCE / 同阳性采样 / 同优化调度，差异是门控条件是否读取 PZ/TZ
   与所用数据集（605 vs 606）；前三 MRI 通道的逐数组审计已在训练前取得
   `MRI_ARRAY_AUDIT_PASS`（见 §3.11）。配对结果：macro Dice 0.2991 → 0.2937（配对均值 delta
   **−0.0053**，CI95 **[−0.0525, +0.0381] 含 0**），完全漏检 23 → 26、有重叠 40 → 37；体素召回
   略升（+0.0127）但 `positive_voxel_precision` 明显下降（0.8341 → 0.7567）、阴性假阳病例
-  27 → 29。**H2 在本次实验中未获支持，且收益—代价不构成有利交换**；完整登记见 §3.11。
+  27 → 29。**旧输入级解剖条件假设在本次实验中未获支持，且收益—代价不构成有利交换**；
+  完整登记见 §3.11。这不预判新的特征级 RQ3。
 
 因此当前的首要矛盾可以更精确地表述为：
 
@@ -85,9 +93,9 @@
 | 阴性病例假阳性总体积（体素） | 27,294 | 24,625 | **35,178** | 32,575 | 34,954 | 平均每例假阳体积（2481 → 1449 → 1173 → 1206 → 1205 体素）与**中位数**（1464 → 274 → 534 → 253 → 534）方向不一致，两者都要看，细节见 3.5 节 |
 | 阳性病例假阳性体素（体素） | 86,833 | 60,878 | 81,547 | **46,001** | 76,690 | 五个 run 中最低仍是阳性采样下的 image gate（46,001）；anatomy 臂回升到 76,690 |
 
-> `image_gate_positive_sampling` 与 `positive_sampling` 是 RQ1 的**公平匹配对**（同损失、同采样、
+> `image_gate_positive_sampling` 与 `positive_sampling` 是旧输入级问题的**公平匹配对**（同损失、同采样、
 > 同分划，唯一结构差异是输入级 image gate），比较见 §3.10；`anatomy_gate_positive_sampling` 与
-> `image_gate_positive_sampling` 是 RQ2 的**公平匹配对**（同损失、同采样、同分划，差异是门控条件
+> `image_gate_positive_sampling` 是旧输入级解剖问题的**公平匹配对**（同损失、同采样、同分划，差异是门控条件
 > 是否读取 PZ/TZ + 数据集 606 vs 605，且前三 MRI 通道逐数组审计已通过），比较见 §3.11。
 > 三个阳性采样 run 与 `image_gate` / N0 列**不可比较**（采样不同）。
 
@@ -420,9 +428,10 @@ CI 跨 0：在这次配对口径下**未观察到明确的 macro Dice 改善**�
 采样后新增假阳 20 例（判断能否安全后处理）＞被救回 14 例（区分真覆盖与 §3.2 最小档
 `pred/ref = 2.108` 式过预测）＞退化 1 例与保留重叠但下降的 7 例。
 
-### 3.10 RQ1 公平匹配比较：`positive_sampling` ↔ `image_gate_positive_sampling`
+### 3.10 旧 RQ1：输入级 MRI 门控公平匹配比较
 
-这是新版 Research Plan §6 的 RQ1 核心对照：两者同为 Dataset605 / fold 0（同 223 个验证病例、
+这是重构前计划的输入级 RQ1 对照，现属 Research Plan §3 的 preliminary evidence：两者同为
+Dataset605 / fold 0（同 223 个验证病例、
 同参考标注）、同 PI-CAI FLCE 损失、同 NoFFT 增强、同阳性病例采样、同 optimizer / PolyLR /
 1000 epoch、验证 loader 同为原生；**预期的唯一结构差异是输入级 image gate**。按 §5.3 **预先
 固定**的判据执行，未新增任何统计系统：直接复用 `scripts/evaluate_segmentation.py`（summary 模式、
@@ -460,15 +469,15 @@ CI 跨 0：在这次配对口径下**未观察到明确的 macro Dice 改善**�
 > precision 明显升高（仅阳性口径 +0.0818、含阴性口径 +0.0668）、阴性假阳病例与假阳体素量同时
 > 下降、阳性区内假阳降到五个已完成 run 中当前最低（46,001 体素），代价是体素召回 −0.0282。
 
-必须同时遵守的边界（Research Plan §6 共同解释约束、§8.1 与 §3.8 口径）：
+必须同时遵守的边界（Research Plan §3、§7、§11 与本文件 §3.8 的口径）：
 
 - **不得**写成「gate 无效」「证明 gate 没有作用」或「gate 一定降低性能」：这是**单次独立训练**，
   nnU-Net v2.6.2 **不设随机种子**，run-to-run 方差尚未估计；CI 只覆盖**病例级重采样**，不覆盖
   初始化噪声。可陈述的只有「本 fold、本次运行的配对结果」。
 - 高 precision / 低 recall 的组合**可能**体现工作点变化（决策更保守），但本研究**不**因此新增
-  阈值校准或 calibration 研究内容；权重与工作点的解释边界仍受 Research Plan §5 约束。
+  阈值校准或 calibration 研究内容；权重与工作点的解释边界仍受 Research Plan §11 约束。
 - 该比较本身**不涉及**解剖条件，只归因「阳性采样条件下加入输入级 image gate」这一项；解剖条件的
-  RQ2 已由 `image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling` 的配对比较回答，
+  旧输入级解剖条件问题已由 `image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling` 的配对比较回答，
   见 §3.11。
 
 复现命令（summary 模式只读 `summary.json`，不读 NIfTI；`--output` 可落盘报告）：
@@ -482,9 +491,10 @@ python scripts/evaluate_segmentation.py \
     --output outputs/reports/segmentation_metrics_rq1_positive_sampling.json
 ```
 
-### 3.11 RQ2 公平匹配比较：`image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling`
+### 3.11 旧 RQ2：输入级解剖条件公平匹配比较
 
-**比较对象与研究问题**：Research Plan §6 的 RQ2 —— 在相同输入级门控形式、相同分割骨干与相同训练
+**比较对象与研究问题**：重构前计划的输入级 RQ2，现属 Research Plan §3 的 preliminary evidence——
+在相同输入级门控形式、相同分割骨干与相同训练
 条件下，**允许门控读取 PZ/TZ（解剖条件，C 臂）是否比只读取 MRI（B 臂）更有用**。方向为
 `image_gate_positive_sampling → anatomy_gate_positive_sampling`，**delta 定义 = anatomy − image**。
 两臂同为 Dataset605/606 的 `3d_fullres` fold 0、同 223 个验证病例（63 阳性 / 160 阴性）、同参考
@@ -529,14 +539,14 @@ PZ/TZ 通道本身**不参与**判等，因此两臂仍不是"只差 PZ/TZ"的�
 - 丢失重叠 5 例：`10570_1000582`、`10688_1000704`、`10799_1000815`、`10834_1000850`、
   `10857_1000873`（其中 4 例属于 §3.9 的"共同完全漏分/被采样救回"名单，需逐例复核）
 
-**RQ2 判定**
+**旧输入级 RQ2 判定**
 
 > 本 fold、本次单次训练中，**没有观察到 anatomy gate（PZ/TZ 只进门控）相对 image gate 的明确配对
 > 改善**：主指标配对均值 delta −0.0053、CI95 跨 0。PZ/TZ 条件使**体素召回略升**（+0.0127），但
 > macro/micro Dice 略降、`positive_voxel_precision` 明显下降（−0.0773）、完全漏分 +3 例、阴性假阳
-> 病例 +2 例与假阳体素上升 —— **整体不构成有利的收益—代价交换**。因此 **H2 在本次实验中未获
-> 支持**（Research Plan §6 H2 要求"同口径比较若没有支持增量效用，就不应把解剖条件包装为已验证的
-> 改进"）；但**不能**据此宣称 PZ/TZ 永久无效，也**不能**宣称两种方法等效。
+> 病例 +2 例与假阳体素上升 —— **整体不构成有利的收益—代价交换**。因此**旧输入级解剖条件
+> 假设在本次实验中未获支持**；但**不能**据此宣称 PZ/TZ 永久无效，也**不能**宣称两种方法
+> 等效，更不能预判新的特征级 RQ3。
 
 **解释边界（必须一并陈述）**
 
@@ -579,7 +589,7 @@ seed 20260922、`TIE_TOLERANCE = 1e-12`，与 §3.8 / §3.10 同一口径）。
 | `image_gate` | 网络结构（单变量） | 明显改善 | **几乎不动** | 假阳病例 11 → 17 |
 | `positive_sampling` | 训练采样（单变量） | **大幅改善** | **明显改善**（漏检 −13、macro Dice +0.109） | 假阳病例 11 → 30、`allPrec` 低于 `image_gate` |
 | `image_gate_positive_sampling`（vs `positive_sampling`） | 网络结构（阳性采样分支内，单变量） | 同族（首个非零 epoch 7） | **无明确增量**（配对 delta −0.0077、CI 含 0、漏检 +2） | 体素召回 −0.0282；换来 precision ↑、假阳 ↓（工作点更保守） |
-| `anatomy_gate_positive_sampling`（vs `image_gate_positive_sampling`） | 门控条件（+PZ/TZ，另含数据集差异） | 同族（首个非零 epoch 3） | **无明确增量**（配对 delta −0.0053、CI 含 0、漏检 +3、macro 与 micro 均略降） | precision ↓（−0.0773 / −0.0652）、假阳病例 +2、阳性区假阳 +30,689 体素；仅体素召回 +0.0127。**H2 未获支持**（§3.11） |
+| `anatomy_gate_positive_sampling`（vs `image_gate_positive_sampling`） | 门控条件（+PZ/TZ，另含数据集差异） | 同族（首个非零 epoch 3） | **无明确增量**（配对 delta −0.0053、CI 含 0、漏检 +3、macro 与 micro 均略降） | precision ↓（−0.0773 / −0.0652）、假阳病例 +2、阳性区假阳 +30,689 体素；仅体素召回 +0.0127。**旧输入级解剖条件假设未获支持**（§3.11） |
 
 ---
 
@@ -625,15 +635,25 @@ seed 20260922、`TIE_TOLERANCE = 1e-12`，与 §3.8 / §3.10 同一口径）。
 - **阳性采样与阳性门控的组合是否更优**：**已回答** —— `image_gate_positive_sampling` 已完成训练
   与 actual validation（2026-09-23 22:47 UTC 落盘），按 §5.3 预先固定的判据执行的配对比较见
   **§3.10**：主指标无明确增量、工作点向保守侧移动；
-- **PZ/TZ 解剖条件是否带来增量效用（RQ2）**：**已回答** —— `anatomy_gate_positive_sampling` 已完成
+- **输入级 PZ/TZ 解剖条件是否带来增量效用（旧 RQ2）**：**已回答** —— `anatomy_gate_positive_sampling` 已完成
   训练与 actual validation（2026-09-24 22:52 UTC 落盘），且其硬前置（Dataset605/606 前三 MRI 通道
   逐数组审计）已在训练前取得 `MRI_ARRAY_AUDIT_PASS`；采用与 §5.3 相同的配对口径（逐病例配对 delta、
   配对 bootstrap 10000 次、seed 20260922）比较见 **§3.11**：主指标无明确配对改善，
-  **H2 在本次实验中未获支持**。
-- **浅层特征融合三条件**（`feature_no_gate_positive_sampling` /
+  **旧输入级假设在本次实验中未获支持**；这不回答新的特征级 RQ3。
+- **新主线的浅层特征融合三条件**（`feature_no_gate_positive_sampling` /
   `feature_image_gate_positive_sampling` / `feature_anatomy_gate_positive_sampling`）：
   **代码已就绪但尚未训练**；
 - **run-to-run 方差**：需要固定随机种子的重复运行，才能把上述单次运行的差异与初始化噪声分开。
+
+**新研究主线的下一步判据**（Research Plan §5–10）：在相同阳性采样、损失、split 与验证口径下，
+先比较 `positive_sampling → feature_no_gate_positive_sampling`，判定浅层表征路径的整体价值；
+再比较 `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`，判定
+feature gate 的增量；最后比较 `feature_image_gate_positive_sampling` →
+`feature_anatomy_gate_positive_sampling`，检验 PZ/TZ 条件。后三个实验尚未训练，当前不能写成
+任何特征级 RQ 已获支持。病例级按参考体素数分箱的旧结果不能替代病灶实例和物理体积分层；
+实例级匹配规则须在查看新结果前确定。若有候选改善，只对最终候选及匹配参照做独立种子确认，
+病例 bootstrap 与跨训练 run 方差分别报告。Prostate158 仅在内部选型冻结后用于跨域压力测试，
+第三序列 DWI 与训练 HBV 不视为等价；anatomy 模型还须有独立冻结的 PZ/TZ 生成流程。
 
 > **该问题已在 §5.1 给出答案**（`positive_sampling` 已完成训练与 validation）。它只改变
 > **训练病例/patch 采样**这一个变量，因此结果可归因到采样本身；但仍受"单次运行、无随机种子"
@@ -667,7 +687,7 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
   只能报告为**权衡**，**不得**写成「全面优于」；各指标方向不一致时逐方向陈述，不做单向总评。
 - **证据边界**：单次运行、无随机种子 → 不宣称跨 seed 稳定增益，不做「gate 导致提升」的因果断言；
   该配对只归因「阳性采样条件下加入输入级 image gate」这一项，**不**涉及解剖条件。
-  RQ2（解剖条件）由 `image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling` 的配对回答；
+  旧输入级解剖条件问题由 `image_gate_positive_sampling` ↔ `anatomy_gate_positive_sampling` 的配对回答；
   其数据集一致性前提（Dataset605/606 前三 MRI 通道逐数组审计）**已于训练前取得**
   `MRI_ARRAY_AUDIT_PASS`，因此该配对可解释为「门控是否读取 PZ/TZ」的差异 —— 但 PZ/TZ 通道本身
   不参与判等，故仍**不得**说成「只差 PZ/TZ 的严格单变量对照」。结果见 §3.11。
@@ -704,7 +724,7 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
   **不得**写成「gate 无效 / gate 降低性能」，也**不得**写成「PZ/TZ 无用 / gate 没使用 PZ/TZ /
   解剖信息导致性能下降」；CI 跨 0 既不支持提升也不支持下降，更**不证明等效**。只能陈述本 fold、
   本次运行观察到的方向与代价。
-- **H2 的当前状态**：本次实验未获支持（§3.11）。这不构成对 PZ/TZ 的一般性否定，也不构成与
+- **旧输入级解剖条件假设的当前状态**：本次实验未获支持（§3.11）。这不构成对 PZ/TZ 的一般性否定，也不构成与
   image gate 的等效性证明；若后续要就此下更强结论，需要固定随机种子的重复运行（§7 第 6 项）。
 
 ---
@@ -730,6 +750,6 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
    `status = MRI_ARRAY_AUDIT_PASS`、三通道逐数组完全相同（`global_max|Δ| = 0`）、
    `effective_labels_equal = true`、`n_cases_effective_input_mismatch = 0`、病例集合与 split
    含顺序逐项一致；2 例纯 `-1↔0` 原始 seg 差异为信息性（`n_cases_raw_label_difference = 2`）。
-   审计只对**前三个 MRI 通道**做逐值判等，**PZ/TZ 不参与**，因此 RQ2 仍不是「只差 PZ/TZ」的
+   审计只对**前三个 MRI 通道**做逐值判等，**PZ/TZ 不参与**，因此旧输入级解剖条件比较仍不是「只差 PZ/TZ」的
    严格单变量对照（边界见 §3.11）。首轮 v1 报告（FAIL，源于把合法的 -1 判为非法标签）按原样保留
    作追溯：`outputs/reports/dataset605_606_mri_equivalence_audit.json`。

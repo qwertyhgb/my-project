@@ -18,10 +18,8 @@
 | 输出目录 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | 训练入口 | `python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0 --device cuda` |
 | 预测入口 | `scripts/inference/predict_nnunet.py -m <上述输出目录> -f 0 -device cuda` |
-| 研究问题 | **RQ1 在阳性采样分支内的公平匹配条件**：固定阳性病例采样下，输入级 image gate 相对无 gate
-  参照臂是否改变序列偏好与分割表现。预期与参照臂唯一的结构差异是 3→8→3 的输入级空间 gate |
-| 状态 | **训练 + actual validation 均已完成**（2026-09-23，1000 epoch 全部完成；223 例 validation
-  产物已落盘）。本记录不含 Prostate158 等任何外测结果 |
+| 研究问题 | **旧输入级 RQ1 的阳性采样条件**（现属 Research Plan §3 初步实验）：输入级 image gate 相对无 gate 参照臂是否改变序列偏好与分割表现；预期主要结构差异是 3→8→3 的输入级空间 gate |
+| 状态 | **训练 + actual validation 均已完成**（2026-09-23，1000 epoch；223 例 validation 产物已落盘）；本记录不含 Prostate158 外测结果 |
 
 ---
 
@@ -363,7 +361,8 @@ foreground_mean.IoU  = 0.14883645858538752
 8. **初始化不可复现**（无随机种子）；与任何其他 run 的差异都不能仅凭单次运行做因果断言。
    本 run 与无 gate 阳性采样参照臂的逐病例配对比较、bootstrap CI 与综合判断按文档分工
    统一记录在 `docs/Findings.md`，不在本文件展开。
-9. 本实验只回答阳性采样条件下"输入级 image gate"的问题；**不含解剖先验**，不能回答 RQ2。
+9. 本实验只回答阳性采样条件下"输入级 image gate"的问题；**不含解剖先验**，不能回答新计划中
+   特征级门控的 RQ2，也不能回答解剖条件的 RQ3。
 
 ---
 

@@ -1,8 +1,9 @@
-# Anatomy-Conditioned Multi-sequence Prostate Lesion Segmentation
+# Sequence-Specific Shallow Feature Fusion for Prostate Lesion Segmentation
 
-前列腺癌（csPCa）病灶分割研究项目，采用 **nnU-Net-first** 架构。研究核心是在原生 nnU-Net
-backbone 前加一个很小的 **spatial modality gate**，并考察解剖分区（PZ/TZ）先验是否能改变
-T2W/ADC/HBV 的空间相对序列偏好。
+前列腺癌（csPCa）病灶分割研究项目，采用 **nnU-Net-first** 架构。新的研究主线依次检验
+T2W/ADC/HBV 的序列特异浅层局部表征、特征级自适应融合，以及 PZ/TZ 作为融合条件的增量价值。
+既有输入级门控实验是初步证据；三个特征级 variant 已实现、尚未训练。研究计划见
+`docs/Research_Plan.md`，既有结果见 `docs/Findings.md`。
 
 > **术语说明**：类名/包名中的 `Reliability`（`zonal_reliability_fusion`、
 > `SpatialModalityReliabilityGate`）是**历史内部标识**，保留它是为了 checkpoint、导入路径与
@@ -24,7 +25,7 @@ training loop、checkpoint/resume、validation、sliding-window inference、pred
 4. 必要的 PZ/TZ 输入适配（Dataset606 的附加通道与增强边界）；
 5. 阳性病例感知的训练 patch 采样（`positive_sampling`：每批固定一个阳性病灶 patch，
    见 `src/zonal_reliability_fusion/nnunet/sampling.py`）；
-6. 浅层序列特异特征融合候选（Research Plan §9.2 的 Plan B `feature_*_positive_sampling`：三个参数不共享
+6. 浅层序列特异特征融合主线（Research Plan §4–6 的 `feature_*_positive_sampling`：三个参数不共享
    的浅层 3×3×3 stem + 1×1×1 投影回 3 通道，可选 feature gate；骨干仍由 plans 构建）；
 7. 一个统一训练入口 `scripts/train/train_nnunet.py`；
 8. 最少量的数据准备代码 `scripts/data/prepare_picai_nnunet.py`。
@@ -91,19 +92,17 @@ weight/bias 零初始化；`weights = softmax(logits,1)`（W，通道和为 1，
   1000 epoch 全部完成 → 22:42 UTC actual validation 完成）。运行事实与真实数字见
   `docs/Training_Log.md`。
 
-#### 公平匹配的 gate 组合（`image_gate_positive_sampling` 与 `anatomy_gate_positive_sampling` **均已完成训练 + validation**）
+#### 输入级门控的初步实验（`image_gate_positive_sampling` 与 `anatomy_gate_positive_sampling` **均已完成训练 + validation**）
 
-Research Plan 规定核心门控比较必须固定损失、病例/patch 采样、增强、optimizer、LR scheduler、
-split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 与原生采样）本身仍是**原生采样
-条件下**的受控 RQ1 对照，但它们**不能与 `positive_sampling` 分支混合比较**（采样不同），且单次
-运行与 baseline 早期长期全背景的优化异常会限制结论强度。为在同一采样条件下比较门控，新增两个
-组合 Trainer（不改动任何旧类行为，不复用任何旧 checkpoint，输出目录由类名自然隔离）：
+这些已完成实验原先回答输入级门控问题，现在为特征级主线提供 preliminary evidence。
+旧 `baseline` ↔ 旧 `image_gate` 同为 FLCE 与原生采样；它们不能与阳性采样分支混合归因。
+同一采样条件下的两个组合 Trainer 继续保留独立结果和输出目录：
 
 | 比较 | 模型 A | 模型 B | 边界 |
 |---|---|---|---|
-| RQ1（阳性采样分支内） | `positive_sampling` | `image_gate_positive_sampling` | 仅归因 image gate |
-| RQ2（阳性采样分支内） | `image_gate_positive_sampling` | `anatomy_gate_positive_sampling` | **预期主要差异**为 anatomy 条件（PZ/TZ）与数据集（605 vs 606）；前三 MRI 通道逐数组审计已通过（见下节），PZ/TZ 通道本身不参与判等，故仍不宣称「唯一差异」 |
-| RQ1（**原生采样**条件下的受控对照） | 旧 `baseline` | 旧 `image_gate` | 仅归因 image gate；不能与阳性采样分支混合比较，单次运行与早期优化异常限制结论强度 |
+| 输入级 MRI 门控（阳性采样） | `positive_sampling` | `image_gate_positive_sampling` | 初步实验；只增加输入级 image gate |
+| 输入级解剖条件（阳性采样） | `image_gate_positive_sampling` | `anatomy_gate_positive_sampling` | 初步实验；门控条件含 PZ/TZ，数据集为 605 vs 606，前三 MRI 通道审计已通过 |
+| 输入级 MRI 门控（原生采样） | 旧 `baseline` | 旧 `image_gate` | 历史对照；不能与阳性采样分支混合归因 |
 
 - `image_gate_positive_sampling`：Dataset605，3 通道；FLCE + image gate + 阳性病例采样；
 - `anatomy_gate_positive_sampling`：Dataset606，5 通道；FLCE + anatomy gate（PZ/TZ 只进门控、
@@ -111,14 +110,14 @@ split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 
 - 两者的 loss、增强（NoFFT）、optimizer、PolyLR、epoch、deep supervision、checkpoint、
   validation、inference 与验证 loader（原生 `nnUNetDataLoader`）全部一致；anatomy 的强度增强
   仍只作用于前 3 个 MRI 通道；
-- **RQ2 的边界**：两者除门控条件外还使用不同数据集（Dataset605 vs Dataset606）。配置层面
+- **输入级解剖条件对照的边界**：两者除门控条件外还使用不同数据集（Dataset605 vs Dataset606）。配置层面
   （split / spacing / patch size / batch size / 前三个 MRI 通道 normalization 与 fingerprint）
   一致；前三 MRI 通道的**真实数据逐数组一致性审计已通过**（`MRI_ARRAY_AUDIT_PASS`，2026-09-24
   03:33 UTC，早于训练启动，见下节）。审计只对前三个 MRI 通道判等，**PZ/TZ 本身不参与判等**，
   且两臂仍来自不同数据集配置，因此**仍不得**把差异说成「只差 PZ/TZ 的严格单变量对照」；
 - **`image_gate_positive_sampling` 已完成训练 + actual validation**（2026-09-23 06:55 → 22:47 UTC；
   1000 epoch；223 例 validation 已落盘）：nnU-Net `foreground_mean.Dice` = 0.20935、阳性病例
-  macro Dice 0.2991、micro Dice 0.5397、`positive_voxel_precision` 0.8341；**RQ1 配对比较的结论、
+  macro Dice 0.2991、micro Dice 0.5397、`positive_voxel_precision` 0.8341；**输入级 MRI 门控配对比较的结论、
   全部指标与复现命令见 `docs/Findings.md` §3.10**（配对均值 delta −0.0077、CI95 含 0 ⇒
   本次单次运行**未观察到明确的分割增量效用**，但工作点更保守：precision ↑、假阳 ↓、漏检略增）；
   运行事实见 `docs/Training_Log.md`，逐实验细节见 `docs/experiments/image_gate_positive_sampling.md`；
@@ -127,24 +126,24 @@ split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 
   macro Dice 0.2937、micro Dice 0.5332、`positive_voxel_precision` 0.7567；其启动前置条件
   ——Dataset605/606 前三 MRI 通道真实数据逐数组审计——已取得 `MRI_ARRAY_AUDIT_PASS`
   （2026-09-24 03:33 UTC，早于训练启动）。运行事实见 `docs/Training_Log.md`，逐实验细节见
-  `docs/experiments/anatomy_gate_positive_sampling.md`；**RQ2 配对比较已完成**，报告
+  `docs/experiments/anatomy_gate_positive_sampling.md`；**输入级解剖条件配对比较已完成**，报告
   `outputs/reports/segmentation_metrics_rq2_anatomy_gate.json`，结论登记在
   `docs/Findings.md` **§3.11**：本次单次运行中**未观察到 anatomy gate 相对 image gate 的明确配对
   改善**（配对均值 delta −0.0053、CI95 含 0；召回略升但 precision 明显下降、漏分与阴性假阳增加），
-  **H2 本次未获支持**——但这不证明 PZ/TZ 无效，也不证明两法等效。
+  **旧输入级解剖条件假设本次未获支持**——但这不证明 PZ/TZ 无效，也不证明两法等效。
 
-#### 浅层特征融合（`feature_*_positive_sampling`，**代码已实现，三个都尚未训练**）
+#### 特征级融合主线（`feature_*_positive_sampling`，**代码已实现，三个都尚未训练**）
 
-Research Plan §9.2 的「Plan B：浅层特征融合」——**备选扩展，不是论文最低完成条件**。三个条件共享
+Research Plan §4–6 的论文主线。三个特征级条件共享
 **完全相同**的浅层编码与投影结构、
 FLCE 损失、阳性病例采样、增强、optimizer、LR scheduler、epoch、deep supervision、checkpoint、
 validation 与滑窗推理，构成一组同层级比较：
 
 | 比较 | 模型 A | 模型 B | 边界 |
 |---|---|---|---|
-| 浅层编码/投影本身的作用 | `feature_no_gate_positive_sampling` | `feature_image_gate_positive_sampling` | 仅归因 feature gate（同 stem/投影/backbone） |
-| 浅层解剖条件的作用（Plan B 内部比较） | `feature_image_gate_positive_sampling` | `feature_anatomy_gate_positive_sampling` | 仅归因 gate 条件（PZ/TZ）；数据集 605 vs 606 与 16 个 gate 参数的差异见下 |
-| 表征层级的作用 | `positive_sampling` | `feature_no_gate_positive_sampling` | 浅层编码 + 投影引入的额外容量与输入分布变化 |
+| RQ1：浅层表征路径整体作用 | `positive_sampling` | `feature_no_gate_positive_sampling` | stem、投影、额外参数及骨干输入表示共同改变 |
+| RQ2：特征级自适应门控 | `feature_no_gate_positive_sampling` | `feature_image_gate_positive_sampling` | 共享 stem/投影/backbone，主要差异为 feature gate |
+| RQ3：特征级解剖条件 | `feature_image_gate_positive_sampling` | `feature_anatomy_gate_positive_sampling` | PZ/TZ 只进 gate；数据集 605 vs 606 与 16 个 gate 参数的差异见下 |
 
 网络结构（`networks.FeatureFusionNNUNet`）：
 
@@ -177,7 +176,7 @@ validation 与滑窗推理，构成一组同层级比较：
 而原生 stage 0 在满分辨率上的对照值约 0.84 GB。因此取保守的 `C_s = 8`；**未修改**
 `nnUNetPlans.json`。
 
-零初始化的边界（Plan B 的解释边界见 Research Plan §9.2；以下两点是代码层事实，各有单元测试守护）：
+零初始化的边界（见 Research Plan §4.2；以下两点是代码层事实，各有单元测试守护）：
 
 - feature gate 末层零初始化 ⇒ 初始 `S ≡ 1`，因此 feature gate 网络在**共享相同 stem / 投影 /
   backbone 权重**时与 `feature_no_gate` **逐值一致**（有单元测试守护）；
@@ -191,8 +190,8 @@ validation 与滑窗推理，构成一组同层级比较：
 
 其他边界：三个条件与输入级 `image_gate` / `anatomy_gate` **属于不同表征层级**，不能混在同一张
 归因表里；feature 版本相对原生 nnU-Net 的全部差异包含"更多参数 + 不同输入分布"，因此不能把全部
-收益归因于解剖条件（Research Plan §9.2）。三个条件属于 **Plan B**、**尚未训练**，也不是硕士论文的
-最低完成条件，本节不含任何训练结果。
+收益归因于解剖条件（Research Plan §5–6）。三个特征级条件是新的**主线**，目前**尚未训练**；
+本节不含任何训练结果。阳性采样是它们共同的训练稳定化条件，并非主要方法贡献。
 
 #### Dataset605 与 Dataset606 的一致性边界
 
@@ -205,7 +204,7 @@ validation 与滑窗推理，构成一组同层级比较：
 `anatomy_gate_positive_sampling` 的训练晚于该审计完成。即便审计通过，两个数据集的结果并列
 解释时仍须注意：审计只对**前三个 MRI 通道**做逐值相等判定，PZ/TZ 通道本身不参与判等。
 
-#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置；v1 判据有缺陷已修正，v2 已执行并 PASS）
+#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（解剖条件比较前置；v1 判据有缺陷已修正，v2 已执行并 PASS）
 
 工具：`scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed，含纯合成单元测试）。
 它逐病例比较预处理后前三个 MRI 通道（T2W/ADC/HBV）的 `np.array_equal` 与浮点差值统计，并审计
@@ -285,12 +284,12 @@ python scripts/train/train_nnunet.py optimized_baseline 605 3d_fullres 0  # 原�
 python scripts/train/train_nnunet.py image_gate 605 3d_fullres 0
 python scripts/train/train_nnunet.py anatomy_gate 606 3d_fullres 0        # 需先准备并预处理 Dataset606
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py positive_sampling 605 3d_fullres 0
-# 公平匹配的 gate 组合（均与 positive_sampling 共用 FLCE + 阳性病例采样）
+# 输入级门控历史条件（均与 positive_sampling 共用 FLCE + 阳性病例采样）
 # image_gate_positive_sampling 已完成（2026-09-23，见 Training_Log / Findings §3.10）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0
 # anatomy_gate_positive_sampling 已完成（2026-09-24；MRI 数组审计已通过，见「一致性边界」）
 # CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0
-# 浅层特征融合三条件（尚未训练；同一 stem/投影/损失/采样，见「浅层特征融合」小节）
+# 特征级融合主线三条件（尚未训练；同一 stem/投影/损失/采样，见上节）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_no_gate_positive_sampling 605 3d_fullres 0
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_image_gate_positive_sampling 605 3d_fullres 0
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_anatomy_gate_positive_sampling 606 3d_fullres 0
@@ -428,11 +427,16 @@ python scripts/evaluate_segmentation.py \
 
 ### Prostate158 独立外测（跨域外部数据；原始影像只读）
 
-用 Prostate158 在**不重训、不微调、不新建 Dataset ID** 的前提下外测已完成的 Dataset605 模型。
+用 Prostate158 在**不重训、不微调、不新建 Dataset ID** 的前提下，对内部验证选定的最终模型
+进行跨域压力测试。既有 Dataset605 命令只是可用入口示例，不能据此把 `positive_sampling`
+预先确定为最终模型。模型、checkpoint、阈值和后处理须在 PI-CAI 内部验证上先行确定并冻结；
+看到 Prostate158 结果后不得再依结果改动这些选择，否则该集合成为开发集。
 通道映射固定 `_0000=t2 / _0001=adc / _0002=dwi`；**Prostate158 DWI 只是第三通道（训练时为
 HBV）的跨域输入，不宣称与 HBV 等价**。原始 Prostate158 影像与标注绝不修改：默认只在独立目录
 建相对软链接；只有三通道网格不一致且物理坐标关系可信、覆盖完整，并**显式**加
 `--allow-resample` 时，才在派生目录内对 adc/dwi 做线性重采样（T2 为参考网格；绝不自动配准）。
+若最终模型需要 PZ/TZ，须先有独立、冻结、可复现且不使用外测病灶标签的分区生成流程；
+没有这样的流程时，不能宣称 anatomy 模型与 MRI-only 模型具有完全等价的外测条件。
 主参考固定 `adc_tumor_reader1`；`adc_tumor_reader2` 仅在可核对子集上做单独的读者敏感性分析。
 **official test / 原作者 train / valid 三队列分开报告，不合并。** 以下均为长任务，由研究者运行。
 

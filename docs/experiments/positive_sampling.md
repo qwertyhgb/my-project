@@ -20,19 +20,19 @@
 
 ### 1.1 这项实验在研究里的位置
 
-它**不是** `Research_Plan.md` 中的一个独立条件，而是项目侧的受控扩展（`AGENTS.md` §5、
-`src/zonal_reliability_fusion/nnunet/sampling.py` 的模块 docstring）。它的作用有两层：
+它现在是 `Research_Plan.md` §6 新主线的 **A 参照条件**；阳性病例感知采样本身仍是共同训练
+稳定化策略，不是主要方法创新。项目侧实现见 `AGENTS.md` §5 和
+`src/zonal_reliability_fusion/nnunet/sampling.py`。它的作用有两层：
 
 1. **优化修复**：已完成的 N0（`baseline`）在 1000 epoch 中有约 700 epoch 停留在"全部预测为背景"，
    到 epoch 756 才首次持续突破。本实验只改变**训练集病例/patch 采样**，考察这一现象是否由
    "稀疏小病灶 + 均匀病例采样"造成。
-2. **固定采样的参照臂**：`Research_Plan.md` 规定核心门控比较必须固定损失、采样、增强、optimizer、
-   LR scheduler 与 split。`positive_sampling` 因此是阳性采样分支内 **RQ1**（是否需要影像自适应融合）
-   与 **RQ2**（显式分区条件是否提供额外归纳偏置）的参照臂：`image_gate_positive_sampling`、
-   `anatomy_gate_positive_sampling` 与它配对使用。
+2. **固定采样的参照臂**：它是新主线 RQ1 的 A 条件，用于比较无门控的
+   `feature_no_gate_positive_sampling` 浅层表征路径整体效用。历史输入级 image/anatomy gate
+   比较保留为初步实验，其对照和结论登记在 `docs/Findings.md`。
 
-**本实验不包含任何 gate，也不含 PZ/TZ**，因此它本身不回答 RQ1/RQ2，只提供这两个问题所需的
-**同采样条件下的参照点**。
+**本实验不包含任何 gate，也不含 PZ/TZ**；它本身不回答新主线的 RQ2/RQ3，
+只提供 RQ1 所需的**同采样条件下的参照点**。
 
 ---
 
@@ -359,8 +359,8 @@ foreground_mean.IoU  = 0.150146
    `checkpoint_final`（epoch 999）。
 7. **初始化不可复现**（无随机种子）；单次运行的差异不足以独立支持机制归因，证据边界统一见
    `docs/Findings.md` §6。
-8. **本实验不含任何 gate 或解剖先验**，因此它**不能**回答 RQ1 / RQ2；它只提供阳性采样分支内
-   同采样条件下的参照点。`image_gate` / `anatomy_gate` 使用**原生采样**，与它**不能**混在同一张
+8. **本实验不含任何 gate 或解剖先验**，因此它是新 RQ1 的参照条件，不能单独回答 RQ1，
+   也不能回答新 RQ2 / RQ3。`image_gate` / `anatomy_gate` 使用**原生采样**，与它**不能**混在同一张
    归因表里。
 
 ---

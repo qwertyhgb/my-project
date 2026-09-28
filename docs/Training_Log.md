@@ -156,7 +156,7 @@
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0（1277 train / 223 val，与
   `positive_sampling` 同一划分）
 - 设计：与 `positive_sampling` **唯一**差异是输入级 3→8→3 image gate（末层零初始化）；
-  RQ1 的公平匹配臂
+  旧输入级 MRI 门控问题的公平匹配臂；现归入初步实验
 - 命令：`python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0 --device cuda`
 - 日志：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/training_log_2026_9_23_06_55_30.txt`
@@ -170,7 +170,7 @@
   `all_prediction_voxel_precision` **0.746372**
 - 检出结构：阳性 63 例中有任意重叠 **40 例**（63.5%）、完全无重叠 **23 例**（其中 21 例整例无预测）；
   阴性 160 例中 27 例出现预测（假阳体素合计 32,575）
-- 与 `positive_sampling` 的配对比较（RQ1）登记在 `docs/Findings.md` §3.10：配对均值 delta
+- 与 `positive_sampling` 的配对比较（旧输入级 RQ1）登记在 `docs/Findings.md` §3.10：配对均值 delta
   = −0.0077、CI95 含 0，**未观察到明确的分割增量效用**，但工作点更保守（precision 升高、
   假阳减少、漏检略增）
 - validation probabilities：**未导出**
@@ -187,7 +187,7 @@
   5 通道 = T2W/ADC/HBV + PZ/TZ，PZ/TZ 只进门控、不进分割 backbone）
 - 设计：与 `image_gate_positive_sampling` 的**预期主要差异**是门控条件（PZ/TZ）与数据集
   （606 vs 605）；损失、采样、增强、optimizer、LR scheduler 与随机种子策略一致
-- RQ2 归因前置条件：Dataset605/606 前三 MRI 通道逐数组审计已通过
+- 旧输入级解剖条件比较的归因前置条件：Dataset605/606 前三 MRI 通道逐数组审计已通过
   （`outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`，
   `status = MRI_ARRAY_AUDIT_PASS`，2026-09-24 03:33 UTC，1500 例，0 mismatch），
   早于本训练启动（同日 06:42 UTC）
@@ -218,7 +218,7 @@
   `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - 边界：`0.201140` 是 nnU-Net 的 `nanmean` 逐例口径（含假阳阴性病例的 0 分），**不是**阳性病例
   Dice；跨 run 的解释与结论一律不在本文件登记。
-- RQ2 配对比较（与 `image_gate_positive_sampling`，delta = anatomy − image）报告已落盘：
+- 旧输入级 RQ2 配对比较（与 `image_gate_positive_sampling`，delta = anatomy − image）报告已落盘：
   `outputs/reports/segmentation_metrics_rq2_anatomy_gate.json`；结论与完整指标登记在
   `docs/Findings.md` §3.11。
 - 详细记录：`docs/experiments/anatomy_gate_positive_sampling.md`
@@ -244,7 +244,7 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
   labels `background=0` / `lesion=1`
 - `workdir/nnUNet_preprocessed/Dataset606_PICAI_Zonal/`：含 `nnUNetPlans.json` 与 `nnUNetPlans_3d_fullres`
 - `splits_final.json`（raw 与 preprocessed 各一份）：1 fold，**train=1277，val=223**
-- `anatomy_gate`（原生采样旧 variant）：数据已就绪，**训练未运行**（RQ2 由
+- `anatomy_gate`（原生采样旧 variant）：数据已就绪，**训练未运行**（旧输入级解剖问题由
   `anatomy_gate_positive_sampling` 承担，见上文）
 - **Dataset605 ↔ Dataset606 前三 MRI 通道逐数组一致性审计：已执行并通过**，且在本训练启动前完成。
   工具 `scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed）；

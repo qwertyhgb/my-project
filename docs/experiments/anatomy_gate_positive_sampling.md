@@ -19,17 +19,9 @@
 | 输出目录 | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | 训练入口 | `CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0` |
 | 预测入口 | `scripts/inference/predict_nnunet.py -m <上述输出目录> -f 0 -device cuda` |
-| 研究问题 | **RQ2 在阳性采样分支内**：固定阳性病例采样下，把 PZ/TZ 作为**门控条件**（PZ/TZ 只进
-  gate、不进分割 backbone）是否改变分割表现。本实验是 RQ2 的 anatomy 条件臂：与 image 条件臂的
-  **预期主要差异**是门控条件（多 PZ/TZ 两个通道）与数据集（Dataset606 vs Dataset605）；两者共享
-  损失、采样、增强、optimizer、LR scheduler 与随机种子策略。本文件只记录本臂自身的事实 |
-| 状态 | **训练 + actual validation 均已完成**（2026-09-24，1000 epoch 全部完成；223 例 validation
-  产物已落盘）。本记录不含任何外测结果 |
-| RQ2 归因前置条件 | Dataset605/606 前三 MRI 通道的真实数据逐数组审计已在本实验启动**之前**完成并通过：
-  `outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`，`status = MRI_ARRAY_AUDIT_PASS`
-  （2026-09-24 03:33:24，1500 例，`mri_exact_equal_all = true`、`effective_labels_equal = true`、
-  `n_cases_effective_input_mismatch = 0`；2 例纯 `-1↔0` 原始 seg 差异为信息性）。本实验训练于
-  同日 06:42 UTC 启动 |
+| 研究问题 | **旧输入级 RQ2 的阳性采样条件**（现属 Research Plan §3 初步实验）：PZ/TZ 只进 gate、不进分割 backbone；与 image 条件臂的预期主要差异是门控条件和 Dataset606 vs Dataset605。两臂共享损失、采样、增强、optimizer、LR scheduler 与随机种子策略 |
+| 状态 | **训练 + actual validation 均已完成**（2026-09-24，1000 epoch；223 例 validation 产物已落盘）；本记录不含外测结果 |
+| 输入级解剖条件比较的归因前置条件 | Dataset605/606 前三 MRI 通道逐数组审计于训练前通过：`outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`，`MRI_ARRAY_AUDIT_PASS`，1500 例、0 个有效输入不一致；2 例纯 `-1↔0` 原始 seg 差异为信息性。审计于 2026-09-24 03:33 UTC 完成，训练于同日 06:42 UTC 启动 |
 
 ---
 
@@ -375,10 +367,10 @@ foreground_mean.IoU  = 0.1453746308185973
 7. **patch pseudo dice 全程大幅震荡**（单 epoch 0.0002–0.7691）：仅凭这一 patch 级口径**不能断定**
    训练是否已收敛或进入稳定平台；1000 epoch 是否足够、更长训练是否改变结果，本实验不能说明。
 8. **初始化不可复现**（无随机种子）；本 run 与其他 run 的逐病例配对比较、bootstrap CI 与综合判断
-   按文档分工统一记录在 `docs/Findings.md`，不在本文件展开。RQ2 的归因还要求对照臂与其数据集
+   按文档分工统一记录在 `docs/Findings.md`，不在本文件展开。旧输入级解剖条件问题的归因还要求对照臂与其数据集
    一致性前提同时成立（本实验的数据一致性前提见第 1 节），并且**不能**仅凭单次运行作因果断言。
-9. 本实验只回答阳性采样条件下"anatomy 条件（PZ/TZ 只进门控）"的问题；不涉及浅层特征融合或其他
-   表征层级的问题。
+9. 本实验只回答阳性采样条件下"输入级 anatomy 条件（PZ/TZ 只进门控）"的问题；不涉及浅层特征融合，
+   因此不能回答新计划中特征级解剖条件的 RQ3。
 
 ---
 
