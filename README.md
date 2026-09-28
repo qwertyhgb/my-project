@@ -24,7 +24,7 @@ training loop、checkpoint/resume、validation、sliding-window inference、pred
 4. 必要的 PZ/TZ 输入适配（Dataset606 的附加通道与增强边界）；
 5. 阳性病例感知的训练 patch 采样（`positive_sampling`：每批固定一个阳性病灶 patch，
    见 `src/zonal_reliability_fusion/nnunet/sampling.py`）；
-6. 浅层序列特异特征融合候选（Research Plan §8.10 的 `feature_*_positive_sampling`：三个参数不共享
+6. 浅层序列特异特征融合候选（Research Plan §9.2 的 Plan B `feature_*_positive_sampling`：三个参数不共享
    的浅层 3×3×3 stem + 1×1×1 投影回 3 通道，可选 feature gate；骨干仍由 plans 构建）；
 7. 一个统一训练入口 `scripts/train/train_nnunet.py`；
 8. 最少量的数据准备代码 `scripts/data/prepare_picai_nnunet.py`。
@@ -113,8 +113,9 @@ split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 
   仍只作用于前 3 个 MRI 通道；
 - **RQ2 的边界**：两者除门控条件外还使用不同数据集（Dataset605 vs Dataset606）。配置层面
   （split / spacing / patch size / batch size / 前三个 MRI 通道 normalization 与 fingerprint）
-  已核对一致（见下），但在完成前三个 MRI 通道的**逐数组一致性审计**之前，不能宣称唯一差异
-  是 PZ/TZ；
+  一致；前三 MRI 通道的**真实数据逐数组一致性审计已通过**（`MRI_ARRAY_AUDIT_PASS`，2026-09-24
+  03:33 UTC，早于训练启动，见下节）。审计只对前三个 MRI 通道判等，**PZ/TZ 本身不参与判等**，
+  且两臂仍来自不同数据集配置，因此**仍不得**把差异说成「只差 PZ/TZ 的严格单变量对照」；
 - **`image_gate_positive_sampling` 已完成训练 + actual validation**（2026-09-23 06:55 → 22:47 UTC；
   1000 epoch；223 例 validation 已落盘）：nnU-Net `foreground_mean.Dice` = 0.20935、阳性病例
   macro Dice 0.2991、micro Dice 0.5397、`positive_voxel_precision` 0.8341；**RQ1 配对比较的结论、
@@ -126,19 +127,23 @@ split 与随机种子策略。旧 `baseline` ↔ 旧 `image_gate`（同为 FLCE 
   macro Dice 0.2937、micro Dice 0.5332、`positive_voxel_precision` 0.7567；其启动前置条件
   ——Dataset605/606 前三 MRI 通道真实数据逐数组审计——已取得 `MRI_ARRAY_AUDIT_PASS`
   （2026-09-24 03:33 UTC，早于训练启动）。运行事实见 `docs/Training_Log.md`，逐实验细节见
-  `docs/experiments/anatomy_gate_positive_sampling.md`；**RQ2 的配对比较与结论尚未进行**，
-  登记位置为 `docs/Findings.md`（当前尚未写入）。
+  `docs/experiments/anatomy_gate_positive_sampling.md`；**RQ2 配对比较已完成**，报告
+  `outputs/reports/segmentation_metrics_rq2_anatomy_gate.json`，结论登记在
+  `docs/Findings.md` **§3.11**：本次单次运行中**未观察到 anatomy gate 相对 image gate 的明确配对
+  改善**（配对均值 delta −0.0053、CI95 含 0；召回略升但 precision 明显下降、漏分与阴性假阳增加），
+  **H2 本次未获支持**——但这不证明 PZ/TZ 无效，也不证明两法等效。
 
 #### 浅层特征融合（`feature_*_positive_sampling`，**代码已实现，三个都尚未训练**）
 
-Research Plan §8.10 的「浅层序列特异特征融合候选」。三个条件共享**完全相同**的浅层编码与投影结构、
+Research Plan §9.2 的「Plan B：浅层特征融合」——**备选扩展，不是论文最低完成条件**。三个条件共享
+**完全相同**的浅层编码与投影结构、
 FLCE 损失、阳性病例采样、增强、optimizer、LR scheduler、epoch、deep supervision、checkpoint、
 validation 与滑窗推理，构成一组同层级比较：
 
 | 比较 | 模型 A | 模型 B | 边界 |
 |---|---|---|---|
 | 浅层编码/投影本身的作用 | `feature_no_gate_positive_sampling` | `feature_image_gate_positive_sampling` | 仅归因 feature gate（同 stem/投影/backbone） |
-| 浅层解剖条件的作用（RQ4） | `feature_image_gate_positive_sampling` | `feature_anatomy_gate_positive_sampling` | 仅归因 gate 条件（PZ/TZ）；数据集 605 vs 606 与 16 个 gate 参数的差异见下 |
+| 浅层解剖条件的作用（Plan B 内部比较） | `feature_image_gate_positive_sampling` | `feature_anatomy_gate_positive_sampling` | 仅归因 gate 条件（PZ/TZ）；数据集 605 vs 606 与 16 个 gate 参数的差异见下 |
 | 表征层级的作用 | `positive_sampling` | `feature_no_gate_positive_sampling` | 浅层编码 + 投影引入的额外容量与输入分布变化 |
 
 网络结构（`networks.FeatureFusionNNUNet`）：
@@ -172,7 +177,7 @@ validation 与滑窗推理，构成一组同层级比较：
 而原生 stage 0 在满分辨率上的对照值约 0.84 GB。因此取保守的 `C_s = 8`；**未修改**
 `nnUNetPlans.json`。
 
-零初始化的边界（Research Plan §8.10 末段、H5）：
+零初始化的边界（Plan B 的解释边界见 Research Plan §9.2；以下两点是代码层事实，各有单元测试守护）：
 
 - feature gate 末层零初始化 ⇒ 初始 `S ≡ 1`，因此 feature gate 网络在**共享相同 stem / 投影 /
   backbone 权重**时与 `feature_no_gate` **逐值一致**（有单元测试守护）；
@@ -186,7 +191,8 @@ validation 与滑窗推理，构成一组同层级比较：
 
 其他边界：三个条件与输入级 `image_gate` / `anatomy_gate` **属于不同表征层级**，不能混在同一张
 归因表里；feature 版本相对原生 nnU-Net 的全部差异包含"更多参数 + 不同输入分布"，因此不能把全部
-收益归因于解剖条件（H6）。**三个条件尚未训练**，本节不含任何训练结果。
+收益归因于解剖条件（Research Plan §9.2）。三个条件属于 **Plan B**、**尚未训练**，也不是硕士论文的
+最低完成条件，本节不含任何训练结果。
 
 #### Dataset605 与 Dataset606 的一致性边界
 
@@ -199,7 +205,7 @@ validation 与滑窗推理，构成一组同层级比较：
 `anatomy_gate_positive_sampling` 的训练晚于该审计完成。即便审计通过，两个数据集的结果并列
 解释时仍须注意：审计只对**前三个 MRI 通道**做逐值相等判定，PZ/TZ 通道本身不参与判等。
 
-#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置；v1 已运行并 FAIL，判据已于 v2 修正）
+#### Dataset605 ↔ Dataset606 前三 MRI 通道逐数组审计（RQ2 前置；v1 判据有缺陷已修正，v2 已执行并 PASS）
 
 工具：`scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed，含纯合成单元测试）。
 它逐病例比较预处理后前三个 MRI 通道（T2W/ADC/HBV）的 `np.array_equal` 与浮点差值统计，并审计
@@ -219,9 +225,17 @@ seg 的两层语义（必须区分，不得混用）：
 不影响 PASS）；`0↔1`、`-1↔1`、`{-1,0,1}` 之外的取值（含 NaN/Inf/无符号回绕值）、MRI 任一体素
 差异、形状/dtype 差异一律 FAIL（`n_cases_effective_input_mismatch` / `mismatched_cases`）。
 
+**已执行结果（2026-09-24 03:33 UTC，v2 报告）**：1500/1500 例全部检查，
+`status = MRI_ARRAY_AUDIT_PASS`、`n_cases_effective_input_mismatch = 0`、
+`mri_exact_equal_all = true`、`effective_labels_equal = true`，三个 MRI 通道
+`exact_equal_cases = 1500` 且 `global_max|Δ| = 0`；仅 2 例纯 `-1↔0` 原始 seg 差异
+（`10879_1000895` 1 体素、`10980_1000999` 11 体素）记为信息性。v1 报告（FAIL，起因是把合法的
+`-1` 裁剪填充判为非法标签）按原样保留作追溯。
+
 ```bash
 cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
 
+# 复现（已执行过一次；重跑请换路径或显式 --overwrite）
 python scripts/data/audit_dataset605_606_mri_equivalence.py \
     --output outputs/reports/dataset605_606_mri_equivalence_audit_v2.json
 ```

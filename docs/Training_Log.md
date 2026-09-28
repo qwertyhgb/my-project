@@ -217,7 +217,10 @@
 - 输出目录（勿删除/覆盖）：
   `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - 边界：`0.201140` 是 nnU-Net 的 `nanmean` 逐例口径（含假阳阴性病例的 0 分），**不是**阳性病例
-  Dice；本 variant 与其他 run 的配对比较尚未进行，跨 run 结论不得在本文件登记。
+  Dice；跨 run 的解释与结论一律不在本文件登记。
+- RQ2 配对比较（与 `image_gate_positive_sampling`，delta = anatomy − image）报告已落盘：
+  `outputs/reports/segmentation_metrics_rq2_anatomy_gate.json`；结论与完整指标登记在
+  `docs/Findings.md` §3.11。
 - 详细记录：`docs/experiments/anatomy_gate_positive_sampling.md`
 
 ### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
@@ -241,12 +244,16 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
   labels `background=0` / `lesion=1`
 - `workdir/nnUNet_preprocessed/Dataset606_PICAI_Zonal/`：含 `nnUNetPlans.json` 与 `nnUNetPlans_3d_fullres`
 - `splits_final.json`（raw 与 preprocessed 各一份）：1 fold，**train=1277，val=223**
-- anatomy_gate：数据已就绪，**训练未运行**
-- **Dataset605 ↔ Dataset606 前三 MRI 通道逐数组一致性审计**：工具已实现
-  （`scripts/data/audit_dataset605_606_mri_equivalence.py`，含纯合成单元测试），
-  **真实数据审计尚未执行** —— 启动 `anatomy_gate_positive_sampling` 前必须先由研究者本人运行并取得
-  `status=MRI_ARRAY_AUDIT_PASS`。配置层面（split 集合与顺序、spacing、patch/batch、前三个 MRI
-  通道的 normalization 与 per-channel intensity fingerprint）已核对一致，但这不等于数组一致。
+- `anatomy_gate`（原生采样旧 variant）：数据已就绪，**训练未运行**（RQ2 由
+  `anatomy_gate_positive_sampling` 承担，见上文）
+- **Dataset605 ↔ Dataset606 前三 MRI 通道逐数组一致性审计：已执行并通过**，且在本训练启动前完成。
+  工具 `scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed）；
+  报告 `outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`（2026-09-24 03:33 UTC，
+  1500 例，`status = MRI_ARRAY_AUDIT_PASS`，三通道逐数组完全相同 `global_max|Δ| = 0`，
+  `effective_labels_equal = true`，`n_cases_effective_input_mismatch = 0`，病例集合与 split
+  含顺序一致；2 例纯 `-1↔0` 原始 seg 差异为信息性，不影响有效标签）。首轮 v1 报告（FAIL，
+  起因是把合法的 -1 裁剪填充判为非法标签）按原样保留作追溯。审计只对前三个 MRI 通道判等，
+  **PZ/TZ 不参与判等**。
 
 ---
 
