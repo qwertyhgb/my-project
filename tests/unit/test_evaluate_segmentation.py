@@ -1931,11 +1931,17 @@ def test_lesion_instance_metrics_are_published_as_standard_json(tmp_path):
 # Anatomy exports are produced by the native correct-shape function on synthetic logits.
 def _anatomy_export_fixture(tmp_path, monkeypatch):
     import pickle
-    import torch
     from types import SimpleNamespace
-    from zonal_reliability_fusion.nnunet import trainers as t
+
+    import torch
+    from nnunetv2.inference.export_prediction import (
+        convert_predicted_logits_to_segmentation_with_correct_shape,
+    )
     from nnunetv2.utilities.label_handling.label_handling import LabelManager
-    from nnunetv2.inference.export_prediction import convert_predicted_logits_to_segmentation_with_correct_shape
+
+    from zonal_reliability_fusion.anatomy import contracts as anatomy_contracts
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(anatomy_contracts, "ANATOMY_COUNTS", (2, 1, 1))
     monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
     manager = LabelManager(t.ANATOMY_LABELS, [1, 2, 4])
     code = np.arange(8, dtype=np.uint8).reshape(2, 2, 2)
@@ -2002,6 +2008,7 @@ def test_anatomy_independent_regions_native_restore_and_separate_ordered_metrics
                                      'extra_case', 'grid', 'reference_grid', 'properties', 'properties_shape', 'reference_illegal', 'missing_split'])
 def test_anatomy_evaluation_fail_closed_no_reduced_denominator(tmp_path, monkeypatch, failure):
     import pickle
+
     import SimpleITK as sitk
     argv, pred, refs, output, probabilities = _anatomy_export_fixture(tmp_path, monkeypatch)
     if failure == 'channels': np.savez(pred / '2_20.npz', probabilities=probabilities[:2])

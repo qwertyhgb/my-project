@@ -1082,7 +1082,6 @@ def test_t2w_missing_makes_reference_unavailable(tmp_path):
 
 
 def test_geometry_validity_detects_invalid_spacing_and_direction():
-    import SimpleITK as sitk
 
     def _geom(size, spacing, origin, direction):
         return audit.Geometry(
@@ -1120,7 +1119,6 @@ def test_geometry_validity_detects_invalid_spacing_and_direction():
 
 def test_geometry_comparison_uses_rtol_zero():
     """相对容差必须为 0：大 spacing 上的小相对差异也要被判为不同网格。"""
-    import SimpleITK as sitk
 
     identity = tuple(np.eye(3).ravel())
     big = audit.Geometry(Path("a.nii.gz"), (4, 4, 4), (1000.0, 1.0, 1.0), (0, 0, 0), identity)
@@ -1883,9 +1881,11 @@ def test_invalid_inputs_fail_closed(tmp_path):
 
 def test_membership_contract_native_targets_loss_export_and_metrics():
     import torch
-    from nnunetv2.utilities.label_handling.label_handling import LabelManager
+    from batchgeneratorsv2.transforms.utils.seg_to_regions import (
+        ConvertSegmentationToRegionsTransform,
+    )
     from nnunetv2.training.loss.compound_losses import DC_and_BCE_loss
-    from batchgeneratorsv2.transforms.utils.seg_to_regions import ConvertSegmentationToRegionsTransform
+    from nnunetv2.utilities.label_handling.label_handling import LabelManager
     # Every combination: WG only, zones inside/outside WG, zone overlap.
     encoded = np.arange(8, dtype=np.uint8).reshape(2, 2, 2)
     masks = audit.decode_anatomy_membership(encoded)
@@ -2001,9 +2001,12 @@ def test_followup_known_missing_skipped_without_images(tmp_path, monkeypatch):
 
 
 def test_native_probability_restore_crop_transpose_and_resampling():
-    import torch
     from types import SimpleNamespace
-    from nnunetv2.inference.export_prediction import convert_predicted_logits_to_segmentation_with_correct_shape
+
+    import torch
+    from nnunetv2.inference.export_prediction import (
+        convert_predicted_logits_to_segmentation_with_correct_shape,
+    )
     from nnunetv2.preprocessing.resampling.default_resampling import resample_data_or_seg_to_shape
     from nnunetv2.utilities.label_handling.label_handling import LabelManager
     manager = LabelManager(audit.ANATOMY_REGIONS, [1, 2, 4])

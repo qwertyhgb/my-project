@@ -441,8 +441,12 @@ def test_zonal_overwrite_regenerates_for_new_source(tmp_path):
 # Anatomy uses only synthetic source files and a scaled frozen metadata fixture.
 def _anatomy_fixture(tmp_path, monkeypatch):
     import numpy as np
+
+    from zonal_reliability_fusion.anatomy import contracts as anatomy_contracts
     from zonal_reliability_fusion.nnunet import trainers
-    monkeypatch.setattr(trainers, "ANATOMY_COUNTS", (2, 1, 1))
+
+    monkeypatch.setattr(anatomy_contracts, "ANATOMY_COUNTS", (2, 1, 1))
+    monkeypatch.setattr(trainers, "ANATOMY_COUNTS", (2, 1, 1), raising=False)
     mod = _load_prepare()
     mat, raw = tmp_path / "mat", tmp_path / "raw"
     for cid in ("1_10", "2_20"):

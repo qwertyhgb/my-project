@@ -91,7 +91,7 @@ def _geom(img) -> dict:
 
 
 def _same_tuple(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
-    return len(a) == len(b) and all(float(x) == float(y) for x, y in zip(a, b))
+    return len(a) == len(b) and all(float(x) == float(y) for x, y in zip(a, b, strict=True))
 
 
 def same_geometry(g1: dict, g2: dict) -> bool:
@@ -333,7 +333,7 @@ def summarize_model(
         except EvaluationError as exc:
             errors.append(f"[{model_name}] {case.get('case_id')}: {exc}")
             continue
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(
                 f"[{model_name}] {case.get('case_id')}: {type(exc).__name__}: {exc}"
             )

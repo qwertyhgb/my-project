@@ -559,7 +559,7 @@ def cmd_zonal(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- anatomy (strictly separate from lesion preparation)
 def _anatomy_scope(manifest_path, split_path, explicit_exclusion):
     import hashlib
-    from zonal_reliability_fusion.nnunet.trainers import ANATOMY_KNOWN_MISSING, ANATOMY_COUNTS
+    from zonal_reliability_fusion.anatomy.contracts import ANATOMY_COUNTS, ANATOMY_KNOWN_MISSING
     if not explicit_exclusion:
         raise ValueError("anatomy requires --exclude-known-missing-wg (11050_1001070 only)")
     df = pd.read_csv(manifest_path, dtype=str)
@@ -615,7 +615,7 @@ def cmd_anatomy(args):
     import hashlib
     import SimpleITK as sitk
     import tempfile
-    from zonal_reliability_fusion.nnunet.trainers import (
+    from zonal_reliability_fusion.anatomy.contracts import (
         ANATOMY_LABELS, ANATOMY_CLASS_ORDER, ANATOMY_KNOWN_MISSING,
         anatomy_encode, anatomy_same_grid, anatomy_geometry, anatomy_validate_array, anatomy_read_array)
     started = time.time()
@@ -776,7 +776,7 @@ def cmd_splits(args: argparse.Namespace) -> None:
             )
 
     if args.dataset_id == 607:
-        from zonal_reliability_fusion.nnunet.trainers import validate_anatomy_dataset
+        from zonal_reliability_fusion.anatomy.contracts import validate_anatomy_dataset
         if ds_name != "Dataset607_PICAI_Anatomy" or args.overwrite:
             raise SystemExit("Dataset607 anatomy forbids alternate name/overwrite")
         try:

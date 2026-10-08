@@ -1,0 +1,92 @@
+[project]
+name = "prostate-lesion-seg"
+version = "0.2.0"
+description = "Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation"
+requires-python = ">=3.10"
+dependencies = [
+    # 运行时依赖由固定版本 nnU-Net（third_party/nnUNet）与其环境提供；
+    # 这里只声明项目侧直接 import 的第三方包，版本不在此处升降级。
+    "numpy",
+    "scipy",
+    "torch",
+    "SimpleITK",
+    "nibabel",
+    "tqdm",
+    "medpy",
+    "surface-distance==0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "third_party",
+    "data",
+    "workdir",
+    "outputs",
+    "logs",
+    "legacy",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    # 项目大量使用「先断言再返回」的显式 if + raise 结构，折叠成三元/单行会降低可读性
+    "SIM102",
+    # 显式列出 `except Exception` 后逐例收集错误是 fail-closed 诊断的既定模式
+    "BLE001",
+    # 中文注释与 docstring 中大量使用全角标点，行长与引号规则不适用于这些文本
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # 项目使用中文注释/docstring，行宽统计不可靠；且刻意在若干处保持紧凑的行内写法
+    "E501",
+    "E701",
+    "E702",
+    "E731",
+    # 脚本与测试先做 sys.path 引导再导入项目包，这是有意为之
+    "E402",
+    # 集合/序列字面量拼接与 next(iter(...)) 的写法在本项目里更易读
+    "RUF005",
+    "RUF015",
+    # 显式 int(...) 是对 numpy 标量的防御性转换，保留可读性
+    "RUF046",
+    "SIM108",
+    # docstring 风格不参与检查
+    "D",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 归档模块逐字保留历史实现，不做风格重排（重排会让与既有 checkpoint / 日志的对照困难）
+"src/zonal_reliability_fusion/legacy/*" = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+# 测试与脚本允许可变长函数、允许 print
+"tests/**" = ["RUF059", "F841", "B905", "RUF043"]
+"scripts/**" = ["EXE001"]
+# 兼容转发层与评估入口**刻意再导出**指标纯函数：既有测试与审计脚本按
+# `mod._spacing_zyx` / `mod._lesion_size_stratum` 等名字访问它们，删除会破坏历史可核查性。
+"scripts/evaluate_segmentation.py" = ["F401", "I001"]
+"src/zonal_reliability_fusion/nnunet/networks.py" = ["F401"]
+"src/zonal_reliability_fusion/nnunet/transforms.py" = ["F401"]
+"src/zonal_reliability_fusion/nnunet/sampling.py" = ["F401"]
+"src/zonal_reliability_fusion/nnunet/trainers.py" = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "data",
+    "workdir",
+    "outputs",
+    "third_party",
+    "logs",
+    ".git",
+    ".ruff_cache",
+    ".pytest_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+addopts = "-q"

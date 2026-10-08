@@ -1,27 +1,41 @@
-# Python
+# --------------------------------------------------------------------------- Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.eggs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
 .venv/
 venv/
+build/
+dist/
 
-# IDE and OS
+# --------------------------------------------------------------------------- IDE and OS
 .idea/
 .vscode/
 .DS_Store
+*.swp
+*~
 
-# Private and generated data
+# --------------------------------------------------------------------------- 私有与派生数据（原始医学数据保持只读且不入库）
+# 注意：data/splits/ 与 data/metadata/ 下的**小体积 JSON/CSV 清单**是历史事实的一部分，
+# 已被 git 跟踪；这里只忽略体积大、可由脚本重建的派生数据。
 data/raw/**
 data/interim/**
 data/processed/**
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+!data/splits/.gitkeep
 
-# Runtime artifacts
+# --------------------------------------------------------------------------- 运行期产物
 logs/**
 workdir/**
 outputs/checkpoints/**
@@ -33,16 +47,7 @@ outputs/diagnostics/**
 !outputs/predictions/.gitkeep
 !outputs/diagnostics/.gitkeep
 
-# Third-party repositories are tracked by provenance, not vendored into this project
-third_party/*
-!third_party/README.md
-
-# Local environment files
-.env
-.env.*
-*.log
-
-# --- 数据集级运行产物（大文件，不入库；由实验日志与哈希追溯）---
+# --------------------------------------------------------------------------- 数据集级运行产物（大文件，不入库；由实验日志与哈希追溯）
 outputs/nnUNet_results/**
 outputs/metrics/**
 outputs/reports/**
@@ -51,7 +56,16 @@ outputs/ablations/**
 outputs/external/**
 !outputs/**/.gitkeep
 
-# --- 二进制/大数据文件兜底（任何目录）---
+# --------------------------------------------------------------------------- 第三方差分：只记录 provenance，不 vendored
+third_party/*
+!third_party/README.md
+
+# --------------------------------------------------------------------------- 本地环境文件
+.env
+.env.*
+*.log
+
+# --------------------------------------------------------------------------- 二进制/大数据文件兜底（任何目录）
 *.pth
 *.pt
 *.npz
@@ -61,4 +75,11 @@ outputs/external/**
 *.nii
 *.nii.gz
 *.b2nd
-*.mha
+*.bin
+*.onnx
+
+# --------------------------------------------------------------------------- 新主线的中间产物（由数据脚本生成，可重建，不入库）
+workdir/anatomy_priors/
+workdir/anatomy_rois/
+workdir/hard_negatives/
+outputs/run_configs/

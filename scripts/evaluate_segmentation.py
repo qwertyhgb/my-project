@@ -71,32 +71,59 @@ from typing import Any
 
 import numpy as np
 
-#: 1.1：full 模式新增病灶实例级指标块 ``lesion_instance_metrics``（协议预先冻结）
-SCHEMA_VERSION = "1.1"
-DEFAULT_BOOTSTRAP_RESAMPLES = 10000
-DEFAULT_SEED = 20260922
+#项目包路径引导：``scripts/env_nnunet.sh`` 已经把 ``<root>/src`` 放进 PYTHONPATH；这里再补一次，
+# 使本脚本在未 source 环境、直接被 ``python scripts/evaluate_segmentation.py`` 调用时同样可用
+# （评估脚本必须能在纯 CPU 环境下独立运行，不依赖 nnU-Net 运行时校验）。
+_PROJECT_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_PROJECT_SRC) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_SRC))
+
+#指标协议常量、纯函数与病灶实例级匹配全部从 ``zonal_reliability_fusion.evaluation`` 导入。
+# 该包是论文评价体系的**唯一**定义来源（docs/Evaluation_Protocol.md）；本脚本只保留
+# CLI、产物读取、模型间可比性检查、编排与落盘，不重复定义任何指标。
+from zonal_reliability_fusion.evaluation import (
+    CONNECTIVITY,
+    DEFAULT_BOOTSTRAP_RESAMPLES,
+    DEFAULT_SEED,
+    DICE_MATCH_TOLERANCE,
+    LESION_SIZE_MEDIUM_MAX_MM3,
+    LESION_SIZE_SMALL_MAX_MM3,
+    LESION_SIZE_STRATUM_KEYS,
+    SCHEMA_VERSION,
+    EvaluationError,
+    aggregate_lesion_instance_metrics as _aggregate_lesion_instance_metrics,
+    bootstrap_ci_mean,
+    bootstrap_ci_paired_mean,
+    bootstrap_ci_paired_ratio,
+    component_analysis,
+    dice_from_counts as _recompute_dice,
+    dist_stats as _dist_stats,
+    finite as _finite,
+    json_safe as _json_safe,
+    lesion_instance_metrics,
+    lesion_size_stratum as _lesion_size_stratum,
+    load_mask_pair,
+    nsd_surface_area,
+    pred_component_stats as _pred_component_stats,
+    ratio as _ratio,
+    recompute_case_counts,
+    spacing_zyx as _spacing_zyx,
+    surface_distance_metrics as _surface_distance_metrics,
+    surface_metrics,
+    verify_case_counts as _verify_case_counts,
+    voxel_volume_mm3 as _voxel_volume_mm3,
+)
+from zonal_reliability_fusion.evaluation.lesion_metrics import (
+    _match_lesion_instances,
+    _max_weight_matching_exact_size,
+    _min_cost_flow_unit_matching,
+    _validate_lesion_matching,
+)
+
 #: 判定「病例间 Dice 变化是否为平局」的容差（仅用于 improved/tied/worsened 计数）
 TIE_TOLERANCE = 1e-12
-#: 连通域分析的 connectivity（scipy.ndimage 结构元素阶数；1 = 6-邻域）
-CONNECTIVITY = 1
-#: 病灶实例级大小分层（探索性，预先冻结；单位 mm³；边界严格：<500 / 500–1000 / >1000）
-LESION_SIZE_SMALL_MAX_MM3 = 500.0
-LESION_SIZE_MEDIUM_MAX_MM3 = 1000.0
-#: 分层键的顺序即报告顺序（small -> medium -> large），不得依赖 dict 迭代顺序
-LESION_SIZE_STRATUM_KEYS = (
-    "small_lt_500_mm3",
-    "medium_500_to_1000_mm3",
-    "large_gt_1000_mm3",
-)
-#: summary 中的 Dice 与由 TP/FP/FN 重算值的最大允许偏差（两者应逐位一致）
-DICE_MATCH_TOLERANCE = 1e-6
 #: 错误明细的显示上限；超过时汇总文本会明确写出「仅显示前 N 条，另有 M 条」
 ERROR_DISPLAY_CAP = 50
-
-
-class EvaluationError(RuntimeError):
-    """评估过程中的可预期失败（fail-closed，不发布输出）。"""
-
 
 #: ``RunStats`` 的**阶段**：与 ``unit`` 一起决定 ok / failed / skipped 的语义
 PHASE_PREFLIGHT = "preflight"
@@ -242,34 +269,6 @@ def _now_utc() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _finite(value: Any) -> float | None:
-    """把 NaN / ±Inf / 不可转换值统一变为 None（JSON 只允许 null）。"""
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
-
-
-def _json_safe(obj: Any) -> Any:
-    """递归把 numpy 标量/数组与 NaN/Inf 转成标准 JSON 可表示的值。"""
-    if isinstance(obj, dict):
-        return {str(k): _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_json_safe(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return _json_safe(obj.tolist())
-    if isinstance(obj, (np.bool_, bool)):
-        return bool(obj)
-    if isinstance(obj, (np.integer, int)):
-        return int(obj)
-    if isinstance(obj, (np.floating, float)):
-        return _finite(float(obj))
-    return obj
-
-
 def _publish_json(path: Path, payload: dict) -> None:
     """原子发布：临时文件 + ``os.replace``；已存在则拒绝覆盖（fail-closed）。"""
     if path.exists():
@@ -296,37 +295,6 @@ def _case_id_from_path(path_str: str) -> str:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return os.path.splitext(name)[0]
-
-
-def _ratio(numerator: float, denominator: float) -> float | None:
-    if denominator == 0:
-        return None
-    return float(numerator) / float(denominator)
-
-
-def _dist_stats(values: Sequence[float]) -> dict:
-    """分布统计；空输入返回 count=0 与全 null（不写 NaN）。"""
-    arr = np.asarray([v for v in values if v is not None], dtype=float)
-    arr = arr[np.isfinite(arr)]
-    if arr.size == 0:
-        return {
-            "count": 0,
-            "mean": None,
-            "median": None,
-            "q1": None,
-            "q3": None,
-            "min": None,
-            "max": None,
-        }
-    return {
-        "count": int(arr.size),
-        "mean": float(arr.mean()),
-        "median": float(np.median(arr)),
-        "q1": float(np.percentile(arr, 25)),
-        "q3": float(np.percentile(arr, 75)),
-        "min": float(arr.min()),
-        "max": float(arr.max()),
-    }
 
 
 def _foreground_metrics(metrics: dict) -> dict:
@@ -374,18 +342,6 @@ def _strict_non_negative_int(metrics: dict, key: str, model_name: str, cid: str)
     return int(value)
 
 
-def _recompute_dice(tp: int, fp: int, fn: int, n_ref: int) -> float | None:
-    """由 TP/FP/FN 重算 Dice。
-
-    - ``n_ref == 0``（阴性病例，含真阴与假阳）→ 返回 ``0.0``（有预测）或 ``None``（空-空真阴）
-    - ``n_ref > 0`` 且无重叠 → ``0.0``（完全漏分不得排除，也不得记为无定义）
-    """
-    denom = 2 * tp + fp + fn
-    if denom == 0:
-        return None
-    return 2 * tp / denom
-
-
 def _check_reported_dice(
     reported: Any, recomputed: float | None, model_name: str, cid: str
 ) -> None:
@@ -408,64 +364,6 @@ def _check_reported_dice(
             f"[{model_name}] {cid}: summary Dice={reported_finite:.10f} 与由 TP/FP/FN "
             f"重算的 {recomputed:.10f} 不一致（容差 {DICE_MATCH_TOLERANCE:g}）"
         )
-
-
-# --------------------------------------------------------------------------- bootstrap
-def _percentile_ci(
-    samples: np.ndarray, alpha: float = 0.05
-) -> tuple[float, float] | None:
-    if samples.size == 0:
-        return None
-    lo = float(np.percentile(samples, 100.0 * alpha / 2.0))
-    hi = float(np.percentile(samples, 100.0 * (1.0 - alpha / 2.0)))
-    return (lo, hi)
-
-
-def bootstrap_ci_mean(
-    values: Sequence[float], n_resamples: int, seed: int
-) -> tuple[float, float] | None:
-    """病例级重采样的均值 95% CI（单模型指标的不确定性）。"""
-    arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0:
-        return None
-    rng = np.random.default_rng(seed)
-    idx = rng.integers(0, arr.size, size=(int(n_resamples), arr.size))
-    return _percentile_ci(arr[idx].mean(axis=1))
-
-
-def bootstrap_ci_paired_mean(
-    deltas: Sequence[float], n_resamples: int, seed: int
-) -> tuple[float, float] | None:
-    """**配对** bootstrap：同一批病例索引同时重采样两个模型，禁止分别重采样。"""
-    arr = np.asarray(list(deltas), dtype=float)
-    if arr.size == 0:
-        return None
-    rng = np.random.default_rng(seed)
-    idx = rng.integers(0, arr.size, size=(int(n_resamples), arr.size))
-    return _percentile_ci(arr[idx].mean(axis=1))
-
-
-def bootstrap_ci_paired_ratio(
-    numerator: Sequence[float],
-    denominator: Sequence[float],
-    n_resamples: int,
-    seed: int,
-) -> tuple[float, float] | None:
-    """配对 bootstrap 的比值型指标 CI（micro Dice / recall / precision 等）。
-
-    同一批病例索引同时重采样分子与分母；某次重采样分母为 0 时丢弃该次样本。
-    """
-    num = np.asarray(list(numerator), dtype=float)
-    den = np.asarray(list(denominator), dtype=float)
-    if num.size == 0 or num.size != den.size:
-        return None
-    rng = np.random.default_rng(seed)
-    idx = rng.integers(0, num.size, size=(int(n_resamples), num.size))
-    sn, sd = num[idx].sum(axis=1), den[idx].sum(axis=1)
-    valid = sd != 0
-    if not bool(valid.any()):
-        return None
-    return _percentile_ci(sn[valid] / sd[valid])
 
 
 # --------------------------------------------------------------------------- 读取产物
@@ -969,633 +867,9 @@ def print_table(reports: dict[str, dict], comparisons: list[dict], mode: str) ->
 
 
 # --------------------------------------------------------------------------- full 模式
-def _voxel_volume_mm3(spacing_xyz: Sequence[float]) -> float:
-    vol = 1.0
-    for s in spacing_xyz:
-        vol *= float(s)
-    return vol
-
-
-def _spacing_zyx(spacing_xyz: Sequence[float]) -> tuple[float, ...]:
-    """SimpleITK 的 spacing 是 (sx, sy, sz)，而数组轴序是 (z, y, x)，故需反转。"""
-    return tuple(float(s) for s in reversed(list(spacing_xyz)))
-
-
-def _surface_distance_metrics():
-    """延迟导入 DeepMind ``surface-distance``（NSD 的 surfel-area weighted 实现）。
-
-    缺失时直接抛出 ``EvaluationError``（fail-closed）：本工具**不会**静默退回旧的
-    表面体素计数实现（那会改变已声明的论文指标口径）。
-    """
-    try:
-        from surface_distance import metrics as surface_distance_metrics
-    except ImportError as exc:  # pragma: no cover - 依赖缺失时才会走到
-        raise EvaluationError(
-            "缺少 surface-distance 包：NSD 必须按 surfel-area weighted 物理表面测度计算"
-            "（DeepMind surface-distance==0.1），不得退回表面体素计数实现。"
-            "请安装 surface-distance==0.1 后重试。"
-        ) from exc
-    return surface_distance_metrics
-
-
-def nsd_surface_area(
-    pred: np.ndarray, ref: np.ndarray, spacing_zyx: Sequence[float], tolerance_mm: float
-) -> float | None:
-    """NSD@τ：surfel-area weighted 物理表面 normalized surface Dice。
-
-    使用 DeepMind ``surface-distance`` 0.1 官方实现，按物理表面测度 μ（surfel 面积，mm²）
-    加权，而不是表面体素计数：
-
-        NSD = (μ(S_pred ∩ B_τ(S_ref)) + μ(S_ref ∩ B_τ(S_pred))) / (μ(S_pred) + μ(S_ref))
-
-    ``spacing_zyx`` 必须是**数组轴序** (z, y, x) 的真实 mm 间距（见 ``_spacing_zyx``）。
-    任一侧为空时本函数返回 ``None``（不在函数内决定空掩膜口径，见 ``surface_metrics``）。
-    缺少 surface-distance 时 fail-closed，不退回旧算法。
-    """
-    pred_mask = np.asarray(pred, dtype=bool)
-    ref_mask = np.asarray(ref, dtype=bool)
-    if pred_mask.shape != ref_mask.shape:
-        raise EvaluationError(
-            f"NSD 的 prediction 与 reference 形状不一致："
-            f"{pred_mask.shape} vs {ref_mask.shape}"
-        )
-    if not pred_mask.any() or not ref_mask.any():
-        return None
-    surface_distance_metrics = _surface_distance_metrics()
-    surface_distances = surface_distance_metrics.compute_surface_distances(
-        mask_gt=ref_mask,
-        mask_pred=pred_mask,
-        spacing_mm=tuple(float(s) for s in spacing_zyx),
-    )
-    return _finite(
-        surface_distance_metrics.compute_surface_dice_at_tolerance(
-            surface_distances, tolerance_mm
-        )
-    )
-
-
-def surface_metrics(
-    pred: np.ndarray, ref: np.ndarray, spacing_xyz: Sequence[float], tolerance_mm: float
-) -> dict:
-    """HD95 / ASSD（mm，复用 medpy）与 NSD@τ（surfel-area weighted 物理表面）。
-
-    - GT 非空、预测为空        -> NSD = 0，HD95/ASSD = null（该病例同时计入 missed）
-    - GT 与预测均为空          -> 全 null（不纳入阳性病灶表面统计）
-    - GT 非空、预测非空但无重叠 -> 正常计算物理表面距离（Dice 为 0，计入 wrong-location）
-    """
-    spacing_zyx = _spacing_zyx(spacing_xyz)
-    ref_nonempty, pred_nonempty = bool(ref.any()), bool(pred.any())
-    if not ref_nonempty:
-        return {
-            "applicable": False,
-            "reason": "reference_empty",
-            "hd95_mm": None,
-            "assd_mm": None,
-            "nsd": None,
-        }
-    if not pred_nonempty:
-        return {
-            "applicable": True,
-            "reason": "prediction_empty",
-            "hd95_mm": None,
-            "assd_mm": None,
-            "nsd": 0.0,
-        }
-    from medpy.metric import binary as medpy_binary
-
-    return {
-        "applicable": True,
-        "reason": "ok",
-        "hd95_mm": _finite(medpy_binary.hd95(pred, ref, voxelspacing=spacing_zyx)),
-        "assd_mm": _finite(medpy_binary.assd(pred, ref, voxelspacing=spacing_zyx)),
-        "nsd": _finite(nsd_surface_area(pred, ref, spacing_zyx, tolerance_mm)),
-    }
-
-
-def load_mask_pair(
-    pred_path: str, ref_path: str
-) -> tuple[np.ndarray, np.ndarray, tuple]:
-    """读取并校验一例 prediction/reference；几何不一致或标签非法时 fail-closed。"""
-    import SimpleITK as sitk
-
-    if not os.path.isfile(pred_path):
-        raise EvaluationError(f"prediction 不存在: {pred_path}")
-    if not os.path.isfile(ref_path):
-        raise EvaluationError(f"reference 不存在: {ref_path}")
-    pred_img, ref_img = sitk.ReadImage(pred_path), sitk.ReadImage(ref_path)
-    for tag, a, b in (
-        ("size", pred_img.GetSize(), ref_img.GetSize()),
-        ("spacing", pred_img.GetSpacing(), ref_img.GetSpacing()),
-        ("origin", pred_img.GetOrigin(), ref_img.GetOrigin()),
-        ("direction", pred_img.GetDirection(), ref_img.GetDirection()),
-    ):
-        if tuple(a) != tuple(b):
-            raise EvaluationError(
-                f"{tag} 不一致（prediction vs reference）：{tuple(a)} vs {tuple(b)}；"
-                "评估不重采样，几何不一致必须先行修复"
-            )
-    pred, ref = sitk.GetArrayFromImage(pred_img), sitk.GetArrayFromImage(ref_img)
-    for tag, arr in (("prediction", pred), ("reference", ref)):
-        if not bool(np.isfinite(arr).all()):
-            raise EvaluationError(f"{tag} 含非有限值")
-        bad = [float(v) for v in np.unique(arr) if float(v) not in (0.0, 1.0)]
-        if bad:
-            raise EvaluationError(f"{tag} 含非 0/1 标签值: {bad[:5]}")
-    return (pred > 0.5), (ref > 0.5), tuple(float(s) for s in ref_img.GetSpacing())
-
-
-def component_analysis(
-    pred: np.ndarray, ref: np.ndarray, voxel_volume_mm3: float, case_id: str
-) -> dict:
-    """连通域失败分析（仅分割失败分析；不计算 AUROC / AP / FROC / detection score）。"""
-    from scipy import ndimage
-
-    structure = ndimage.generate_binary_structure(3, CONNECTIVITY)
-    pred_lab, n_pred_comp = ndimage.label(pred, structure=structure)
-    ref_lab, n_ref_comp = ndimage.label(ref, structure=structure)
-    pred_sizes = np.bincount(pred_lab.ravel())[1:] if n_pred_comp else np.array([])
-    ref_sizes = np.bincount(ref_lab.ravel())[1:] if n_ref_comp else np.array([])
-    ref_uncovered = sum(
-        1
-        for comp_id in range(1, n_ref_comp + 1)
-        if not np.any(pred[ref_lab == comp_id])
-    )
-    return {
-        "case_id": case_id,
-        "connectivity": CONNECTIVITY,
-        "connectivity_note": "scipy.ndimage 结构元素阶数；1 = 6-邻域（面相邻）",
-        "pred_component_count": int(n_pred_comp),
-        "pred_component_max_volume_mm3": _finite(
-            float(pred_sizes.max()) * voxel_volume_mm3 if pred_sizes.size else 0.0
-        ),
-        "ref_component_count": int(n_ref_comp),
-        "ref_component_total_volume_mm3": _finite(
-            float(ref_sizes.sum()) * voxel_volume_mm3
-        ),
-        "ref_components_without_prediction_overlap": int(ref_uncovered),
-        "ref_components_without_prediction_overlap_rate": _ratio(
-            ref_uncovered, n_ref_comp
-        ),
-    }
-
-
-def recompute_case_counts(pred: np.ndarray, ref: np.ndarray) -> dict:
-    """由掩膜重新计算 TP/FP/FN/TN/n_pred/n_ref（整数计数，不信任 summary.json）。"""
-    return {
-        "TP": int(np.count_nonzero(pred & ref)),
-        "FP": int(np.count_nonzero(pred & ~ref)),
-        "FN": int(np.count_nonzero(~pred & ref)),
-        "TN": int(np.count_nonzero(~pred & ~ref)),
-        "n_pred": int(np.count_nonzero(pred)),
-        "n_ref": int(np.count_nonzero(ref)),
-    }
-
-
-def _verify_case_counts(case: dict, recomputed: dict) -> str | None:
-    """把掩膜重算的六项计数与 summary.json 逐项核对。
-
-    返回差异描述（**不含** model / case 前缀，前缀由调用方统一添加）或 ``None``。
-    """
-    diffs = [
-        f"{key}(mask={recomputed[key]}, summary={case[key]})"
-        for key in ("TP", "FP", "FN", "TN", "n_pred", "n_ref")
-        if recomputed[key] != case[key]
-    ]
-    if not diffs:
-        return None
-    return "掩膜与 summary.json 计数不一致 -> " + ", ".join(diffs)
-
-
-def _pred_component_stats(pred: np.ndarray, voxel_volume_mm3: float) -> dict:
-    """预测掩膜的连通域统计（用于阴性病例的假阳团块；不评价检测性能）。"""
-    from scipy import ndimage
-
-    structure = ndimage.generate_binary_structure(3, CONNECTIVITY)
-    lab, n_comp = ndimage.label(pred, structure=structure)
-    sizes = np.bincount(lab.ravel())[1:] if n_comp else np.array([])
-    return {
-        "connectivity": CONNECTIVITY,
-        "component_count": int(n_comp),
-        "component_max_volume_mm3": _finite(
-            float(sizes.max()) * voxel_volume_mm3 if sizes.size else 0.0
-        ),
-    }
-
-
-# --------------------------------------------------------------------------- 病灶实例级指标
-def _lesion_size_stratum(volume_mm3: float) -> str:
-    """探索性病灶大小分层（预先冻结，不是临床风险类别）。
-
-    边界严格固定：``499.999 -> small``，``500.000 -> medium``，``1000.000 -> medium``，
-    ``1000.001 -> large``。分层依据是**单个 reference lesion** 的物理体积（mm³）。
-    """
-    if volume_mm3 < LESION_SIZE_SMALL_MAX_MM3:
-        return "small_lt_500_mm3"
-    if volume_mm3 <= LESION_SIZE_MEDIUM_MAX_MM3:
-        return "medium_500_to_1000_mm3"
-    return "large_gt_1000_mm3"
-
-
-def _min_cost_flow_unit_matching(
-    n_ref: int,
-    n_pred: int,
-    weights: dict[tuple[int, int], int],
-    max_units: int,
-) -> tuple[int, int]:
-    """二部图 unit-capacity 最小费用流的增量增广（返回流量与最大总权重）。
-
-    网络：source(0) -> reference(1..n_ref) -> prediction(n_ref+1..n_ref+n_pred) -> sink。
-    所有容量为 1；``reference -> prediction`` 边费用 = ``-intersection_voxels``。每增广 1
-    单位恰好对应匹配中增加 1 条边。SSP（successive shortest paths）性质保证**每个流量值下
-    费用最小**，即该基数下匹配总权重最大；增广不超过 ``max_units`` 次。
-
-    图极小（病例内病灶数级别），用 Bellman-Ford 求最小费用增广路；候选边按
-    ``sorted(weights)`` 固定顺序插入，不依赖 dict / set 迭代顺序。
-    """
-    if max_units <= 0 or n_ref <= 0 or n_pred <= 0:
-        return 0, 0
-    source = 0
-    sink = n_ref + n_pred + 1
-    # 每条边: [to, residual_capacity, cost, 反向边在其邻接表中的下标]
-    graph: list[list[list[int]]] = [[] for _ in range(sink + 1)]
-
-    def add_edge(u: int, v: int, cost: int) -> None:
-        graph[u].append([v, 1, cost, len(graph[v])])
-        graph[v].append([u, 0, -cost, len(graph[u]) - 1])
-
-    for r in range(1, n_ref + 1):
-        add_edge(source, r, 0)
-    for p in range(1, n_pred + 1):
-        add_edge(n_ref + p, sink, 0)
-    for r, p in sorted(weights):
-        add_edge(r, n_ref + p, -int(weights[(r, p)]))
-
-    units = 0
-    total_weight = 0
-    while units < max_units:
-        dist = [math.inf] * (sink + 1)
-        in_edge: list[tuple[int, int] | None] = [None] * (sink + 1)
-        dist[source] = 0.0
-        for _ in range(sink):
-            updated = False
-            for u in range(sink + 1):
-                if dist[u] == math.inf:
-                    continue
-                base = dist[u]
-                for edge_index, edge in enumerate(graph[u]):
-                    if edge[1] > 0 and base + edge[2] < dist[edge[0]]:
-                        dist[edge[0]] = base + edge[2]
-                        in_edge[edge[0]] = (u, edge_index)
-                        updated = True
-            if not updated:
-                break
-        if dist[sink] == math.inf or in_edge[sink] is None:
-            break
-        node = sink
-        while node != source:
-            u, edge_index = in_edge[node]  # type: ignore[misc]
-            edge = graph[u][edge_index]
-            edge[1] -= 1
-            graph[node][edge[3]][1] += 1
-            node = u
-        units += 1
-        total_weight += -int(dist[sink])
-    return units, total_weight
-
-
-def _max_weight_matching_exact_size(
-    n_ref: int, n_pred: int, weights: dict[tuple[int, int], int], size: int
-) -> int | None:
-    """恰好 ``size`` 条边的匹配的最大总权重；不存在这样的匹配时返回 ``None``。"""
-    units, weight = _min_cost_flow_unit_matching(n_ref, n_pred, weights, size)
-    return weight if units == size else None
-
-
-def _match_lesion_instances(
-    intersections: dict[tuple[int, int], int], n_ref: int, n_pred: int
-) -> list[tuple[int, int, int]]:
-    """reference 与 prediction 病灶实例的一对一**字典序**匹配（协议预先冻结）。
-
-    候选边：``intersection >= 1`` voxel。目标按字典序：
-
-    1. 最大化匹配数（maximum cardinality）——尽可能多的 reference lesion 被匹配；
-    2. 相同匹配数下最大化总 intersection 体素数；
-    3. 仍相同则按 reference / prediction component id 升序给出确定性唯一解：
-       在所有最优匹配中取「按 ref id 排序的 (ref, pred) 配对序列」字典序最小者。
-
-    **不**采用「匈牙利最大化 Dice / IoU」或「贪心 Dice / 重叠」作为 matching 目标：
-    matched-lesion Dice 本身是报告终点之一，若先最大化 Dice 会产生
-    metric-optimizing-the-metric 风险；Dice 只用于匹配后的质量评价。
-
-    返回按 ref id 升序的 ``[(ref_id, pred_id, intersection_voxels), ...]``。
-    实现：先求 (最大基数, 最大总权重)，再用「精确可行性判据 + id 升序贪心」确定唯一解——
-    贪心每个候选只询问「剩余图恰好 k 条边的最大总权重是否等于剩余预算」，因此结果只由
-    (交点权重, 组件 id) 决定，与容器迭代顺序、随机性、文件/模型/病例顺序无关。
-    """
-    weights = {
-        (int(r), int(p)): int(w) for (r, p), w in intersections.items() if int(w) >= 1
-    }
-    if n_ref <= 0 or n_pred <= 0 or not weights:
-        return []
-    total_units, best_weight = _min_cost_flow_unit_matching(
-        n_ref, n_pred, weights, min(n_ref, n_pred)
-    )
-    if total_units <= 0:
-        return []
-
-    matched: list[tuple[int, int, int]] = []
-    used_preds: set[int] = set()
-    fixed_weight = 0
-    for r in range(1, n_ref + 1):
-        remaining = total_units - len(matched)
-        if remaining <= 0:
-            break
-        need = best_weight - fixed_weight
-        for p in sorted(pred for (ref, pred) in weights if ref == r):
-            if p in used_preds:
-                continue
-            edge_weight = weights[(r, p)]
-            if edge_weight > need:
-                continue  # 单条边已超过剩余预算：不可能属于任何最优匹配
-            sub = {
-                (ref - r, pred): w
-                for (ref, pred), w in weights.items()
-                if ref > r and pred not in used_preds and pred != p
-            }
-            candidate = _max_weight_matching_exact_size(
-                n_ref - r, n_pred, sub, remaining - 1
-            )
-            if candidate is not None and (
-                candidate + fixed_weight + edge_weight == best_weight
-            ):
-                matched.append((r, p, edge_weight))
-                used_preds.add(p)
-                fixed_weight += edge_weight
-                break
-    if len(matched) != total_units or fixed_weight != best_weight:
-        raise EvaluationError(
-            f"matching inconsistency: 贪心结果 {len(matched)} 对 / 总 intersection "
-            f"{fixed_weight} 与最大基数 {total_units} / 最大总 intersection "
-            f"{best_weight} 不一致"
-        )
-    return matched
-
-
-def _validate_lesion_matching(
-    pairs: Sequence[tuple[int, int, int]], n_ref: int, n_pred: int
-) -> None:
-    """匹配后内部一致性断言（不一致时抛 ``EvaluationError``，整体 fail-closed）。
-
-    保证：一对一（同一组件不被匹配两次）、每对 intersection ≥ 1、匹配数不超过任一侧
-    实例数；``unmatched_prediction = prediction_count - matched_prediction`` 由计数恒等式保证。
-    """
-    refs = [r for r, _p, _w in pairs]
-    preds = [p for _r, p, _w in pairs]
-    if len(set(refs)) != len(refs):
-        raise EvaluationError(
-            f"matching inconsistency: reference component 重复匹配: {refs}"
-        )
-    if len(set(preds)) != len(preds):
-        raise EvaluationError(
-            f"matching inconsistency: prediction component 重复匹配: {preds}"
-        )
-    for r, p, w in pairs:
-        if not (1 <= r <= n_ref) or not (1 <= p <= n_pred):
-            raise EvaluationError(
-                f"matching inconsistency: component id 越界: {(r, p)}"
-            )
-        if w < 1:
-            raise EvaluationError(
-                f"matching inconsistency: matched pair 的 intersection < 1 voxel: {(r, p, w)}"
-            )
-    if len(pairs) > n_ref or len(pairs) > n_pred:
-        raise EvaluationError(
-            f"matching inconsistency: 匹配数 {len(pairs)} 超过 reference {n_ref} "
-            f"或 prediction {n_pred}"
-        )
-
-
-def lesion_instance_metrics(
-    pred: np.ndarray, ref: np.ndarray, voxel_volume_mm3: float, case_id: str
-) -> dict:
-    """单病例的病灶实例级指标（full 模式专用；不使用任何预测后处理）。
-
-    - 实例 = 3D 连通域（``CONNECTIVITY = 1``，6-邻域 / face connectivity）；仅通过角或边
-      接触的体素不属于同一 lesion；
-    - 候选匹配 = intersection ≥ 1 voxel；一对一字典序匹配见 ``_match_lesion_instances``；
-    - ``lesion_sensitivity_any_overlap`` = matched reference lesions / all reference lesions，
-      未匹配（missed）lesion **不从分母删除**；``n_ref == 0``（阴性病例）为 0/0 -> null，
-      不进入分母，但其 prediction components 全部计入 ``predicted_lesions`` 的 unmatched 假阳；
-    - 参考实例体积 = 体素数 × 该病例真实 spacing 乘积（mm³），不使用数组 shape 猜 spacing；
-    - 不做最小团块过滤 / 最大团块 / 形态学开闭 / 填洞 / 阈值优化等任何后处理。
-
-    内部一致性（一对一、intersection ≥ 1、计数恒等式）不满足时抛 ``EvaluationError``。
-    """
-    from scipy import ndimage
-
-    structure = ndimage.generate_binary_structure(3, CONNECTIVITY)
-    ref_lab, n_ref_comp = ndimage.label(ref, structure=structure)
-    pred_lab, n_pred_comp = ndimage.label(pred, structure=structure)
-    ref_sizes = (
-        np.bincount(ref_lab.ravel())[1:] if n_ref_comp else np.array([], dtype=np.int64)
-    )
-    pred_sizes = (
-        np.bincount(pred_lab.ravel())[1:]
-        if n_pred_comp
-        else np.array([], dtype=np.int64)
-    )
-
-    intersections: dict[tuple[int, int], int] = {}
-    if n_ref_comp and n_pred_comp:
-        overlap = (ref_lab > 0) & (pred_lab > 0)
-        if bool(overlap.any()):
-            # 联合直方图一次算完全部 (ref component, pred component) 交集体素数
-            codes = ref_lab[overlap].astype(np.int64) * (n_pred_comp + 1) + pred_lab[
-                overlap
-            ].astype(np.int64)
-            counts = np.bincount(codes, minlength=(n_ref_comp + 1) * (n_pred_comp + 1))
-            for code in np.nonzero(counts)[0]:
-                r, p = divmod(int(code), n_pred_comp + 1)
-                if r >= 1 and p >= 1:
-                    intersections[(r, p)] = int(counts[code])
-
-    pairs = _match_lesion_instances(intersections, n_ref_comp, n_pred_comp)
-    _validate_lesion_matching(pairs, n_ref_comp, n_pred_comp)
-    pair_by_ref = {r: (p, w) for r, p, w in pairs}
-    pair_by_pred = {p: (r, w) for r, p, w in pairs}
-
-    reference_records: list[dict] = []
-    prediction_records: list[dict] = []
-    matched_dices: list[float] = []
-    for comp_id in range(1, n_ref_comp + 1):
-        voxels = int(ref_sizes[comp_id - 1])
-        volume_mm3 = float(voxels) * float(voxel_volume_mm3)
-        record: dict = {
-            "reference_component_id": comp_id,
-            "voxels": voxels,
-            "volume_mm3": _finite(volume_mm3),
-            "size_stratum": _lesion_size_stratum(volume_mm3),
-            "matched": comp_id in pair_by_ref,
-            "matched_prediction_component_id": None,
-            "intersection_voxels": None,
-            "matched_dice": None,
-        }
-        if comp_id in pair_by_ref:
-            pred_id, intersection = pair_by_ref[comp_id]
-            pred_voxels = int(pred_sizes[pred_id - 1])
-            dice = 2.0 * intersection / (voxels + pred_voxels)
-            matched_dices.append(dice)
-            record["matched_prediction_component_id"] = pred_id
-            record["intersection_voxels"] = intersection
-            record["matched_dice"] = _finite(dice)
-        reference_records.append(record)
-    for comp_id in range(1, n_pred_comp + 1):
-        voxels = int(pred_sizes[comp_id - 1])
-        record = {
-            "prediction_component_id": comp_id,
-            "voxels": voxels,
-            "volume_mm3": _finite(float(voxels) * float(voxel_volume_mm3)),
-            "matched": comp_id in pair_by_pred,
-            "matched_reference_component_id": None,
-            "intersection_voxels": None,
-        }
-        if comp_id in pair_by_pred:
-            ref_id, intersection = pair_by_pred[comp_id]
-            record["matched_reference_component_id"] = ref_id
-            record["intersection_voxels"] = intersection
-        prediction_records.append(record)
-
-    matched_count = len(pairs)
-    return {
-        "case_id": case_id,
-        "connectivity": CONNECTIVITY,
-        "connectivity_name": "3D 6-neighborhood",
-        "reference_lesions": int(n_ref_comp),
-        "matched_reference_lesions": int(matched_count),
-        "lesion_sensitivity_any_overlap": _ratio(matched_count, n_ref_comp),
-        # prediction 侧：matched 与 reference 侧必然成对（一对一），unmatched = 全部假阳组件
-        "predicted_lesions": int(n_pred_comp),
-        "matched_predicted_lesions": int(matched_count),
-        "unmatched_predicted_lesions": int(n_pred_comp - matched_count),
-        "matched_lesion_dice": _dist_stats(matched_dices),
-        "reference_lesion_records": reference_records,
-        "prediction_lesion_records": prediction_records,
-    }
-
-
-def _aggregate_lesion_instance_metrics(entries: dict[str, dict]) -> dict:
-    """把逐病例实例级结果（``entries[cid]["lesion_instance_metrics"]``）聚合为全局块。
-
-    只做计数与分布聚合，不重新匹配；病例顺序固定为 case id 升序。分母一律是**全部
-    reference lesions**（阴性病例贡献 0 个分母，不参与 sensitivity）。
-    """
-    per_case = [entries[cid]["lesion_instance_metrics"] for cid in sorted(entries)]
-    reference_total = sum(m["reference_lesions"] for m in per_case)
-    matched_total = sum(m["matched_reference_lesions"] for m in per_case)
-    predicted_total = sum(m["predicted_lesions"] for m in per_case)
-    matched_pred_total = sum(m["matched_predicted_lesions"] for m in per_case)
-    unmatched_pred_total = sum(m["unmatched_predicted_lesions"] for m in per_case)
-
-    all_dices: list[float] = []
-    strata: dict[str, dict] = {
-        key: {
-            "reference_lesion_count": 0,
-            "matched_reference_lesion_count": 0,
-            "dices": [],
-        }
-        for key in LESION_SIZE_STRATUM_KEYS
-    }
-    for metrics in per_case:
-        for record in metrics["reference_lesion_records"]:
-            key = record["size_stratum"]
-            if key not in strata:
-                raise EvaluationError(f"未知的病灶大小分层: {key!r}")
-            strata[key]["reference_lesion_count"] += 1
-            if record["matched"]:
-                strata[key]["matched_reference_lesion_count"] += 1
-            if record["matched_dice"] is not None:
-                dice = float(record["matched_dice"])
-                all_dices.append(dice)
-                strata[key]["dices"].append(dice)
-
-    size_strata = {
-        key: {
-            "reference_lesion_count": state["reference_lesion_count"],
-            "matched_reference_lesion_count": state["matched_reference_lesion_count"],
-            # 该层 0 个 reference lesion 时 sensitivity 为 null，不是 0
-            "lesion_sensitivity_any_overlap": _ratio(
-                state["matched_reference_lesion_count"], state["reference_lesion_count"]
-            ),
-            "matched_lesion_dice": _dist_stats(state["dices"]),
-        }
-        for key, state in ((key, strata[key]) for key in LESION_SIZE_STRATUM_KEYS)
-    }
-
-    return _json_safe(
-        {
-            "connectivity": CONNECTIVITY,
-            "connectivity_name": "3D 6-neighborhood",
-            "matching": {
-                "candidate_rule": "intersection_voxels >= 1",
-                "primary_objective": "maximum_cardinality",
-                "secondary_objective": "maximum_total_intersection_voxels",
-                "tie_break": (
-                    "reference_component_id_ascending_then_prediction_component_id_ascending"
-                ),
-                "objective_note": (
-                    "matching 不以 Dice / IoU 为目标：matched-lesion Dice 是报告终点之一，"
-                    "先最大化 Dice 会产生 metric-optimizing-the-metric 风险；"
-                    "Dice 只用于匹配后的质量评价"
-                ),
-            },
-            "size_strata_definition": {
-                "small_lt_500_mm3": "V < 500 mm³（< 0.5 cc）",
-                "medium_500_to_1000_mm3": "500 ≤ V ≤ 1000 mm³（0.5–1.0 cc）",
-                "large_gt_1000_mm3": "V > 1000 mm³（> 1.0 cc）",
-                "note": "exploratory size strata, not clinical risk categories",
-            },
-            "n_cases": len(per_case),
-            "reference_lesions": int(reference_total),
-            "matched_reference_lesions": int(matched_total),
-            "lesion_sensitivity_any_overlap": _ratio(matched_total, reference_total),
-            # 与 lesion_sensitivity_any_overlap 按定义为同一量，单独列出以便直观阅读
-            "matched_reference_fraction": _ratio(matched_total, reference_total),
-            "small_lesion_sensitivity_any_overlap": _ratio(
-                strata["small_lt_500_mm3"]["matched_reference_lesion_count"],
-                strata["small_lt_500_mm3"]["reference_lesion_count"],
-            ),
-            # FP lesions / case 口径：unmatched predicted components / 全部病例（含阴性病例假阳）
-            "predicted_lesions": int(predicted_total),
-            "matched_predicted_lesions": int(matched_pred_total),
-            "unmatched_predicted_lesions": int(unmatched_pred_total),
-            "matched_lesion_dice": _dist_stats(all_dices),
-            "size_strata": size_strata,
-            "definitions": {
-                "lesion_instance": (
-                    "3D connected component（6-邻域 / face connectivity，CONNECTIVITY=1）；"
-                    "仅角或边接触的体素不属于同一 lesion"
-                ),
-                "lesion_sensitivity_any_overlap": (
-                    "matched reference lesions / all reference lesions（any-overlap 匹配）；"
-                    "未匹配 lesion = missed，仍留在分母，不得从分母删除"
-                ),
-                "matched_lesion_dice": (
-                    "只作用于一对一 matched pairs：2|GT∩Pred| / (|GT|+|Pred|)；"
-                    "天然排除全部 missed lesions，不得描述为 overall lesion Dice"
-                ),
-                "predicted_lesions": (
-                    "prediction components 总数（含阴性病例的假阳组件；阴性病例不进 sensitivity 分母）"
-                ),
-                "unmatched_predicted_lesions": (
-                    "unmatched 的 prediction components / 全部病例；不改变现有 negative-case FP 主指标"
-                ),
-                "not_challenge_metric": (
-                    "segmentation failure analysis；不是 PI-CAI challenge detection metric"
-                    "（不计算 AUROC / average precision / FROC / detection score）"
-                ),
-            },
-        }
-    )
+# 几何 / 体积 / 连通域 / 表面距离 / 病灶实例级匹配的**纯函数**全部来自
+# ``zonal_reliability_fusion.evaluation``（见文件顶部 import）。本节只保留
+# full 模式的逐例编排 ``_build_full_case_entry`` 及其后续流程。
 
 
 def _build_full_case_entry(cid: str, case: dict, tolerance_mm: float) -> dict:
@@ -1709,7 +983,7 @@ def run_full_mode(
             errors.append(f"[{model_name}] {cid}: {exc}")
             stats.full_case_failed()
             continue
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # 逐例失败收集（含 MedPy / SciPy / 体积 / 连通域等第三方异常）。
             # KeyboardInterrupt 与 SystemExit 派生自 BaseException 而非 Exception，不会被吞掉。
             errors.append(f"[{model_name}] {cid}: {type(exc).__name__}: {exc}")
@@ -1953,8 +1227,16 @@ def run_full_mode(
 # --------------------------------------------------------------------------- CLI
 def anatomy_region_metrics(reference, prediction):
     """Native region masks/counts, with native empty-both Dice=undefined rule."""
-    from nnunetv2.evaluation.evaluate_predictions import region_or_label_to_mask, compute_tp_fp_fn_tn
-    from zonal_reliability_fusion.nnunet.trainers import ANATOMY_LABELS, anatomy_validate_array
+    from nnunetv2.evaluation.evaluate_predictions import (
+        compute_tp_fp_fn_tn,
+        region_or_label_to_mask,
+    )
+
+    from zonal_reliability_fusion.anatomy.contracts import (
+        ANATOMY_LABELS,
+        anatomy_validate_array,
+    )
+
     anatomy_validate_array(reference, range(8), "anatomy reference")
     anatomy_validate_array(prediction, range(8), "anatomy prediction bitcode")
     if reference.shape != prediction.shape:
@@ -1996,11 +1278,18 @@ def run_anatomy_evaluation(args):
     import hashlib
     import importlib.util
     import time
+
     import SimpleITK as sitk
-    from zonal_reliability_fusion.nnunet.trainers import (
-        validate_anatomy_dataset, validate_anatomy_split, anatomy_same_grid,
-        anatomy_encode_heads, anatomy_validate_array, anatomy_read_array)
     from tqdm import tqdm
+
+    from zonal_reliability_fusion.anatomy.contracts import (
+        anatomy_encode_heads,
+        anatomy_read_array,
+        anatomy_same_grid,
+        anatomy_validate_array,
+        validate_anatomy_dataset,
+        validate_anatomy_split,
+    )
     started = time.monotonic()
     output = Path(args.output_dir)
     prediction, reference_dir, images = map(Path, (args.prediction_dir, args.reference_dir, args.images_dir))
@@ -2279,7 +1568,7 @@ def _run(args: argparse.Namespace, run: RunStats) -> int:
             )
             run.model_failed()
             continue
-        except Exception as exc:  # noqa: BLE001 - 逐模型失败收集后统一报告
+        except Exception as exc:
             load_errors.append(f"[{name}] {type(exc).__name__}: {exc}")
             run.model_failed()
             continue

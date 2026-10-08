@@ -15,38 +15,18 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PREDICT_SCRIPT = PROJECT_ROOT / "scripts" / "inference" / "predict_nnunet.py"
 
-EXPECTED = {
-    "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
-    "nnUNetTrainerPICAI_FLCE_NoFFT": "nnUNetTrainerPICAI_FLCE_NoFFT",
-    "nnUNetTrainerPICAI_DiceCE_NoFFT": "nnUNetTrainerPICAI_DiceCE_NoFFT",
-    "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_ImageGate": "nnUNetTrainerPICAI_ImageGate",
-    "nnUNetTrainerPICAI_AnatomyGate": "nnUNetTrainerPICAI_AnatomyGate",
-    "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
-        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT"
-    ),
-    "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT",
-    "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT",
-    "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT",
-    "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT",
-}
+def _expected_names() -> dict[str, str]:
+    """项目 Trainer 名 -> 类名；**由注册表派生**，不维护第二份手写清单。
+
+    维护两份清单是过去 README / 训练入口 / 预测入口 Trainer 数量口径不一致（11 / 15 / 16）
+    的直接原因。现在唯一真源是 ``PROJECT_TRAINERS``，这份测试只检查「派生是否正确」。
+    """
+    from zonal_reliability_fusion.nnunet.trainers import PROJECT_TRAINERS
+
+    return {name: name for name in PROJECT_TRAINERS}
+
+
+EXPECTED = _expected_names()
 
 
 def _load_predict_entry():
@@ -59,62 +39,25 @@ def _load_predict_entry():
 
 
 def _project_classes() -> dict:
-    from zonal_reliability_fusion.nnunet.trainers import (
-        nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
-        nnUNetTrainerPICAI_AnatomyGate,
-        nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_DiceCE_NoFFT,
-        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
-        nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
-        nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
-        nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
-        nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_FLCE_NoFFT,
-        nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
-        nnUNetTrainerPICAI_ImageGate,
-        nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
-    )
+    """项目 Trainer 名 -> 类；**由注册表派生**（唯一真源）。
 
-    return {
-        "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT": nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
-        "nnUNetTrainerPICAI_FLCE_NoFFT": nnUNetTrainerPICAI_FLCE_NoFFT,
-        "nnUNetTrainerPICAI_DiceCE_NoFFT": nnUNetTrainerPICAI_DiceCE_NoFFT,
-        "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_ImageGate": nnUNetTrainerPICAI_ImageGate,
-        "nnUNetTrainerPICAI_AnatomyGate": nnUNetTrainerPICAI_AnatomyGate,
-        "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
-            nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT
-        ),
-        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
-        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
-        "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
-        "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
-    }
+    历史上这份映射是手写的，每新增一个 Trainer 都会漏；现在直接读 ``PROJECT_TRAINERS``，
+    因此测试只检查「解析器是否与注册表一致」。
+    """
+    from zonal_reliability_fusion.nnunet.trainers import PROJECT_TRAINERS
+
+    return dict(PROJECT_TRAINERS)
 
 
 def test_predict_entry_declares_every_project_trainer_name():
+    """预测入口的 Trainer 名单必须由注册表派生，不允许出现第二份手写清单。"""
+    from zonal_reliability_fusion.nnunet.trainers import PROJECT_TRAINERS
+
     module = _load_predict_entry()
-    assert tuple(module.PROJECT_TRAINER_NAMES) == tuple(EXPECTED)
+    assert set(module.PROJECT_TRAINER_NAMES) == set(PROJECT_TRAINERS)
+    assert set(module.PROJECT_TRAINER_NAMES) == set(EXPECTED)
+    # 排序保证审计输出稳定（预测入口的 name 列表用于日志与自检）
+    assert tuple(module.PROJECT_TRAINER_NAMES) == tuple(sorted(EXPECTED))
 
     # PROJECT_TRAINER_NAMES 与实际注册表必须一致，避免漏加新 Trainer
     from zonal_reliability_fusion.nnunet.trainers import PROJECT_TRAINERS
@@ -172,7 +115,10 @@ def test_predict_entry_help_exits_zero(monkeypatch):
 
 def _anatomy_prediction_fixture(tmp_path, monkeypatch):
     import json
+
+    from zonal_reliability_fusion.anatomy import contracts as anatomy_contracts
     from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(anatomy_contracts, "ANATOMY_COUNTS", (2, 1, 1))
     monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
     model = tmp_path / 'nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres'
     model.mkdir()
@@ -247,6 +193,7 @@ def test_prediction_protection_rejects_invalid_ambiguous_or_restricted_arguments
 def test_legacy_prediction_argv_delegation_unchanged(tmp_path, monkeypatch, equals):
     import json
     import sys
+
     import nnunetv2.inference.predict_from_raw_data as native
     model = tmp_path / 'lesion-model'
     model.mkdir()

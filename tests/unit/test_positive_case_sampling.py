@@ -415,7 +415,7 @@ class _MixinHost(PositiveCaseSamplingMixin):
 
 @pytest.fixture()
 def mixin_host(synthetic_split, monkeypatch):
-    import zonal_reliability_fusion.nnunet.sampling as sampling_module
+    import zonal_reliability_fusion.sampling.positive_sampling as sampling_module
 
     # 单线程路径：避免在测试里启动增强子进程
     monkeypatch.setattr(sampling_module, "get_allowed_n_proc_DA", lambda: 0)
@@ -534,7 +534,7 @@ def test_combined_trainers_dataloaders_via_real_mro(
     synthetic_split, monkeypatch, trainer_cls
 ):
     """组合 Trainer 的真实 MRO：训练 loader=PositiveCaseDataLoader，验证 loader=原生。"""
-    import zonal_reliability_fusion.nnunet.sampling as sampling_module
+    import zonal_reliability_fusion.sampling.positive_sampling as sampling_module
 
     monkeypatch.setattr(sampling_module, "get_allowed_n_proc_DA", lambda: 0)
     host = _make_combined_host(
@@ -717,27 +717,21 @@ def test_project_trainers_resolves_new_trainer():
 
 
 def test_train_entry_resolves_positive_sampling_variant():
+    """训练入口的 variant 映射必须与 Trainer 注册表一致（结构性断言，非硬编码名单）。"""
+    from zonal_reliability_fusion.nnunet.trainers import (
+        ACTIVE_TRAINERS,
+        LEGACY_TRAINERS,
+        PROJECT_TRAINERS,
+    )
+
     train_script = PROJECT_ROOT / "scripts" / "train" / "train_nnunet.py"
     spec = importlib.util.spec_from_file_location("train_nnunet_entry_ps", train_script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert set(module.VARIANT_TO_TRAINER) == {
-        "baseline",
-        "optimized_baseline",
-        "dicece_positive_sampling",
-        "image_gate",
-        "anatomy_gate",
-        "positive_sampling",
-        "image_gate_positive_sampling",
-        "anatomy_gate_positive_sampling",
-        "feature_no_gate_positive_sampling",
-        "feature_image_gate_positive_sampling",
-        "feature_anatomy_gate_positive_sampling",
-        "feature_no_gate_positive_sampling_100ep",
-        "feature_anatomy_gate_positive_sampling_100ep",
-        "zonal_reference_positive_sampling_100ep",
-        "zonal_reference_adaptive_positive_sampling_100ep",
-    }
+
+    assert set(module.ACTIVE_VARIANTS.values()) == {c.__name__ for c in ACTIVE_TRAINERS}
+    assert set(module.LEGACY_VARIANTS.values()) == {c.__name__ for c in LEGACY_TRAINERS}
+    assert set(module.VARIANT_TO_TRAINER.values()) == set(PROJECT_TRAINERS)
     assert (
         module.resolve_trainer_class("positive_sampling")
         is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
@@ -754,6 +748,7 @@ def test_train_entry_resolves_positive_sampling_variant():
         module.resolve_trainer_class("anatomy_gate_positive_sampling")
         is nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT
     )
+
 
 
 def test_predict_entry_resolves_new_trainer_name():

@@ -24,16 +24,16 @@ from zonal_reliability_fusion.nnunet.networks import (
     GatedNNUNet,
     ShallowSequenceStem,
     SpatialModalityReliabilityGate,
-    feature_gate_parameter_delta,
-    ZonalReferenceResidualFusion,
     ZonalReferenceFusionNNUNet,
+    ZonalReferenceResidualFusion,
+    feature_gate_parameter_delta,
 )
 from zonal_reliability_fusion.nnunet.trainers import (
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
-    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
     nnUNetTrainerPICAI_ImageGate,
 )

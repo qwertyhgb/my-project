@@ -45,21 +45,21 @@ from zonal_reliability_fusion.nnunet.trainers import (
     _GatedTrainerBase,
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT,
     nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
-    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
-    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
-    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
-    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_ImageGate,
     nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
 )
-from zonal_reliability_fusion.nnunet.trainers import nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
 from zonal_reliability_fusion.nnunet.transforms import MRIChannelRestrictedTransform
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -435,27 +435,36 @@ def test_train_entry_help_succeeds():
 
 
 def test_train_entry_variant_mapping_is_complete_and_distinct():
+    """ACTIVE / LEGACY 分层必须成立：默认只有主线，归档靠 --legacy 显现。
+
+    这里断言的是**结构**（集合关系 + 一一映射 + 与注册表一致），而不是一份硬编码名单：
+    硬编码名单会在每次新增条件时失效，并且无法表达「哪个是主线」这一关键信息。
+    """
+    from zonal_reliability_fusion.nnunet.trainers import (
+        ACTIVE_TRAINERS,
+        LEGACY_TRAINERS,
+        PROJECT_TRAINERS,
+    )
+
     module = _load_train_entry()
-    # 有且仅有这十一个 variant
-    assert set(module.VARIANT_TO_TRAINER) == {
-        "anatomy_joint_100ep",
-        "baseline",
-        "optimized_baseline",
-        "dicece_positive_sampling",
-        "image_gate",
-        "anatomy_gate",
-        "positive_sampling",
-        "image_gate_positive_sampling",
-        "anatomy_gate_positive_sampling",
-        "feature_no_gate_positive_sampling",
-        "feature_image_gate_positive_sampling",
-        "feature_anatomy_gate_positive_sampling",
-        "feature_no_gate_positive_sampling_100ep",
-        "feature_anatomy_gate_positive_sampling_100ep",
-        "zonal_reference_positive_sampling_100ep",
-        "zonal_reference_adaptive_positive_sampling_100ep",
-    }
-    assert len(set(module.VARIANT_TO_TRAINER.values())) == 16
+    active_classes = {cls.__name__ for cls in ACTIVE_TRAINERS}
+    legacy_classes = {cls.__name__ for cls in LEGACY_TRAINERS}
+
+    assert set(module.ACTIVE_VARIANTS.values()) == active_classes
+    assert set(module.LEGACY_VARIANTS.values()) == legacy_classes
+    assert not (active_classes & legacy_classes)
+    assert module.VARIANT_TO_TRAINER == {**module.ACTIVE_VARIANTS, **module.LEGACY_VARIANTS}
+    assert set(module.VARIANT_TO_TRAINER.values()) == set(PROJECT_TRAINERS)
+    assert len(module.VARIANT_TO_TRAINER) == len(set(module.VARIANT_TO_TRAINER.values()))
+    # 默认 --help 只显示 ACTIVE；--legacy 才把归档条件加入可选列表
+    def _variant_choices(parser):
+        return set(next(a for a in parser._actions if a.dest == "variant").choices or [])
+
+    default_choices = _variant_choices(module.build_parser())
+    legacy_choices = _variant_choices(module.build_parser(include_legacy=True))
+    assert default_choices == set(module.ACTIVE_VARIANTS)
+    assert legacy_choices == set(module.VARIANT_TO_TRAINER)
+    assert not (default_choices & set(module.LEGACY_VARIANTS))
     assert module.resolve_trainer_class("baseline") is nnUNetTrainerPICAI_FLCE_NoFFT
     assert (
         module.resolve_trainer_class("optimized_baseline")
@@ -503,17 +512,34 @@ _SHORT_ZONAL_TRAINERS = (
 )
 
 
-@pytest.mark.parametrize("trainer", _SHORT_ZONAL_TRAINERS)
-def test_short_zonal_budget_and_scheduler_horizon_without_real_trainer(monkeypatch, trainer):
-    # 禁止原生 __init__ 创建目录/读计划；仅提供合成 configuration state。
+def _instantiate_short_zonal(monkeypatch, trainer, spacing=(3.0, 0.5, 0.5)):
+    """在**不创建目录、不读 plans** 的前提下实例化 short-zonal Trainer 并运行 initialize()。
+
+    历史上 ``num_epochs=100`` 与 spacing 校验放在 ``__init__``；现在按 nnU-Net 的调用时序放在
+    ``initialize()``（``nnUNetTrainer.__init__`` 末尾会调用它），以避免 ``my_init_kwargs`` 的
+    反射破坏 checkpoint 重建。本 helper 因此显式调用 ``initialize()``。
+    """
     def fake_parent_init(self, *args, **kwargs):
-        self.configuration_manager = SimpleNamespace(spacing=[3.0, .5, .5])
+        self.configuration_manager = SimpleNamespace(spacing=list(spacing))
         self.num_epochs = 1000
+        self.num_iterations_per_epoch = 250
         self.network = nn.Linear(2, 2)
         self.initial_lr = .01
         self.weight_decay = 3e-5
+
     monkeypatch.setattr(_FeatureFusionTrainerBase, "__init__", fake_parent_init)
+    monkeypatch.setattr(nnUNetTrainer, "initialize", lambda self: None)
+    monkeypatch.setattr(
+        nnUNetTrainer, "print_to_log_file", lambda self, *args, **kwargs: None
+    )
     instance = trainer()
+    instance.initialize()
+    return instance
+
+
+@pytest.mark.parametrize("trainer", _SHORT_ZONAL_TRAINERS)
+def test_short_zonal_budget_and_scheduler_horizon_without_real_trainer(monkeypatch, trainer):
+    instance = _instantiate_short_zonal(monkeypatch, trainer)
     assert instance.num_epochs == 100
     optimizer, scheduler = nnUNetTrainer.configure_optimizers(instance)
     assert scheduler.max_steps == 100
@@ -526,15 +552,12 @@ def test_short_zonal_budget_and_scheduler_horizon_without_real_trainer(monkeypat
 
 
 def test_short_zonal_spacing_and_cli_fail_closed(monkeypatch):
-    def fake_parent_init(self, *args, **kwargs):
-        self.configuration_manager = SimpleNamespace(spacing=[1, 1, 1])
-    monkeypatch.setattr(_FeatureFusionTrainerBase, "__init__", fake_parent_init)
     with pytest.raises(ValueError, match="spacing"):
-        _SHORT_ZONAL_TRAINERS[0]()
+        _instantiate_short_zonal(monkeypatch, _SHORT_ZONAL_TRAINERS[0], spacing=(1, 1, 1))
     module = _load_train_entry()
     for dataset, configuration in [("605", "3d_fullres"), ("606", "2d")]:
         with pytest.raises(SystemExit, match="Dataset606"):
-            module.main(["zonal_reference_positive_sampling_100ep", dataset, configuration, "0"])
+            module.main(["--legacy", "zonal_reference_positive_sampling_100ep", dataset, configuration, "0"])
 
 
 def test_short_zonal_entry_refuses_overwrite_or_silent_fresh_resume(monkeypatch):
@@ -542,10 +565,10 @@ def test_short_zonal_entry_refuses_overwrite_or_silent_fresh_resume(monkeypatch)
     # 不创建目录/影像/checkpoint，模拟两个不安全的文件系统状态。
     monkeypatch.setattr(Path, "exists", lambda self: True)
     with pytest.raises(SystemExit, match="拒绝从头覆盖"):
-        module.main(["zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0"])
+        module.main(["--legacy", "zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0"])
     monkeypatch.setattr(Path, "is_file", lambda self: False)
     with pytest.raises(SystemExit, match="拒绝静默重训"):
-        module.main(["zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0", "--continue-training"])
+        module.main(["--legacy", "zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0", "--continue-training"])
 
 
 @pytest.mark.parametrize("trainer", _SHORT_ZONAL_TRAINERS)
@@ -567,30 +590,27 @@ def test_short_zonal_builders_require_five_channels_and_run_synthetic_forward(sy
 
 def test_project_trainers_registry_contains_new_trainer():
     from zonal_reliability_fusion.nnunet.trainers import (
+        ACTIVE_TRAINERS,
+        LEGACY_TRAINERS,
         PROJECT_TRAINERS,
         resolve_trainer_class,
     )
 
     name = "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
     dicece_positive_sampling = "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
+    assert dicece_positive_sampling in PROJECT_TRAINERS
+    # 注册表 = ACTIVE + LEGACY，且键名与类一一对应；键名错位会让既有 checkpoint 失联
     assert set(PROJECT_TRAINERS) == {
-        "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
-        "nnUNetTrainerPICAI_FLCE_NoFFT",
-        "nnUNetTrainerPICAI_DiceCE_NoFFT",
-        dicece_positive_sampling,
-        "nnUNetTrainerPICAI_ImageGate",
-        "nnUNetTrainerPICAI_AnatomyGate",
-        name,
-        "nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT",
-        "nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT",
-        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT",
-        "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT",
-        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT",
-        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT",
-        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT",
-        "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT",
-        "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT",
+        cls.__name__ for cls in (*ACTIVE_TRAINERS, *LEGACY_TRAINERS)
     }
+    assert all(PROJECT_TRAINERS[c.__name__] is c for c in PROJECT_TRAINERS.values())
+    for expected in (
+        "nnUNetTrainerPICAI_LesionROI_NoFFT",
+        "nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT",
+        "nnUNetTrainerPICAI_LesionZoneRefine_NoFFT",
+        "nnUNetTrainerPICAI_LesionHardNegative_NoFFT",
+    ):
+        assert expected in PROJECT_TRAINERS, expected
     assert PROJECT_TRAINERS[name] is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
     assert resolve_trainer_class(name) is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
     for cls in _FEATURE_TRAINERS:
@@ -1286,10 +1306,13 @@ def _synthetic_anatomy_document():
 
 
 def test_anatomy_native_loss_region_targets_heads_and_gradients(synthetic_arch):
-    from zonal_reliability_fusion.nnunet import trainers as t
-    from nnunetv2.utilities.label_handling.label_handling import LabelManager
+    from batchgeneratorsv2.transforms.utils.seg_to_regions import (
+        ConvertSegmentationToRegionsTransform,
+    )
     from nnunetv2.training.loss.compound_losses import DC_and_BCE_loss
-    from batchgeneratorsv2.transforms.utils.seg_to_regions import ConvertSegmentationToRegionsTransform
+    from nnunetv2.utilities.label_handling.label_handling import LabelManager
+
+    from zonal_reliability_fusion.nnunet import trainers as t
     cls = nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
     assert cls.__mro__ == (cls, NoFFTAugmentationMixin, nnUNetTrainer, object)
     for method in ('_build_loss', 'train_step', 'validation_step', 'get_dataloaders',
@@ -1319,11 +1342,27 @@ def test_anatomy_native_loss_region_targets_heads_and_gradients(synthetic_arch):
     assert isinstance(net, PlainConvUNet)
 
 
+def _patch_anatomy_counts(monkeypatch, counts=(2, 1, 1)):
+    """把解剖病例数补丁打到 **canonical** 模块上。
+
+    ``validate_anatomy_dataset`` 在调用时读取 ``anatomy.contracts.ANATOMY_COUNTS``，而
+    ``nnunet.trainers`` 只是把同一批常量再导出一次（快照）。只 patch 再导出位置不会改变
+    校验行为，因此这里同时 patch 两处，保持测试意图与真实调用路径一致。
+    """
+    from zonal_reliability_fusion.anatomy import contracts as anatomy_contracts
+    from zonal_reliability_fusion.nnunet import trainers as trainers_module
+
+    monkeypatch.setattr(anatomy_contracts, "ANATOMY_COUNTS", counts)
+    monkeypatch.setattr(trainers_module, "ANATOMY_COUNTS", counts)
+
+
 def test_anatomy_budget_split_guard_and_scheduler(tmp_path, monkeypatch):
     import json
+
     import nnunetv2.paths
+
     from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    _patch_anatomy_counts(monkeypatch)
     monkeypatch.setattr(nnunetv2.paths, 'nnUNet_preprocessed', str(tmp_path))
     doc = _synthetic_anatomy_document()
     cls = nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
@@ -1354,7 +1393,7 @@ def test_anatomy_budget_split_guard_and_scheduler(tmp_path, monkeypatch):
 @pytest.mark.parametrize('change', ['channels', 'order', 'dataset', 'configuration'])
 def test_anatomy_contract_fail_closed(change, monkeypatch):
     from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    _patch_anatomy_counts(monkeypatch)
     import copy
     doc = copy.deepcopy(_synthetic_anatomy_document())
     name, config = t.ANATOMY_DATASET, '3d_fullres'
@@ -1367,7 +1406,7 @@ def test_anatomy_contract_fail_closed(change, monkeypatch):
 
 def test_anatomy_variant_cli_guards_and_checkpoint_resume(tmp_path, monkeypatch):
     from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    _patch_anatomy_counts(monkeypatch)
     module = _load_train_entry()
     assert module.resolve_trainer_class('anatomy_joint_100ep') is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
     for dataset, config, fold in [('606', '3d_fullres', '0'), ('607', '2d', '0'), ('607', '3d_fullres', 'all')]:
@@ -1396,10 +1435,12 @@ def test_anatomy_variant_cli_guards_and_checkpoint_resume(tmp_path, monkeypatch)
 
 def test_anatomy_entry_missing_explicit_split_never_calls_training(tmp_path, monkeypatch):
     import json
+
     import nnunetv2.paths as paths
     import nnunetv2.run.run_training as native
+
     from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    _patch_anatomy_counts(monkeypatch)
     monkeypatch.setattr(paths, 'nnUNet_preprocessed', str(tmp_path))
     folder = tmp_path / t.ANATOMY_DATASET
     folder.mkdir()
@@ -1413,8 +1454,8 @@ def test_anatomy_entry_missing_explicit_split_never_calls_training(tmp_path, mon
 
 def test_anatomy_do_split_checks_patient_scope_and_preprocessed_identifiers(tmp_path, monkeypatch):
     import json
-    from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+
+    _patch_anatomy_counts(monkeypatch)
     doc = _synthetic_anatomy_document()
     path = tmp_path / 'splits_final.json'
     path.write_text(json.dumps([{'train': ['1_10'], 'val': ['2_20']}]))
@@ -1437,9 +1478,11 @@ def test_anatomy_do_split_checks_patient_scope_and_preprocessed_identifiers(tmp_
 
 def _anatomy_training_output_fixture(tmp_path, monkeypatch, completed):
     import json
+
     import nnunetv2.paths as paths
+
     from zonal_reliability_fusion.nnunet import trainers as t
-    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    _patch_anatomy_counts(monkeypatch)
     preprocessed, results = tmp_path / 'preprocessed', tmp_path / 'results'
     monkeypatch.setattr(paths, 'nnUNet_preprocessed', str(preprocessed))
     monkeypatch.setattr(paths, 'nnUNet_results', str(results))
