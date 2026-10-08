@@ -508,7 +508,8 @@ class HardNegativeMiningMixin(PositiveCaseSamplingMixin):
         """启用困难负样本时返回其 loader；未配置路径时完全退化为父类行为。"""
         if self.hard_negative_set_path is None:
             return super()._resolve_train_loader_class()
-        return HardNegativeDataLoader
+        return (ROIHardNegativeDataLoader if getattr(self, "roi_set_path", None)
+                else HardNegativeDataLoader)
 
     def _train_loader_kwargs(self, dataset_train) -> dict:
         if self.hard_negative_set_path is None:
@@ -534,3 +535,16 @@ class HardNegativeMiningMixin(PositiveCaseSamplingMixin):
             f"hard_negative_cases_per_batch={self.hard_negative_cases_per_batch}"
         )
         return kwargs
+
+
+# Compose existing native-loader extensions; keep ROI for non-mined slots.
+from zonal_reliability_fusion.nnunet.roi_sampling import ROIDataLoader
+
+
+class ROIHardNegativeDataLoader(HardNegativeDataLoader, ROIDataLoader):
+    """Consume both slot queues when a mined coordinate bypasses ROI get_bbox."""
+
+    def get_bbox(self, data_shape, force_fg, class_locations, overwrite_class=None, verbose=False):
+        if self._slot_decisions and self._slot_decisions[0] is not None:
+            self._current_key(force_fg)
+        return super().get_bbox(data_shape, force_fg, class_locations, overwrite_class, verbose)

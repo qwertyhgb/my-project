@@ -444,16 +444,20 @@ def test_train_entry_variant_mapping_is_complete_and_distinct():
         ACTIVE_TRAINERS,
         LEGACY_TRAINERS,
         PROJECT_TRAINERS,
+        SUPPORTING_TRAINERS,
     )
 
     module = _load_train_entry()
     active_classes = {cls.__name__ for cls in ACTIVE_TRAINERS}
     legacy_classes = {cls.__name__ for cls in LEGACY_TRAINERS}
+    supporting_classes = {cls.__name__ for cls in SUPPORTING_TRAINERS}
+    assert set(module.SUPPORTING_VARIANTS.values()) == supporting_classes
+    assert not (supporting_classes & (active_classes | legacy_classes))
 
     assert set(module.ACTIVE_VARIANTS.values()) == active_classes
     assert set(module.LEGACY_VARIANTS.values()) == legacy_classes
     assert not (active_classes & legacy_classes)
-    assert module.VARIANT_TO_TRAINER == {**module.ACTIVE_VARIANTS, **module.LEGACY_VARIANTS}
+    assert module.VARIANT_TO_TRAINER == {**module.ACTIVE_VARIANTS, **module.SUPPORTING_VARIANTS, **module.LEGACY_VARIANTS}
     assert set(module.VARIANT_TO_TRAINER.values()) == set(PROJECT_TRAINERS)
     assert len(module.VARIANT_TO_TRAINER) == len(set(module.VARIANT_TO_TRAINER.values()))
     # 默认 --help 只显示 ACTIVE；--legacy 才把归档条件加入可选列表
@@ -461,7 +465,7 @@ def test_train_entry_variant_mapping_is_complete_and_distinct():
         return set(next(a for a in parser._actions if a.dest == "variant").choices or [])
 
     default_choices = _variant_choices(module.build_parser())
-    legacy_choices = _variant_choices(module.build_parser(include_legacy=True))
+    legacy_choices = _variant_choices(module.build_parser(include_legacy=True, include_supporting=True))
     assert default_choices == set(module.ACTIVE_VARIANTS)
     assert legacy_choices == set(module.VARIANT_TO_TRAINER)
     assert not (default_choices & set(module.LEGACY_VARIANTS))
@@ -593,15 +597,16 @@ def test_project_trainers_registry_contains_new_trainer():
         ACTIVE_TRAINERS,
         LEGACY_TRAINERS,
         PROJECT_TRAINERS,
+        SUPPORTING_TRAINERS,
         resolve_trainer_class,
     )
 
     name = "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
     dicece_positive_sampling = "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
     assert dicece_positive_sampling in PROJECT_TRAINERS
-    # 注册表 = ACTIVE + LEGACY，且键名与类一一对应；键名错位会让既有 checkpoint 失联
+    # 注册表 = ACTIVE + SUPPORTING + LEGACY，且键名与类一一对应；键名错位会让既有 checkpoint 失联
     assert set(PROJECT_TRAINERS) == {
-        cls.__name__ for cls in (*ACTIVE_TRAINERS, *LEGACY_TRAINERS)
+        cls.__name__ for cls in (*ACTIVE_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
     }
     assert all(PROJECT_TRAINERS[c.__name__] is c for c in PROJECT_TRAINERS.values())
     for expected in (
@@ -1546,3 +1551,29 @@ def test_anatomy_unfinished_resume_and_completed_first_validation_remain_allowed
     module.guard_anatomy_checkpoint(output, continue_training=not completed,
                                    validation_only=completed, expected_dataset_json=dataset)
     assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+def test_seeded_lesion_checkpoint_resume_checks_own_trainer_plans_and_budget(tmp_path):
+    from zonal_reliability_fusion.nnunet.trainers import seeded_trainer_class
+
+    module = _load_train_entry()
+    cls = seeded_trainer_class(nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT, 20261008)
+    init = {"plans": {"dataset_name": "Dataset605_PICAI"}, "configuration": "3d_fullres",
+            "fold": 0, "dataset_json": {"labels": {"background": 0, "lesion": 1}}}
+    output = tmp_path / cls.__name__ / "fold_0"
+    output.mkdir(parents=True)
+    state = {"network_weights": {"weight": torch.ones(1)},
+             "optimizer_state": torch.optim.SGD(nn.Linear(1, 2).parameters(), lr=.01).state_dict(),
+             "current_epoch": 120, "trainer_name": cls.__name__, "init_args": init}
+    checkpoint = output / "checkpoint_latest.pth"
+    torch.save(state, checkpoint)
+    kwargs = {"expected_trainer_name": cls.__name__, "expected_epoch_limit": 1000,
+              "expected_dataset_json": init["dataset_json"], "expected_init_args": init}
+    module.guard_anatomy_checkpoint(output, True, False, **kwargs)
+    for changed in ({"trainer_name": cls.__name__ + "_wrong"},
+                    {"current_epoch": 1001}, {"init_args": {**init, "fold": 1}}):
+        torch.save({**state, **changed}, checkpoint)
+        with pytest.raises(SystemExit, match="不可用"):
+            module.guard_anatomy_checkpoint(output, True, False, **kwargs)
+    with pytest.raises(SystemExit, match="拒绝从头覆盖"):
+        module.guard_anatomy_checkpoint(output, False, False, **kwargs)

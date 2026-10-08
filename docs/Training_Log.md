@@ -5,7 +5,7 @@
 
 ---
 
-## 2026-10-08 — 项目重构：新主线确立，主实验尚未运行
+## 2026-10-08 — 项目重构初始快照（现行状态见「各 variant 状态」，WG解释已由末节诊断更正）
 
 本节登记**重构本身造成的状态变化**，不包含任何新的训练结果。
 
@@ -184,7 +184,7 @@
 
 ## 各 variant 状态
 
-命令统一见 README「训练与推理命令」；运行后按下方模板在此登记真实事实。
+本表是当前状态唯一来源；前面的重构表是历史快照。命令统一见 README「训练与推理命令」；运行后按下方模板在此登记真实事实。
 
 | variant | 数据集/配置/fold | 状态 | 输出目录 |
 |---|---|---|---|
@@ -198,6 +198,14 @@
 | feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已启动，缺最终 validation**（2026-10-06 产物核对见首节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中断于 epoch 81**（见 2026-10-08 节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| dicece_positive_sampling | Dataset605 / 3d_fullres / 0 | 未训练；原生DiceCE+阳性采样对照 | 独立原类名目录，尚未创建 |
+| anatomy_joint_100ep | Dataset607 / 3d_fullres / 0 | 100ep+validation完成；soft heads诊断完成，见末节 | 既有Stage-1目录保留 |
+| neutral_fusion_flce / neutral_fusion_dicece（新B） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
+| lesion_fusion_flce / lesion_fusion_dicece（新C） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
+| anatomy_lesion_fusion_flce / anatomy_lesion_fusion_dicece（新D） | Dataset608 / 3d_fullres / 0 | CODE READY / NOT TRAINED；真实Dataset608尚未物化/预处理 | 各自独立Trainer类名目录，未创建 |
+| lesion_roi / lesion_coarse_to_fine / lesion_zone_refine | 原605/606 | SUPPORTING，未训练；不是新B/C/D；ROI坐标链仍待验证 | 原类名保留，未创建 |
+| lesion_hard_negative | 原605 | SUPPORTING，未训练；固定原C，不能代表新E | 原类名保留，未创建 |
+| 新E best(C,D)+hard negatives | 待父模型选定 | PLANNED / NOT IMPLEMENTED / NOT TRAINED | 尚未定义新Trainer输出 |
 
 ### image_gate（已完成）
 
@@ -385,3 +393,33 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
 - 输出目录：
 - 备注：
 ```
+
+---
+
+## 2026-10-08 — 既有 Stage-1 soft heads 只读诊断（无新训练/推理）
+
+用户明确授权分析既有 validation 输出。conda lm + 固定 nnU-Net 环境，命令：
+
+```bash
+python -B -m zonal_reliability_fusion.anatomy.validation outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/validation
+```
+
+- 范围：既有223例；实际耗时568.04s；success=223 / failed=0 / skipped=0。
+- 只读 `.npz/.pkl/.nii.gz` 与 reference，核对形状/物理几何，独立阈值固定为 **>0.5**。
+- 输出只在终端，未创建报告文件；既有summary/checkpoint/数据保持原样。
+- 本次不是新的 validation/inference；未运行模型预测或训练。
+
+| soft head | macro Dice | macro recall | macro precision | macro pred/ref volume | TP（汇总） | FP（汇总） | FN（汇总） | 空预测 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| WG | 0.94830182 | 0.95322978 | 0.94529174 | 1.00988294 | 26082103 | 1510582 | 1043170 | 0/223 |
+| PZ | 0.89928774 | 0.89655433 | 0.90461573 | 0.99326969 | 7843174 | 824719 | 894064 | 0/223 |
+| TZ | 0.93613836 | 0.93800987 | 0.93614022 | 1.00472692 | 18722890 | 1091229 | 1102969 | 0/223 |
+
+- WG micro Dice=0.95332881 / recall=0.96154251 / precision=0.94525426 / pred-ref volume ratio=1.01723161。
+- 按原生region顺序从soft heads重建hard export，与既有223例NIfTI差异总数 **0 voxel**。
+- 原hard-export Dice仍为WG 0.00558392 / PZ 0.89848902 / TZ 0.93613836，产物未修改。
+- **更正本文件较早的解释**：“WG头实际不可用”“当前权重必然空WG回退”不成立；
+  原数字是ordered hard-export的区域指标，不能解释为独立soft WG head失败。
+- 先验与伪监督reference的一致性不能证明人工解剖准确性或下游lesion收益。
+
+新融合B/C/D无新训练/validation结果。NO NEW LONG TRAINING STARTED。

@@ -1,64 +1,14 @@
 #!/usr/bin/env python3
-"""统一 nnU-Net 训练入口：variant -> Trainer 类 -> nnU-Net 官方 ``run_training``。
+"""统一训练入口：variant -> 项目 Trainer -> 原生 nnU-Net run_training。
 
-本脚本**只做映射与调用**：不实现任何训练循环、checkpoint、滑窗推理或验证逻辑，这些都交给
-固定版本 nnU-Net（``third_party/nnUNet``，v2.6.2，只读）。
+默认 ACTIVE：A1/A2 strong baseline、B neutral stems、C lesion-conditioned fusion、
+D predicted-anatomy + lesion-conditioned fusion、Stage-1 anatomy generator。
+每个 B/C/D 都有 FLCE 与 DiceCE 两套类，基线损失选择后固定一套。
+--supporting 显示旧 ROI/refinement/HN 扩展，--legacy 显示只读归档条件。
+--seeded-output --seed X 使用独立 Trainer 类名/输出路径，保留历史 checkpoint。
+不重实现训练循环、optimizer、scheduler、验证或滑窗推理。
 
-研究主线：**Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation**
-
-``--help`` 的 ``variant`` 列表默认只显示 **ACTIVE**（新主线），旧门控 / 融合条件在加上
-``--legacy`` 后才出现。这是「训练入口分层」的落地：默认视图里不会再有十几个不知道哪个是主线
-的 variant。
-
-**ACTIVE**
-    positive_sampling                  strong baseline A1：FLCE + 阳性采样
-    dicece_positive_sampling           strong baseline A2：原生 Dice+CE + 阳性采样（只差损失）
-    lesion_roi                         B：A + Anatomy-Guided ROI
-    lesion_coarse_to_fine              C：B + lesionness 头 + soft refinement
-    lesion_zone_refine                 D：C + soft PZ/TZ 解剖上下文
-    lesion_hard_negative               E：best(C,D) + 解剖约束困难负样本
-    anatomy_joint_100ep                Stage 1：T2W -> WG/PZ/TZ 先验生成器
-
-**LEGACY**（需要 ``--legacy``）
-    baseline / optimized_baseline / image_gate / anatomy_gate /
-    image_gate_positive_sampling / anatomy_gate_positive_sampling /
-    feature_no_gate_positive_sampling / feature_image_gate_positive_sampling /
-    feature_anatomy_gate_positive_sampling / 四个 ``*_100ep`` 同区参照条件。
-    保留是为了 checkpoint 兼容与历史实验可复现，**不是**主线。
-
-用法（长任务由研究者本人运行）::
-
-    cd /opt/data/private/lm/my-projects
-    source /root/anaconda3/etc/profile.d/conda.sh && conda activate lm
-    source scripts/env_nnunet.sh
-
-    python scripts/train/train_nnunet.py --help          # 只看 ACTIVE
-    python scripts/train/train_nnunet.py --help --legacy # 含 LEGACY
-
-    # strong baseline A1 / A2（第一个要做的比较：只差损失）
-    python scripts/train/train_nnunet.py positive_sampling 605 3d_fullres 0 --seed 20261008
-    python scripts/train/train_nnunet.py dicece_positive_sampling 605 3d_fullres 0 --seed 20261008
-
-    # 条件 B/C/D（需要先由数据脚本生成 ROI 集合）
-    python scripts/train/train_nnunet.py lesion_roi 605 3d_fullres 0 \
-        --seed 20261008 --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json
-    python scripts/train/train_nnunet.py lesion_coarse_to_fine 605 3d_fullres 0 \
-        --seed 20261008 --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json
-    python scripts/train/train_nnunet.py lesion_zone_refine 606 3d_fullres 0 \
-        --seed 20261008 --roi-set workdir/anatomy_rois/Dataset606_PICAI_Zonal_fold0.json
-
-    # 条件 E（需要先由 scripts/data/mine_hard_negatives.py 生成困难负样本集合）
-    python scripts/train/train_nnunet.py lesion_hard_negative 605 3d_fullres 0 \
-        --seed 20261008 --roi-set <roi.json> --hard-negative-set <hn.json>
-
-    # Stage 1
-    python scripts/train/train_nnunet.py anatomy_joint_100ep 607 3d_fullres 0 \
-        --export-validation-probabilities
-
-可选：``--continue-training`` / ``--validation-only`` / ``--export-validation-probabilities`` /
-``--device`` / ``--seed`` / ``--roi-set`` / ``--hard-negative-set`` / ``--run-config``。
-
-**本轮不启动任何长训练。** 本文件只提供命令，命令由研究者本人执行。
+长任务由研究者本人运行。命令和限制见 README.md / docs/Experiment_Plan.md。
 """
 
 from __future__ import annotations
@@ -69,13 +19,15 @@ from pathlib import Path
 
 #: ACTIVE（研究主线）：默认 `--help` 只显示这些
 ACTIVE_VARIANTS = {
+    "anatomy_joint_100ep": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
     "positive_sampling": "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
     "dicece_positive_sampling": "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT",
-    "lesion_roi": "nnUNetTrainerPICAI_LesionROI_NoFFT",
-    "lesion_coarse_to_fine": "nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT",
-    "lesion_zone_refine": "nnUNetTrainerPICAI_LesionZoneRefine_NoFFT",
-    "lesion_hard_negative": "nnUNetTrainerPICAI_LesionHardNegative_NoFFT",
-    "anatomy_joint_100ep": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
+    "neutral_fusion_flce": "nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT",
+    "neutral_fusion_dicece": "nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT",
+    "lesion_fusion_flce": "nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT",
+    "lesion_fusion_dicece": "nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT",
+    "anatomy_lesion_fusion_flce": "nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT",
+    "anatomy_lesion_fusion_dicece": "nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT",
 }
 
 #: LEGACY（归档）：需要 ``--legacy`` 才出现。类名与实现逐字保留在 legacy/fusion_trainers.py
@@ -111,7 +63,14 @@ LEGACY_VARIANTS = {
     ),
 }
 
-VARIANT_TO_TRAINER = {**ACTIVE_VARIANTS, **LEGACY_VARIANTS}
+SUPPORTING_VARIANTS = {
+    "lesion_roi": "nnUNetTrainerPICAI_LesionROI_NoFFT",
+    "lesion_coarse_to_fine": "nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT",
+    "lesion_zone_refine": "nnUNetTrainerPICAI_LesionZoneRefine_NoFFT",
+    "lesion_hard_negative": "nnUNetTrainerPICAI_LesionHardNegative_NoFFT",
+}
+
+VARIANT_TO_TRAINER = {**ACTIVE_VARIANTS, **SUPPORTING_VARIANTS, **LEGACY_VARIANTS}
 
 #: 旧 100-epoch 同区参照分支：严格限定 Dataset606 / 3d_fullres
 SHORT_FUSION_VARIANTS = frozenset(
@@ -140,7 +99,8 @@ HARD_NEGATIVE_VARIANTS = frozenset({"lesion_hard_negative"})
 
 
 def guard_anatomy_checkpoint(
-    output_folder, continue_training, validation_only, expected_dataset_json=None
+    output_folder, continue_training, validation_only, expected_dataset_json=None,
+    *, expected_trainer_name=None, expected_epoch_limit=100, expected_init_args=None
 ):
     """Reject writes to existing validation artifacts before creating a Trainer."""
     validation = output_folder / "validation"
@@ -159,7 +119,7 @@ def guard_anatomy_checkpoint(
     import torch
 
     if not continue_training and not validation_only:
-        if output_folder.exists():
+        if output_folder.exists() or output_folder.is_symlink():
             raise SystemExit(f"输出目录已存在，拒绝从头覆盖：{output_folder}")
         return
     names = ("checkpoint_final.pth",) if validation_only else (
@@ -174,7 +134,8 @@ def guard_anatomy_checkpoint(
         required = {"network_weights", "optimizer_state", "current_epoch", "trainer_name", "init_args"}
         if not isinstance(state, dict) or not required <= state.keys():
             raise ValueError("checkpoint fields missing")
-        if state["trainer_name"] != VARIANT_TO_TRAINER[ANATOMY_VARIANT] or not state["network_weights"]:
+        expected_name = expected_trainer_name or VARIANT_TO_TRAINER[ANATOMY_VARIANT]
+        if state["trainer_name"] != expected_name or not state["network_weights"]:
             raise ValueError("wrong trainer or empty network weights")
         if continue_training:
             optimizer = state["optimizer_state"]
@@ -185,32 +146,42 @@ def guard_anatomy_checkpoint(
                 or not optimizer["param_groups"]
             ):
                 raise ValueError("optimizer state unavailable")
-        if not isinstance(state["current_epoch"], int) or not 0 <= state["current_epoch"] <= 100:
+        if not isinstance(state["current_epoch"], int) or not 0 <= state["current_epoch"] <= expected_epoch_limit:
             raise ValueError("checkpoint epoch outside engineering budget")
         from zonal_reliability_fusion.anatomy.contracts import validate_anatomy_dataset
 
         init = state["init_args"]
         if expected_dataset_json is not None and init["dataset_json"] != expected_dataset_json:
             raise ValueError("checkpoint dataset provenance differs from current dataset")
-        validate_anatomy_dataset(init["dataset_json"], init["plans"]["dataset_name"], init["configuration"])
-        if str(init["fold"]) != "0":
-            raise ValueError("checkpoint fold mismatch")
+        if expected_trainer_name is None:
+            validate_anatomy_dataset(init["dataset_json"], init["plans"]["dataset_name"], init["configuration"])
+            if str(init["fold"]) != "0":
+                raise ValueError("checkpoint fold mismatch")
+        else:
+            if expected_init_args is None or any(
+                init.get(key) != value for key, value in expected_init_args.items()
+            ):
+                raise ValueError("checkpoint plans/configuration/fold/dataset mismatch")
     except Exception as exc:
-        raise SystemExit(f"不可用 anatomy checkpoint {checkpoint}: {exc}") from exc
+        raise SystemExit(f"不可用 checkpoint {checkpoint}: {exc}") from exc
 
 
-def build_parser(include_legacy: bool = False) -> argparse.ArgumentParser:
-    variants = {**ACTIVE_VARIANTS, **(LEGACY_VARIANTS if include_legacy else {})}
+def build_parser(include_legacy: bool = False, include_supporting: bool = False) -> argparse.ArgumentParser:
+    variants = {**ACTIVE_VARIANTS, **(SUPPORTING_VARIANTS if include_supporting else {}),
+                **(LEGACY_VARIANTS if include_legacy else {})}
     parser = argparse.ArgumentParser(
         description=(
             "统一 nnU-Net-first 训练入口（新主线：Anatomy-Guided Lesion-Aware "
             "Coarse-to-Fine）。仅把 variant 映射到 Trainer 类并调用 nnU-Net 官方 "
             "run_training；输出目录由 Trainer 类名自动隔离，绝不复用/覆盖任何既有目录。"
-            f"当前视图：{'ACTIVE + LEGACY' if include_legacy else '仅 ACTIVE（加 --legacy 查看归档条件）'}"
+            "当前视图：ACTIVE"
+            + (" + SUPPORTING" if include_supporting else "")
+            + (" + LEGACY" if include_legacy else "")
         ),
         epilog=(
             "变体分层：ACTIVE = "
             + ", ".join(sorted(ACTIVE_VARIANTS))
+            + ("；SUPPORTING = " + ", ".join(sorted(SUPPORTING_VARIANTS)) if include_supporting else "")
             + ("；LEGACY = " + ", ".join(sorted(LEGACY_VARIANTS)) if include_legacy else "")
         ),
     )
@@ -219,15 +190,15 @@ def build_parser(include_legacy: bool = False) -> argparse.ArgumentParser:
         choices=sorted(variants),
         help=(
             "[ACTIVE] positive_sampling / dicece_positive_sampling = strong baseline A1 / A2"
-            "（唯一差异是损失）；lesion_roi = A + Anatomy-Guided ROI（条件 B）；"
-            "lesion_coarse_to_fine = B + lesionness 头 + soft refinement（条件 C）；"
-            "lesion_zone_refine = C + soft PZ/TZ 条件化（条件 D，需 zone 概率通道）；"
-            "lesion_hard_negative = best(C,D) + 困难负样本（条件 E，可用 --hard-negative-set 开关）；"
+            "（唯一差异是损失）；neutral_fusion_* = B；lesion_fusion_* = C；"
+            "anatomy_lesion_fusion_* = D (Dataset608, predicted soft anatomy)；"
+            "ROI/logits-refinement variants are supporting ablations；"
+            "new E remains planned until best(C,D) is selected；"
             "anatomy_joint_100ep = Stage 1 解剖先验生成器。"
             + (" [LEGACY] 其余为归档的旧门控 / 融合条件。" if include_legacy else "")
         ),
     )
-    parser.add_argument("dataset", help="数据集 ID 或名称，例如 605 / 606 / 607")
+    parser.add_argument("dataset", help="数据集 ID 或名称，例如 605 / 607 / 608")
     parser.add_argument("configuration", help="nnU-Net 配置，例如 3d_fullres")
     parser.add_argument("fold", help="fold 编号（0-4）或 'all'")
     parser.add_argument(
@@ -249,6 +220,9 @@ def build_parser(include_legacy: bool = False) -> argparse.ArgumentParser:
         default="cuda",
         help="训练设备（GPU 编号用 CUDA_VISIBLE_DEVICES 控制）",
     )
+    parser.add_argument("--seeded-output", action="store_true",
+                        help="Use a deterministic _Seed<seed> Trainer class and independent output directory")
+    parser.add_argument("--supporting", action="store_true", help="Show supporting ROI/refinement ablations")
     parser.add_argument(
         "--legacy",
         action="store_true",
@@ -266,12 +240,12 @@ def build_parser(include_legacy: bool = False) -> argparse.ArgumentParser:
     parser.add_argument(
         "--roi-set",
         default=None,
-        help="Anatomy-Guided ROI 集合 JSON（条件 B/C/D/E 必填；由数据脚本用预测 WG 生成）",
+        help="Anatomy-Guided ROI 集合 JSON（仅 supporting ROI/refinement 条件；新 B/C/D 不使用）",
     )
     parser.add_argument(
         "--hard-negative-set",
         default=None,
-        help="困难负样本集合 JSON（条件 E 可选；不传则条件 E 完全退化为条件 C/D）",
+        help="困难负样本集合 JSON（仅历史 supporting HN 条件；新 E 尚未绑定）",
     )
     parser.add_argument(
         "--run-config",
@@ -322,10 +296,12 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
         "num_input_channels": len(channel_names),
         "loss": (
             "PI-CAI 0.5*Focal(gamma=2)+0.5*CE"
-            if "Focal" in getattr(trainer_class, "__doc__", "") or "FLCE" in trainer_class.__name__
+            if any("FLCE" in base.__name__ for base in trainer_class.__mro__)
             else "nnU-Net native Dice+CE（由继承解析决定，见 Trainer docstring）"
         ),
-        "sampling": "positive_sampling（每 batch 固定一个阳性病灶 patch）+ ROI 约束（若为 B/C/D/E）",
+        "sampling": "positive_sampling; ROI only for explicit supporting variants",
+        "fusion_condition": getattr(trainer_class, "fusion_condition", None),
+        "fusion_constants": {"stem_channels": 8, "temperature": 1.0, "zero_init_residual": True},
         "epochs": trainer_class.num_epochs
         if isinstance(getattr(trainer_class, "num_epochs", None), int)
         else "nnU-Net default（1000）",
@@ -334,7 +310,7 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
         "spacing": configuration.get("spacing"),
         "anatomy_prior_source": (
             "predicted_prior（冻结 Stage-1 模型对该病例自身 MRI 的预测）"
-            if args.variant in ROI_VARIANTS
+            if args.variant in ROI_VARIANTS or getattr(trainer_class, "fusion_condition", None) == "anatomy"
             else "not_applicable"
         ),
         "roi_setting": roi_payload,
@@ -351,6 +327,7 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
                 "zone_mode": getattr(trainer_class, "lesion_zone_mode", None),
             }
             if args.variant in ("lesion_coarse_to_fine", "lesion_zone_refine", "lesion_hard_negative")
+            or getattr(trainer_class, "fusion_condition", None) in ("lesion", "anatomy")
             else {"enabled": False, "reason": "该条件不构建 lesionness 头"}
         ),
         "hard_negative_setting": (
@@ -387,8 +364,9 @@ def write_run_config(path: str, payload: dict) -> Path:
 def main(argv=None) -> None:
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--legacy", action="store_true")
+    pre.add_argument("--supporting", action="store_true")
     known, _rest = pre.parse_known_args(argv)
-    args = build_parser(include_legacy=known.legacy).parse_args(argv)
+    args = build_parser(include_legacy=known.legacy, include_supporting=known.supporting).parse_args(argv)
 
     if args.continue_training and args.validation_only:
         raise SystemExit("--continue-training 与 --validation-only 不能同时使用")
@@ -428,6 +406,9 @@ def main(argv=None) -> None:
     check_fixed_nnunet_runtime()
 
     trainer_class = resolve_trainer_class(args.variant)
+    if args.seeded_output:
+        from zonal_reliability_fusion.nnunet.trainers import seeded_trainer_class
+        trainer_class = seeded_trainer_class(trainer_class, args.seed)
 
     # 新条件的集合路径必须在 Trainer 构造（会自动调用 initialize）之前落到类属性上；
     # 本进程只训练一个 Trainer，因此修改类属性不会影响其它实验。
@@ -497,6 +478,21 @@ def main(argv=None) -> None:
     )
     plans = load_json(str(dataset_folder / "nnUNetPlans.json"))
     dataset_json = load_json(str(dataset_folder / "dataset.json"))
+    if args.variant in ACTIVE_VARIANTS and args.variant != "anatomy_joint_100ep":
+        output_folder = (Path(nnUNet_results) / plans["dataset_name"]
+                         / f"{trainer_class.__name__}__nnUNetPlans__{args.configuration}"
+                         / f"fold_{args.fold}")
+        guard_anatomy_checkpoint(
+            output_folder, args.continue_training, args.validation_only,
+            expected_dataset_json=dataset_json, expected_trainer_name=trainer_class.__name__,
+            expected_epoch_limit=1000, expected_init_args={
+                "plans": plans, "configuration": args.configuration,
+                "fold": int(args.fold) if args.fold != "all" else "all", "dataset_json": dataset_json})
+        if getattr(trainer_class, "fusion_condition", None) == "anatomy":
+            from zonal_reliability_fusion.anatomy.dataset import validate_predicted_prior_dataset
+            validate_predicted_prior_dataset(dataset_json, plans["dataset_name"])
+        elif plans["dataset_name"] != "Dataset605_PICAI":
+            raise SystemExit("neutral/lesion fusion requires Dataset605_PICAI")
     if args.run_config:
         payload = build_run_config(args, trainer_class, plans, dataset_json)
         payload["seed_applied"] = seed_info

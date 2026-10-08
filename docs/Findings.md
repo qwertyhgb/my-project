@@ -663,12 +663,12 @@ seed 20260922、`TIE_TOLERANCE = 1e-12`，与 §3.8 / §3.10 同一口径）。
   逐数组审计）已在训练前取得 `MRI_ARRAY_AUDIT_PASS`；采用与 §5.3 相同的配对口径（逐病例配对 delta、
   配对 bootstrap 10000 次、seed 20260922）比较见 **§3.11**：主指标无明确配对改善，
   **旧输入级假设在本次实验中未获支持**；这不回答新的特征级 RQ3。
-- **新主线的浅层特征融合三条件**（`feature_no_gate_positive_sampling` /
+- **已归档的浅层特征融合三条件（以下状态为旧分析时点，不作现行状态）**（`feature_no_gate_positive_sampling` /
   `feature_image_gate_positive_sampling` / `feature_anatomy_gate_positive_sampling`）：
   **普通融合已启动但缺最终验证，其余两个门控条件未运行**；
 - **run-to-run 方差**：需要固定随机种子的重复运行，才能把上述单次运行的差异与初始化噪声分开。
 
-**新研究主线的下一步判据**（Research Plan §5–10）：在相同阳性采样、损失、split 与验证口径下，
+**旧研究线当时的下一步判据（已被当前Research Plan取代）**（Research Plan §5–10）：在相同阳性采样、损失、split 与验证口径下，
 先比较 `positive_sampling → feature_no_gate_positive_sampling`，判定浅层表征路径的整体价值；
 再比较 `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`，判定
 feature gate 的增量；最后比较 `feature_image_gate_positive_sampling` →
@@ -783,54 +783,29 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
 
 ## Mainline Findings
 
-> 新主线：**Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation**
-> （`docs/Research_Plan.md`、`docs/Method.md`）。本文件的上半部分（Preliminary Findings）是它的
-> motivation；从本节开始记录**新主线自身**的结论。
+当前科学问题是 predicted anatomy + coarse lesionness 共同条件化局部多模态融合。
+新 B/C/D 尚无训练与validation结果；贡献仍为假设。variant状态只见 Training_Log 的状态表。
 
-### 当前状态：**尚无新主线证据**
+### 2026-10-08：soft WG未显示塌缩，原低hard Dice来自表示问题
 
-主实验 A → B → C → D（以及可选的 E）**尚未开始训练**。因此本节目前只有状态与判据，没有任何
-性能数字。可以如实记录的事实：
+对既有Stage-1的223例validation概率逐head按固定 >0.5 诊断，success=223、failed=0、skipped=0。
+soft WG macro Dice=0.9483、recall=0.9532、precision=0.9453，空预测0/223；
+soft PZ/TZ macro Dice=0.8993/0.9361。
+按原生[1,2,4]顺序从soft heads重建hard export，与全部既有NIfTI差异0 voxel。
 
-| 项 | 状态 |
-|---|---|
-| Strong baseline A1 `positive_sampling` | **已完成**（属于历史运行，无显式 seed） |
-| Strong baseline A2 `dicece_positive_sampling` | 代码就绪，**未训练** |
-| Stage 1 `anatomy_joint_100ep` | **已完成**（100 epoch + validation）；Mean Dice 0.6134 是三区域平均，**其中 WG 仅 0.0056、PZ 0.8985、TZ 0.9361 ⇒ WG 头实际不可用** |
-| 条件 B `lesion_roi` | 代码就绪，**未训练**；**当前被 Stage-1 的 WG 结果阻塞**（ROI 的唯一来源是 predicted WG） |
-| 条件 C `lesion_coarse_to_fine` | 代码就绪，**未训练** |
-| 条件 D `lesion_zone_refine` | 代码就绪，**未训练**（需 Dataset606 的 zone 概率通道） |
-| 条件 E `lesion_hard_negative` | 代码就绪，**未训练**（需先做 Round-2 挖掘） |
-| `scripts/data/check_split_integrity.py` | 已实现并**已在真实路径上运行**（anatomy_split / lesion_split 均 PASS，先验与 ROI 集合两项 SKIP） |
-| 评价体系（`src/.../evaluation/`） | 已实现并对历史 summary 可用；新主线的 full 模式评估**尚未运行** |
-| Stage-1 的 **WG 失败** | 已确认事实（见上），**原因尚未定位** |
+这支持：原hard WG Dice≈0.0056反映重叠区域在ordered export中被覆盖，
+不能作为soft WG head失败的证据。此前“WG头实际不可用”的结论被本次证据更正。
+因此没有依据仅凭该hard指标重训Stage-1。
 
-### 判据指针（不要在证据到位前提前解读）
+证据边界：reference为算法解剖伪监督；该诊断不证明人工解剖准确度、跨域可用性、概率校准或
+下游lesion收益。训练集prior质量尚未分析，IN_SAMPLE与held-out质量shift仍可能存在。
+完整运行事实见 Training_Log；单实验指标与产物见 anatomy_joint_100ep 实验文档。
 
-- 主终点与关键次要终点的定义 → `docs/Evaluation_Protocol.md` §1–§6；
-- 配对比较必须报告的内容与解释纪律 → `docs/Evaluation_Protocol.md` §7；
-- 每个条件的"改善 / 无改善"判定与此对应的 stop rules → `docs/Experiment_Plan.md` §9；
-- 单实验详情将写入 `docs/experiments/<variant>.md`，本节只做横向汇总。
+### 新条件化融合：尚无性能证据
 
-### 新主线自身的第一个实质观察
+独立stems、neutral path、pre-fusion lesionness、soft anatomy context及zero-init residual
+只是已实现的方法候选；真实构造/合成梯度通过也不能写成effective/improved。
+参数量差异不是性能证据，融合系数不是医学因果解释。
+E只在best(C,D)选定后研究，不把旧supporting E误写成新E。
 
-Stage-1 的 `Mean Validation Dice = 0.6134` 是**三个 region 的算术平均**，逐区域为
-WG **0.0056** / PZ **0.8985** / TZ **0.9361**。GT 的 WG 参考体积并不小（`n_ref` 逐例均值
-121637 voxel），但模型只预测出约 618 voxel/例，因此 **WG 区域头实际不可用**，
-集合平均**掩盖**了这一点。
-
-这条观察有两层意义：
-
-1. **方法层面**：它直接阻塞条件 B——Anatomy-Guided ROI 的唯一来源是 predicted WG。空 WG 预测
-   会触发 `full_fov` 回退，ROI 退化为"没有 ROI"。因此必须先解决 WG 预测，再启动 B。
-2. **评价层面**：这正是本项目主张"不看单一聚合指标"的现实案例，与
-   `docs/Evaluation_Protocol.md` §1 的分级报告纪律一致。**不预判 WG 失败的原因**
-   （优化/损失 vs 位编码与 region 定义下的数据问题）；诊断由研究者运行，见
-   `docs/experiments/anatomy_joint_100ep.md`。
-
-### 本节不得做的事
-
-- **不得**在 A2 / Stage 1 / B / C / D / E 尚未运行时推断它们的表现；
-- **不得**把 Preliminary Findings 的效应量（如阳性采样 +0.1093）当作新条件的预期收益；
-- **不得**因为模块"看起来合理"就把假设写成结论。Research Plan §17 的三条 Contribution 全部是
-  **待验证假设**。
+指标/统计见 Evaluation_Protocol，stop rules见 Experiment_Plan。

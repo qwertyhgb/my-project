@@ -3,6 +3,71 @@
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
+## 2026-10-08 — 预测解剖与粗定位共同条件化局部多模态融合
+
+### 实现与修复
+
+- 新增 `multimodal/__init__.py` / `conditioned_fusion.py`：三个独立 width=8 shallow stems，
+  neutral 24→3 projection，pre-fusion factor-two coarse lesionness，softmax local controller，
+  zero-init residual；网络包装原生3通道backbone，不依赖legacy。
+- `nnunet/trainers.py`：修复原supporting Trainer的classmethod/instance helper绑定；
+  新B/C/D各提供FLCE与原生DiceCE继承家族，复用positive sampling、loss、原生训练与推理。
+  ACTIVE=9、SUPPORTING=4、LEGACY=13，共26个静态类名，保留全部20个原类名。
+  新E尚未绑定；不把固定原C父类的历史HN类称为best(C,D)。
+- `anatomy/validation.py`：增加独立soft heads与ordered hard-export重建只读诊断、
+  quantiles、macro/micro汇总与进度，空分母为null。真实诊断事实只记Training_Log与对应实验文档。
+- `anatomy/dataset.py`：新增独立Dataset608 predicted-prior契约与用户运行物化入口。
+  完整病例/患者split/provenance/geometry检查，拒绝Dataset606与覆盖；不自行重采样。
+  单冻结模型生成器标记IN_SAMPLE/HELD_OUT，不声称生成OOF。
+- 新增 `nnunet/prior_preprocessor.py`：继承原生preprocessor，MRI原生处理后对prior采用
+  相同transpose/crop及原生线性概率重采样，避免prior改变MRI crop或cubic概率越界。
+  从605冻结网络/spacing/patch/batch；拒绝已有目标。真实数据物化/预处理未执行。
+- `scripts/train/train_nnunet.py`：ACTIVE/SUPPORTING/LEGACY分层入口，新增seeded独立类名与
+  输出目录；从头运行拒绝已有输出，恢复核对自身Trainer/预算/plans/config/fold/dataset。
+  `scripts/inference/predict_nnunet.py`注册项目preprocessor，推理仍走原生入口。
+- `sampling/hard_negative.py`：组合ROI与HN loader，保留非挖掘槽位ROI并消费两套队列。
+  不修改验证采样，不将此修复视为新E实现。
+- 更新README/Research_Plan/Method/Experiment_Plan/AGENTS的唯一主线与边界；
+  Evaluation_Protocol仅补独立soft-head诊断和系数行为分析口径，lesion评价常量/匹配/schema未改。
+  Training_Log/Findings/anatomy实验详情更正hard WG与soft WG混淆，保留历史数值及其边界。
+
+### 实际执行的检查
+
+在conda lm、固定nnU-Net环境执行；不读取真实影像的测试只写pytest临时目录。
+
+- `PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -B -m pytest -p no:cacheprovider`：
+  **677 passed，174 dependency deprecation warnings，42.25s**。
+- `ruff check --no-cache src scripts tests`：通过。
+- `compileall.compile_dir` 对src/scripts/tests：通过，pycache仅写临时目录。
+- 训练入口`--help`、`git diff --check`：通过。
+- 新增 `tests/unit/test_multimodal_fusion.py`；更新既有Trainer注册与HN测试。
+  包含独立参数/梯度、初始恒等、softmax归一化、非法概率、几何与provenance、seeded解析、
+  MRI预处理逐值一致（含非恒等transpose）、合成物化拒绝覆盖、组合loader连续batch队列检查。
+- 真Trainer smoke：A1/A2与B/C/D两loss家族共8类，各minimal/real605架构；
+  resolve→__init__→initialize→native optimizer/scheduler/loss→synthetic forward/backward，
+  以及原生DS关闭后的无GT forward。真实605架构输入缩为[16,64,64]；
+  **不是**原始[16,320,320]全patch显存验证，未构造真实数据训练dataloader或启动训练loop。
+- lm缺失测试依赖，安装并验证pytest9.1.1、ruff0.16.10、MedPy0.5.2、surface-distance0.1
+  （后者带absl-py2.5.0）；没有升降级torch/numpy/SimpleITK/nnunetv2。
+
+### 参数与未验证边界
+
+使用真实Dataset605 nnUNetPlans架构构造；以下total=trainable，delta相对A：
+
+| model | total / trainable | delta | delta % |
+|---|---:|---:|---:|
+| A | 44,577,932 | 0 | 0 |
+| B | 44,583,983 | 6,051 | 0.013574 |
+| C | 44,584,913 | 6,981 | 0.015660 |
+| D | 44,584,957 | 7,025 | 0.015759 |
+
+工具为`parameter_counts`；未测FLOPs、GPU full-patch显存/速度。
+系数offline hook仅最近一次forward的patch，含case/checkpoint/geometry；
+全体积滑窗聚合恢复与按病例自动分区分析尚未实现。
+原ROI original→preprocessed bbox坐标链尚待修复/验证，supporting不标为正式就绪。
+新B/C/D仅骨架/合成构造已验证，无训练或validation效果；短预算独立Trainer与新E待后续。
+第三方及legacy实现未改，未commit/push，未删除/覆盖既有数据或模型。
+
 ## 2026-10-08 — 系统级重构：确立单一主线（Anatomy-Guided Lesion-Aware Coarse-to-Fine）
 
 ### 背景

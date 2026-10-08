@@ -412,3 +412,31 @@ def test_loader_constructor_rejects_slot_overflow_and_unknown_cases():
             dataset, 4, (4, 4, 4), (4, 4, 4), _MinimalLabelManager(),
             hard_negative_locations={}, hard_negative_cases_per_batch=1, **common,
         )
+
+
+def test_composed_roi_and_hard_negative_loader_consumes_both_slot_queues():
+    from zonal_reliability_fusion.sampling.hard_negative import ROIHardNegativeDataLoader
+
+    identifiers = ("case_a", "case_b", "case_c")
+    loader = ROIHardNegativeDataLoader(
+        _MinimalDataset(identifiers, shape=(3, 12, 12, 12)), 4, (4, 4, 4), (4, 4, 4),
+        _MinimalLabelManager(), oversample_foreground_percent=.5,
+        probabilistic_oversampling=False, transforms=None,
+        positive_case_identifiers=("case_a", "case_b"), positive_cases_per_batch=1,
+        hard_negative_locations={"case_b": ((6, 6, 6),)}, hard_negative_cases_per_batch=1,
+        roi_boxes=dict.fromkeys(identifiers, ((1, 1, 1), (8, 8, 8))),
+        roi_sampling_probability=1.,
+    )
+    np.random.seed(7)
+    for _ in range(3):
+        keys = loader.get_indices()
+        assert keys[2] == "case_b"
+        for slot in range(4):
+            lower, upper = loader.get_bbox((12, 12, 12), slot == 3,
+                                           {1: np.array([[0, 2, 2, 2]])})
+            if slot == 2:
+                assert list(lower) == [4, 4, 4]
+            elif slot < 2:
+                assert all(1 <= v <= 4 for v in lower)
+            assert all(upper[i] - lower[i] == 4 for i in range(3))
+        assert not loader._slot_decisions and not loader._pending_keys

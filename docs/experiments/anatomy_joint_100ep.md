@@ -24,7 +24,7 @@
 | 病例数 | 1499 study（train 1276 / val 223） |
 | 网络 | 由 `nnUNetPlans.json` 构建的原生 `PlainConvUNet`（`n_stages=7`） |
 | patch / batch / spacing | `[16, 320, 320]` / 2 / `[3.0, 0.5, 0.5] mm` |
-| 损失 | nnU-Net 原生 region-based Dice+CE（**未**覆盖 `_build_loss`） |
+| 损失 | nnU-Net 原生 region-based Dice+BCE（**未**覆盖 `_build_loss`） |
 | 预算 | 100 epoch（**工程性试跑预算**，不是研究性预算） |
 | 采样 | nnU-Net 原生 dataloader（**不**使用阳性采样） |
 | 增强 | 默认管线 + NoFFT 修复 |
@@ -75,37 +75,52 @@ outputs/nnUNet_results/Dataset607_PICAI_Anatomy/
 
 可直接用于下游的产物是 **`validation/*.npz`**：验证 split 的解剖 soft prior 已经存在。
 
-## 观察与限制
+## 2026-10-08 — 独立soft heads只读诊断
 
-1. **WG 区域头实际不可用**。GT 的 WG 参考体积并不小（`n_ref` 逐例均值 121637 voxel，与
-   `PZ ∪ TZ` 同量级），但模型只预测出约 618 voxel/例（`n_pred` 逐例均值），因此 Dice ≈ 0.006。
-   这不是"参考为空"导致的空-空约定问题，而是**预测侧几乎全为背景**。
-2. **集合平均掩盖了失败**。`Mean Validation Dice = 0.6134` 由 0.0056 / 0.8985 / 0.9361 平均而来；
-   只看这个数字会得出"Stage-1 可用"的错误结论。这正是 `docs/Evaluation_Protocol.md` 要求逐区域
-   报告的现实案例。
-3. **原因尚未定位**，且**本文件不预判**。至少有两种可能，且都需要额外证据才能排除：
-   - 优化 / 损失侧：三个 region 头共享 backbone，其中一个头塌缩；
-   - 数据 / 编码侧：位编码与 `regions_class_order` 下 WG region 的实际定义与预期不一致
-     （注意 7 = 三个区域同时隶属，4 = TZ only，5 = WG+TZ 等组合的实际分布尚需核对）。
-4. **无显式 seed**：本次运行早于 `--seed` 支持，无法与其它 run 做 run-to-run 比较。
-5. **100 epoch 是工程性预算**：不构成"Stage-1 的上限"，也不能据此判断"解剖先验本来就不行"。
-6. **下游不可用**：条件 B 的 Anatomy-Guided ROI 唯一来源是 predicted WG。当前权重下 ROI 会因
-   `empty_wg_prediction` 回退到全视野（`ProstateROI.fallback_reason`），等价于"没有 ROI"。
+输入为本实验既有223例validation概率/reference；未新增训练或推理，原summary/NIfTI未改。
+命令与耗时登记见Training_Log；本节只记录该实验自身诊断结果。
+固定 **>0.5**（与原生region hard export一致），全部病例通过形状/物理几何校验。
+
+| soft head | macro Dice | macro recall | macro precision | macro pred/ref volume ratio | TP sum | FP sum | FN sum | empty |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| WG | 0.94830182 | 0.95322978 | 0.94529174 | 1.00988294 | 26082103 | 1510582 | 1043170 | 0/223 |
+| PZ | 0.89928774 | 0.89655433 | 0.90461573 | 0.99326969 | 7843174 | 824719 | 894064 | 0/223 |
+| TZ | 0.93613836 | 0.93800987 | 0.93614022 | 1.00472692 | 18722890 | 1091229 | 1102969 | 0/223 |
+
+WG micro Dice=0.95332881、recall=0.96154251、precision=0.94525426、pred/ref ratio=1.01723161。
+
+每病例分位数先独立计算再等权平均，q=[0,.1,.5,.9,1]，不是pooled voxel quantiles：
+
+| head | mean case quantiles within reference region |
+|---|---|
+| WG | [0.00255918, 0.87615816, 0.99927102, 0.99982368, 0.99994952] |
+| PZ | [0.00007743, 0.53192432, 0.99942835, 0.99993453, 0.99998350] |
+| TZ | [0.00038660, 0.84357364, 0.99961863, 0.99989143, 0.99997850] |
+
+| head | mean case quantiles over full FOV |
+|---|---|
+| WG | [5.8194e-10, 8.1905e-7, 3.2213e-6, 1.8863e-5, 0.99994952] |
+| PZ | [3.2195e-11, 1.3235e-7, 8.5891e-7, 5.6267e-6, 0.99998350] |
+| TZ | [2.2376e-10, 3.6142e-7, 1.5562e-6, 9.2510e-6, 0.99997850] |
+
+从soft heads按原生顺序写1/2/4重建硬导出，与全部223例既有NIfTI差异总数 **0 voxel**。
+Success=223、failed=0、skipped=0；耗时568.04s，结果stdout，未创建新报告。
+
+## 观察与限制（更正此前hard-export解释）
+
+1. **soft WG没有显示塌缩**。独立threshold head的Dice/recall/precision与空预测数支持此结论。
+2. 原hard-export WG Dice≈0.0056是ordered region export的指标；PZ/TZ后写覆盖WG，
+   导出值2/4不在WG集合[1,3,5,7]。不能把该数解释为“WG头实际不可用”。
+3. 因此“当前权重必然触发空WG全视野回退”的旧推断不成立；本次没有据此重训Stage-1。
+4. reference仍为算法伪监督；不证明人工解剖准确性、概率校准、外部泛化或下游lesion收益。
+5. 无显式seed、100ep工程预算；没有跨seed稳定性或训练上限结论。
 
 ## 待办
 
-- [ ] **诊断 WG 失败**（优先级最高；两条线索都要查，不要只查一条）：
-  - 数据侧（只读，已存在的工具）：`scripts/data/audit_prostate_anatomy_labels.py`，核对 WG /
-    zonal / lesion 四类标签的取值分布与几何；既有报告
-    `outputs/reports/prostate_anatomy_labels_audit_v2.json`（`inputs` stage：1500 例中 1499 例有 WG，
-    1 例为已知缺失；`source_audit_status = unresolved`，35 例"无可比较候选"）。
-  - 预测侧：对既有 223 例 `validation/*.npz` 逐区域复算 Dice / TP / FP / FN 与
-    WG 概率的分布（`zonal_reliability_fusion.anatomy.validation.anatomy_region_metrics` 与
-    `prior_uncertainty_report`），确认是"概率整体偏低"还是"阈值化后才为空"。
-- [ ] 根据诊断结论决定修正方向（数据修正、region 定义核对、损失/采样调整），**一次只改一件事**。
-- [ ] 修正后重训 Stage-1（新 Trainer 类名 + 独立输出目录，**不覆盖本次产物**），
-  并为训练 split 生成先验（`workdir/anatomy_priors/...`）。
-- [ ] 只有 WG 达到可用水平后，才启动条件 B。
+- [x] 独立soft-head质量与hard export重建诊断。
+- [ ] 用户运行冻结模型对完整训练split的soft prior生成，记录in-sample/held-out来源。
+- [ ] 核对训练/验证prior质量shift；预算允许时评估OOF成本。
+- [ ] 下游实验根据真实prior pipeline与baseline选型推进；不预判下游收益。
 
 ## 后续记录模板
 

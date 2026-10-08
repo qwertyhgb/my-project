@@ -105,6 +105,10 @@ def main(argv=None) -> None:
 
     check_fixed_nnunet_runtime()
     install_project_trainer_resolver()
+    from zonal_reliability_fusion.nnunet.prior_preprocessor import (
+        install_prior_preprocessor_resolver,
+    )
+    install_prior_preprocessor_resolver()
 
     from nnunetv2.inference.predict_from_raw_data import predict_entry_point_modelfolder
 

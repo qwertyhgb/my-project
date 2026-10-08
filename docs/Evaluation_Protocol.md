@@ -282,16 +282,34 @@ inference / prediction，**绝不**训练模型，**绝不**在评估中重采�
 
 ## 10. 解剖先验模型（Stage 1）自身的评价
 
-Stage-1 不是论文主线的性能主张，但它需要在论文中如实报告，因为它的误差是 Stage-2 的真实输入
-分布。使用 `anatomy/validation.py`：
+Stage-1 使用算法解剖伪监督，质量不等于人工解剖准确度。三个 sigmoid heads 必须独立评价：
+`anatomy.validation.soft_head_metrics` 对 soft probabilities 直接按固定 `>0.5` 阈值与 reference
+位编码各 bit 比较，报告 Dice/recall/precision/TP/FP/FN、prediction/reference volume ratio、
+空预测数与概率分位数。macro 逐病例等权；micro 先汇总计数再算比值；分母0仍为null。
 
-- `anatomy_region_metrics`：WG / PZ / TZ 的 Dice（复用 nnU-Net 原生 region 定义；空-空为 `None`）；
-- `anatomy_region_agreement`：PZ/TZ 重叠、越出 WG 的体积占比（数据契约健全性检查）；
-- `prior_uncertainty_report`：`wg_low_confidence_fraction`、`zone_undecided_fraction`、
-  `zone_margin` 分布。
+原生 `regions_class_order=[1,2,4]` 硬导出后写覆盖前写，不能从硬整数标签恢复独立WG head。
+`anatomy_region_metrics` 接受位编码数组；原生ordered export的指标只表示该导出表示，
+不能据其低WG Dice断言 soft WG 塌缩。
+诊断同时从soft heads按原生顺序重建硬导出并与NIfTI逐体素比较，报告mismatch voxels。
 
-**必须在论文中说明**：低置信比例是 **soft 输出的数值分布描述**，**不是**校准（calibration）
-声明，也不代表真实图像质量或因果贡献。
+概率分位数 [0,.1,.5,.9,1] 分别在整FOV与reference-positive体素中计算。
+跨病例输出明确为“病例分位数均值”，不是 pooled voxel quantiles，不构成calibration声明。
+几何、reference、metadata或病例读取失败必须整体失败，不静默排除。
+阈值曲线若增加，只是诊断；不能选择最佳阈值伪装为预先冻结。
+
+既有hard summary保持原样；独立soft-head诊断不改 lesion evaluation schema/常量。
+运行事实与结果放 Training_Log/单实验文档，不在协议中写性能。
+
+### 10.1 Fusion Behaviour Analysis（mechanism only）
+
+融合系数解释为 model fusion coefficients，不作医学因果贡献。
+可按 lesion/background、预测WG/PZ/TZ/uncertain与reference物理体积分层分析。
+输出各modality的mean、population std、median、IQR，以及三系数的自然对数entropy均值。
+空区域返回null，不虚构0。系数必须有限、[0,1]且逐位置和为1。
+GT lesion仅用于离线区域划分，不进入推理。
+每份系数artifact必须带case/checkpoint/channel order/geometry与空间范围provenance。
+现有hook只输出network-input patch，不能标成full-volume；不从最后一个滑窗系数推断整例分布。
+本分析不进入primary endpoint，不修改既有分割匹配、阈值、大小分层或空值语义。
 
 ---
 

@@ -1,44 +1,15 @@
-"""项目对 nnU-Net v2.6.2 的 Trainer 扩展（新主线 + 兼容再导出）。
+"""固定 nnU-Net v2.6.2 的受控项目扩展与历史 Trainer 注册表。
 
-研究主线：**Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation**。
-所有 Trainer 共享同一套 nnU-Net 训练机制（optimizer=SGD+Nesterov、PolyLR、增强主体、
-deep supervision、checkpoint/resume、validation、sliding-window inference）；差异只通过覆盖
-nnU-Net 的钩子表达，**绝不重实现训练循环**。
+ACTIVE：A1 FLCE/A2 native DiceCE + positive sampling，Stage-1 anatomy，
+以及各自继承 A1/A2 的 B neutral fusion、C lesion-conditioned residual fusion、
+D predicted-anatomy + lesion-conditioned residual fusion。
+B 仅加独立浅层表征；C 加 coarse lesionness 条件分支及辅助监督；D 仅加预测解剖上下文。
+SUPPORTING：既有 ROI、logits refinement、zone refinement、hard-negative 实现。
+新的 E = best(C,D) + hard negatives 尚未绑定，不把既有固定父类 E 当作新 E。
+LEGACY：只读再导出历史 gate/fusion 类，保持 checkpoint 可解析。
 
-**ACTIVE**（新主线，默认训练视图只应看到这些）
----------------------------------------------
-
-==============================  ==========================================================  =========
-variant（CLI 名）                做法                                                        条件
-==============================  ==========================================================  =========
-``positive_sampling``           strong baseline **A1**：FLCE + 阳性采样                     A
-``dicece_positive_sampling``    strong baseline **A2**：原生 Dice+CE + 阳性采样（只差损失） A
-``lesion_roi``                  A + Anatomy-Guided ROI（解剖约束的 patch 采样空间）         B
-``lesion_coarse_to_fine``       B + coarse lesionness 头 + soft 残差 refinement             C
-``lesion_zone_refine``          C + soft PZ/TZ 解剖上下文（zone-aware refinement）           D
-``lesion_hard_negative``        best(C, D) + 解剖约束的困难负样本挖掘（可开关）              E
-``anatomy_joint_100ep``         **Stage 1**：T2W -> WG/PZ/TZ 先验生成器                    Stage 1
-==============================  ==========================================================  =========
-
-**LEGACY**（归档，见 ``legacy/fusion_trainers.py``；仅通过 ``--legacy`` 可见）
-------------------------------------------------------------------------------
-``baseline`` / ``optimized_baseline`` / ``image_gate`` / ``anatomy_gate`` /
-``image_gate_positive_sampling`` / ``anatomy_gate_positive_sampling`` /
-``feature_no_gate_positive_sampling`` / ``feature_image_gate_positive_sampling`` /
-``feature_anatomy_gate_positive_sampling`` / 四个 ``*_100ep`` 同区参照条件。
-它们保留是为了 **checkpoint 兼容、历史实验可复现、以及作为新主线的 preliminary /
-negative evidence**；不得进入新方法的默认训练流程。
-
-单变量纪律
-----------
-每个 ACTIVE 条件只允许相对其**上一条**条件改变一件事：
-
-- B 相对 A：只改训练 patch 采样空间（网络、损失、增强、optimizer 全不变）；
-- C 相对 B：只加 coarse lesionness 头 + soft refinement + lesionness 辅助损失；
-- D 相对 C：只加 soft PZ/TZ 解剖上下文（多两个输入通道）；
-- E 相对 best(C, D)：只加困难负样本采样（``hard_negative_set_path`` 为 ``None`` 时完全退化）。
-
-详见 ``docs/Experiment_Plan.md`` 与 :mod:`zonal_reliability_fusion.lesion.baseline`。
+训练循环、optimizer、PolyLR、deep supervision、checkpoint/resume、validation、
+sliding-window inference 均由原生 nnU-Net 提供。详见 docs/Method.md。
 """
 
 from __future__ import annotations
@@ -132,15 +103,17 @@ class _LesionTrainerBase(nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT):
     #: ROI 内采样槽位比例（预先冻结的工程常量，见 docs/Experiment_Plan.md）
     roi_sampling_probability: float = 0.75
 
-    def _expected_input_channels(self) -> int:
-        return self.lesion_mri_channels + self.lesion_zone_channels
+    @classmethod
+    def _expected_input_channels(cls) -> int:
+        return cls.lesion_mri_channels + cls.lesion_zone_channels
 
-    def _assert_input_channels(self, num_input_channels: int) -> None:
-        expected = self._expected_input_channels()
+    @classmethod
+    def _assert_input_channels(cls, num_input_channels: int) -> None:
+        expected = cls._expected_input_channels()
         if int(num_input_channels) != expected:
             raise ValueError(
-                f"{type(self).__name__} 严格要求 {expected} 个输入通道"
-                f"（{self.lesion_mri_channels} MRI + {self.lesion_zone_channels} zone），"
+                f"{cls.__name__} 严格要求 {expected} 个输入通道"
+                f"（{cls.lesion_mri_channels} MRI + {cls.lesion_zone_channels} zone），"
                 f"收到 {num_input_channels}；拒绝把缺失的先验通道静默当成零输入"
             )
 
@@ -194,8 +167,9 @@ class _LesionTrainerBase(nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT):
             )
         return transforms
 
+    @classmethod
     def _build_lesion_network(
-        self,
+        cls,
         architecture_class_name,
         arch_init_kwargs,
         arch_init_kwargs_req_import,
@@ -213,12 +187,12 @@ class _LesionTrainerBase(nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT):
         """
         from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
 
-        self._assert_input_channels(num_input_channels)
+        cls._assert_input_channels(num_input_channels)
         backbone = get_network_from_plans(
             architecture_class_name,
             arch_init_kwargs,
             arch_init_kwargs_req_import,
-            self.lesion_mri_channels,
+            cls.lesion_mri_channels,
             num_output_channels,
             allow_init=True,
             deep_supervision=enable_deep_supervision,
@@ -226,8 +200,8 @@ class _LesionTrainerBase(nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT):
         return LesionAwareCoarseToFineNNUNet(
             backbone,
             num_segmentation_heads=num_output_channels,
-            mri_channels=self.lesion_mri_channels,
-            num_anatomy_channels=self.lesion_zone_channels,
+            mri_channels=cls.lesion_mri_channels,
+            num_anatomy_channels=cls.lesion_zone_channels,
             zone_mode=zone_mode,
             use_lesionness_guidance=use_lesionness_guidance,
         )
@@ -399,19 +373,11 @@ class nnUNetTrainerPICAI_LesionZoneRefine_NoFFT(
 class nnUNetTrainerPICAI_LesionHardNegative_NoFFT(
     HardNegativeMiningMixin, nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT
 ):
-    """**条件 E**：best(C, D) + 解剖约束的困难负样本挖掘（training strategy enhancement）。
+    """历史 supporting HN 扩展，固定继承原 logits coarse-to-fine Trainer。
 
-    相对 best(C, D) 的**唯一**改动是训练采样：``hard_negative_set_path`` 指向 Round-2 在
-    **训练 split 内**挖掘得到的困难负样本集合（高置信假阳、且落在预测 WG 内）。该位置来自
-    第一轮模型对训练病例的推理，因此：
-
-    - 挖掘只在 training split 内执行（:func:`..sampling.hard_negative.validate_mining_scope`）；
-    - validation / test 绝不参与挖掘；
-    - ``hard_negative_set_path is None`` 时本类**完全退化**为条件 C/D 的行为，因此「开 / 关」
-      是同一个 Trainer 类的一个参数，可直接作为独立 ablation。
-
-    定位：若效果稳定则进入最终方法；若效果有限，则作为 ablation / supplementary experiment，
-    不强行塞进最终模型。
+    不代表新的 E=best(C,D)：新 E 必须等待新融合父模型选定后定义。
+    仅修改训练 split 的困难负样本槽位；未提供集合时退化为既有原 C 行为。
+    ROI 启用时由组合 loader 保留非挖掘槽位 ROI 采样，validation 仍使用原生 loader。
     """
 
     hard_negative_set_path: str | None = None
@@ -446,15 +412,129 @@ from zonal_reliability_fusion.legacy.fusion_trainers import (
     nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
 )
 
-#: 新主线（ACTIVE）Trainer：默认训练视图只暴露这些
-ACTIVE_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
-    nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
-    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
+
+# New research conditions use new class names and independent output directories.
+class _MultimodalMethodMixin:
+    """Native training hooks; baseline loss is selected by explicit class inheritance."""
+
+    fusion_condition = "neutral"
+
+    @classmethod
+    def build_network_architecture(cls, architecture_class_name, arch_init_kwargs,
+                                   arch_init_kwargs_req_import, num_input_channels,
+                                   num_output_channels, enable_deep_supervision=True):
+        from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
+
+        from zonal_reliability_fusion.multimodal.conditioned_fusion import (
+            ConditionedMultimodalNNUNet,
+        )
+
+        expected = 6 if cls.fusion_condition == "anatomy" else 3
+        if num_input_channels != expected:
+            raise ValueError(f"{cls.__name__}: expected {expected} input channels")
+        backbone = get_network_from_plans(
+            architecture_class_name, arch_init_kwargs, arch_init_kwargs_req_import,
+            3, num_output_channels, allow_init=True, deep_supervision=enable_deep_supervision)
+        return ConditionedMultimodalNNUNet(backbone, condition=cls.fusion_condition)
+
+    @classmethod
+    def get_training_transforms(cls, *args, **kwargs):
+        transforms = super().get_training_transforms(*args, **kwargs)
+        if cls.fusion_condition == "anatomy":
+            transforms, count = restrict_intensity_transforms_to_mri(transforms, 3)
+            if count == 0:
+                raise RuntimeError("no MRI intensity transforms found")
+        return transforms
+
+    def initialize(self):
+        if self.fusion_condition == "anatomy":
+            from zonal_reliability_fusion.anatomy.dataset import validate_predicted_prior_dataset
+
+            contract = validate_predicted_prior_dataset(self.dataset_json, self.plans_manager.dataset_name)
+            if (self.configuration_manager.preprocessor_name != "PredictedAnatomyPreprocessor"
+                    or self.configuration_manager.normalization_schemes[3:] != ["NoNormalization"] * 3):
+                raise ValueError("Dataset608 requires audited prior preprocessing and noNorm channels")
+            if self.fold != 0 or self.configuration_name != "3d_fullres":
+                raise ValueError("fusion prototype requires fold 0 / 3d_fullres")
+            # Split identity is independently checked against the real preprocessed file.
+            import json
+            from pathlib import Path
+
+            split = json.loads((Path(self.preprocessed_dataset_folder_base) / "splits_final.json").read_text())[0]
+            if split["train"] != contract["train_cases"] or split["val"] != contract["val_cases"]:
+                raise ValueError("predicted anatomy provenance differs from lesion split")
+        if self.is_ddp:
+            raise ValueError("auxiliary-output fusion prototype supports single process only")
+        from zonal_reliability_fusion.nnunet.prior_preprocessor import (
+            install_prior_preprocessor_resolver,
+        )
+        install_prior_preprocessor_resolver()
+        super().initialize()
+
+    def _do_i_compile(self):
+        # Auxiliary module attributes must remain visible to the existing loss wrapper.
+        return False
+
+    def _build_loss(self):
+        main = super()._build_loss()
+        if self.fusion_condition == "neutral":
+            return main
+        return LesionnessAuxiliaryLoss(
+            main, network=self.network,
+            spacing_zyx=tuple(self.configuration_manager.spacing))
+
+
+class nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT(
+    _MultimodalMethodMixin, nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+):
+    """B: neutral sequence-specific representation, FLCE baseline family."""
+
+
+class nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT(
+    _MultimodalMethodMixin, nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+):
+    """B: neutral sequence-specific representation, native DiceCE baseline family."""
+
+
+class nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT(nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT):
+    """C: lesion-conditioned residual fusion, FLCE baseline family."""
+    fusion_condition = "lesion"
+
+
+class nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT(nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT):
+    """C: lesion-conditioned residual fusion, native DiceCE baseline family."""
+    fusion_condition = "lesion"
+
+
+class nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT(nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT):
+    """D: predicted WG/PZ/TZ and lesion-conditioned fusion, FLCE family."""
+    fusion_condition = "anatomy"
+
+
+class nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT(nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT):
+    """D: predicted WG/PZ/TZ and lesion-conditioned fusion, DiceCE family."""
+    fusion_condition = "anatomy"
+
+
+#: Previous ROI / logits-refinement implementations are supporting ablations.
+SUPPORTING_TRAINERS = (
     nnUNetTrainerPICAI_LesionROI_NoFFT,
     nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT,
     nnUNetTrainerPICAI_LesionZoneRefine_NoFFT,
     nnUNetTrainerPICAI_LesionHardNegative_NoFFT,
+)
+
+#: 新主线（ACTIVE）Trainer：默认训练视图只暴露这些
+ACTIVE_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
+    nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
+    nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT,
+    nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT,
+    nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT,
+    nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT,
 )
 
 #: 归档（LEGACY）Trainer：需要 ``--legacy`` 才出现在训练入口的可见列表里
@@ -481,13 +561,34 @@ LEGACY_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
 #: 注册表必须包含**全部历史类名**：输出目录由 Trainer 类名决定，缺一个类名就会让对应的既有
 #: checkpoint / validation 产物再也无法被本项目解析。
 PROJECT_TRAINERS: dict[str, type[nnUNetTrainer]] = {
-    trainer.__name__: trainer for trainer in (*ACTIVE_TRAINERS, *LEGACY_TRAINERS)
+    trainer.__name__: trainer for trainer in (*ACTIVE_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
 }
 
 
+def seeded_trainer_class(base, seed):
+    """Deterministic class name gives independent native output paths for matched seeds."""
+    if base not in ACTIVE_TRAINERS or base is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
+        raise ValueError("seeded outputs are limited to active lesion baseline/fusion classes")
+    if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed < 2**32:
+        raise ValueError("seeded output requires a uint32 explicit seed")
+    name = f"{base.__name__}_Seed{seed}"
+    if name not in globals():
+        globals()[name] = type(name, (base,), {"__module__": __name__})
+    return globals()[name]
+
+
 def resolve_trainer_class(trainer_name: str) -> type[nnUNetTrainer] | None:
-    """按类名解析项目 Trainer；不是项目 Trainer 时返回 ``None``（由调用方决定是否回退）。"""
-    return PROJECT_TRAINERS.get(trainer_name)
+    """Resolve historical names and deterministic seeded variants without renaming assets."""
+    import re
+
+    if trainer_name in PROJECT_TRAINERS:
+        return PROJECT_TRAINERS[trainer_name]
+    match = re.fullmatch(r"(.+)_Seed([0-9]+)", trainer_name)
+    if match and match[1] in PROJECT_TRAINERS:
+        base = PROJECT_TRAINERS[match[1]]
+        if base in ACTIVE_TRAINERS and base is not nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
+            return seeded_trainer_class(base, int(match[2]))
+    return None
 
 
 __all__ = (
@@ -496,10 +597,12 @@ __all__ = (
     "ANATOMY_LABELS",
     "LEGACY_TRAINERS",
     "PROJECT_TRAINERS",
+    "SUPPORTING_TRAINERS",
     "ROIError",
     "nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT",
     "nnUNetTrainerPICAI_LesionHardNegative_NoFFT",
     "nnUNetTrainerPICAI_LesionROI_NoFFT",
     "nnUNetTrainerPICAI_LesionZoneRefine_NoFFT",
     "resolve_trainer_class",
+    "seeded_trainer_class",
 )

@@ -1,446 +1,152 @@
 # Research Plan
 
-**基于预测解剖先验的病灶感知粗到细前列腺癌分割**
-*Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation*
+**Anatomy-Guided Lesion-Aware Multimodal Coarse-to-Fine Fusion for Prostate Cancer Segmentation**
 
-> 一句话定义（README、Research Plan、代码注释保持一致）：
-> **本项目研究预测前列腺解剖先验与病灶感知粗到细学习能否提高小型和困难前列腺癌病灶的检出与
-> 完整分割，同时控制假阳性。**
-> *This project investigates whether predicted prostate anatomy and lesion-aware
-> coarse-to-fine learning can improve the detection and complete segmentation of small and
-> difficult prostate cancer lesions while controlling false positives.*
+Working title; subject to change after experimental validation. 不预先决定 acronym。
+本文只记录研究问题、假设、机制、边界与预期贡献；实验矩阵见 Experiment_Plan，
+实现契约见 Method，指标唯一来源为 Evaluation_Protocol，真实运行见 Training_Log。
 
-**文档定位**：本文件只讨论**研究本身**——研究问题、科学假设、方法机制、研究边界，以及预先定义
-的论文报告指标。它**不**记录具体实验流程、数据划分、训练参数、运行命令或已发生的结果：
+## 1. Research Question
 
-- 具体实验矩阵、预算、stop rules 的运行判据 → `docs/Experiment_Plan.md`
-- 指标定义与统计口径 → `docs/Evaluation_Protocol.md`
-- 方法机制与实现边界的细节 → `docs/Method.md`
-- 已发生的训练事实 → `docs/Training_Log.md`
-- 已有证据支持的结论 → `docs/Findings.md`
-- 工程变更 → `docs/Development_Log.md`
-- 旧研究路线 → `docs/archive/`
+**预测的前列腺解剖先验和粗病灶定位信息，能否共同指导 T2W、ADC、HBV 的局部多模态特征融合，
+从而减少小型和困难病灶的漏检、改善完整覆盖，并控制假阳性？**
 
----
+Can predicted prostate anatomy and coarse lesion localization jointly condition local multimodal
+fusion of T2W, ADC and HBV to reduce missed lesions, improve lesion coverage, and control false positives?
 
-## 1. Research Problem
+## 2. Failure Modes
 
-前列腺癌病灶（csPCa）在 bpMRI 上是**稀疏、小体积、对比度低**的目标。以本项目使用的
-Dataset605/606（PI-CAI 派生，1277 训练例 / 223 验证例，fold 0，阳性约 28%）为例，已完成训练
-的五个模型出现三个**反复出现、且彼此不可替代**的失败模式：
+三类失败保持不变：完全漏检（尤其小型/困难病灶）、已检出但覆盖不足、敏感度提高后的假阳负担。
+三者必须同时评价，不能通过扩大预测换 recall 而不报告 precision 与 FP。
+多模态融合服务于定位和解剖感知分割；不把“哪个 MRI 权重更大”作为独立研究目标。
 
-1. **完全漏检 lesion**——阳性病例中约有 21–34 例的 GT 病灶**完全没有被分割出来**（Dice = 0）；
-2. **已检出病灶仅分割出核心区域，病灶覆盖不足**——在"有重叠"的病例上，阳性体素召回中位数仅
-   0.40–0.46；
-3. **提高 sensitivity 后引入过多 false positives**——把每 batch 的一个 patch 槽位固定为阳性
-   病灶中心裁剪后，完全漏检从 34 例降到 21 例，代价是阴性病例出现假阳的例数从 11 升到 30。
+## 3. Preliminary Evidence and Its Boundary
 
-三者构成一个**结构性张力**：任何只沿一个方向施力的改动（更激进的采样、更强的损失重加权、
-更宽的阈值）都会把另外两个推到更差。因此本项目的研究问题不是"如何再提高一点 Dice"，而是：
+既有实验提供方向性动机，证据与限制见 Findings 的 Preliminary Findings。
+历史运行不是受控重复实验；病例 bootstrap 不包含训练随机性，CI 跨 0 不证明等效或无效。
+旧输入级/特征级 gate 与同区参照路线不恢复、不扩张，历史说明见 docs/archive/。
+既有证据不能推出新条件化融合有效，也不能推出其优于其它已发表机制。
 
-> **如何利用预测得到的解剖先验（WG / PZ / TZ）与 lesion-aware learning，减少小病灶与困难病灶
-> 的完全漏检，提高已检出病灶的完整覆盖，同时避免假阳性显著增加？**
+## 4. Hypotheses
 
-## 2. Clinical Motivation
-
-- csPCa 的临床意义与体积、分级相关；**漏检**比"边界略不精确"的后果更严重——一个完全漏掉的
-  病灶不会进入任何后续判断；
-- 泌尿病理科医师做靶向活检时依据的是"候选病灶的位置 + 范围"，而不是整幅图像的 Dice；
-  因此**病灶级检出**与**病例级完整覆盖**比体素平均指标更贴近使用场景；
-- 前列腺的解剖结构（全腺体 WG、外周带 PZ、移行带 TZ）是**可预测的**、稳定的先验：病灶按定义
-  位于腺体内，且不同分区的病灶在 MRI 上的表现不同。这使"用解剖结构约束病灶搜索与细化"成为
-  一个临床上有意义、技术上可实现的切入点。
-- 本项目**不**声称临床可用性。所有指标都是分割失败分析（segmentation failure analysis），
-  不是 PI-CAI challenge 的 detection metric（不计算 AUROC / average precision / FROC /
-  detection score）。
-
-## 3. Evidence From Preliminary Experiments
-
-以下是**已发生**的实验事实（细节见 `docs/Training_Log.md` 与 `docs/archive/`），它们共同构成
-新主线的动机。它们全部是**单次运行**（nnU-Net v2.6.2 不设随机种子），因此只作为方向性证据。
-
-### 3.1 输入级 modality 重加权：未观察到稳定的分割增益
-
-旧的 `image_gate` / `anatomy_gate` 线把问题表述为"T2W / ADC / HBV 应以什么权重融合"。在
-公平匹配（同一损失、同一阳性采样、同一增强、同一 optimizer 与调度）的两次配对比较中：
-
-- `positive_sampling` → `image_gate_positive_sampling`：病例级配对 Dice 变化均值 **−0.0077**，
-  95% CI **[−0.0540, +0.0403]**（跨 0）；
-- `image_gate_positive_sampling` → `anatomy_gate_positive_sampling`：均值 **−0.0053**，
-  95% CI **[−0.0525, +0.0381]**（跨 0）。
-
-**表述纪律**：这**不能**被写成"gate 无效""证明 gate 没有作用""gate 降低性能"或"PZ/TZ 无用"。
-CI 跨 0 既不支持提升也不支持下降，更不证明等效。可以、也应当写的是：
-
-> Direct input-level modality reweighting did not provide a consistent segmentation
-> improvement in the tested runs, motivating a shift toward lesion-aware anatomical modeling.
-
-### 3.2 病灶暴露是最强的单变量杠杆，但有代价
-
-在同一框架内只改变训练采样（每 batch 固定一个阳性病灶中心 patch）：
-
-- 完全漏检病例：**34 → 21**；有重叠的病例：**29 → 42**；阳性体素召回中位数：**0 → 0.2372**；
-- 病例级配对 Dice 变化均值 **+0.1093**，95% CI **[+0.0586, +0.1624]**（**不**跨 0）；
-- 代价：阴性病例出现假阳的例数 **11 → 30**（+19）。
-
-### 3.3 观察：早收敛 ≠ 更高上限
-
-五个已完成 run 的最佳 EMA patch pseudo Dice 只有 0.58–0.62，而全量验证 Dice 为 0.17–0.21。
-这说明 patch 级优化过程指标存在代理偏差，不能用来替代整例评估（口径见
-`docs/Evaluation_Protocol.md`）。
-
-### 3.4 由此得到的研究缺口
-
-1. modality 加权不是瓶颈——瓶颈在**病灶是否被发现、是否被完整覆盖**；
-2. 增加病灶暴露能改善检出，但**没有针对代价的控制手段**；
-3. 已有的解剖信息（PZ/TZ）被用在**错误的位置**（调制 modality 权重），而不是用在
-   **定位与细化**上；
-4. 缺少以 lesion failure mode 为中心的评价体系（过去主要看 `foreground_mean Dice`）。
-
-## 4. Main Hypothesis
-
-> **显式的病灶定位（coarse lesionness）加上预测解剖先验提供的结构化上下文，可以在不显著增加
-> 假阳负担的前提下，减少小病灶与困难病灶的完全漏检并改善已检出病灶的完整覆盖。**
-
-可证伪的含义（逐条对应 stop rules，见 `docs/Experiment_Plan.md`）：
-
-| 编号 | 假设 | 若被证伪的表现 |
+| 假设 | 待检验机制 | 对应问题 |
 |---|---|---|
-| **H1** | 缩小无关背景的搜索空间（Anatomy-Guided ROI）本身即改善 lesion learning | macro Dice、lesion sensitivity、small-lesion sensitivity 三项均无改善 |
-| **H2** | 显式 lesion localization（coarse lesionness + soft refinement）减少完全漏检 | completely missed lesions 未减少、lesion-level sensitivity 未提高 |
-| **H3** | soft PZ/TZ 解剖上下文在已有 lesion-aware coarse-to-fine 之上进一步改善覆盖或控制 FP | 相对 C 的配对变化无稳定收益 |
-| **H4** | 解剖约束的困难负样本挖掘可降低 FP 负担而不损害 sensitivity | FP burden 未下降或 sensitivity 下降 |
-
-H1–H4 是**待验证假设**。本项目**不**提前声称任何一条已取得提升。
-
-## 5. Stage 1: Predicted Anatomy Priors
+| H1 | sequence-specific shallow representation 提供比原始通道 early fusion 更合适的表征底座 | 是否值得先独立编码再进入共享 backbone？ |
+| H2 | coarse lesion localization 条件化局部融合，减少完全漏检 | lesion-aware fusion 是否改善 sensitivity？ |
+| H3 | predicted anatomy 在 lesion-aware fusion 上进一步改善覆盖或控制 FP | 解剖环境是否提供增量？ |
+| H4 | 困难负样本挖掘降低 FP 且不损害 sensitivity | 训练策略是否收回敏感度代价？ |
 
-**输入**：T2W（单通道）。
-**输出**：`P(WG)`、`P(PZ)`、`P(TZ)` 三个 **soft probability map**（不是只有硬二值 mask）。
+全部是待验证假设。H1 是机制性前置，H4 是训练策略，不强行包装为网络创新。
 
-Stage 1 训练一个稳定、独立、**冻结**的 anatomy model。它的定位是
-`anatomical prior generator`：
+## 5. Stage 1: Predicted Anatomy
 
-- 它**不是**论文的主要创新点，论文中不把"联合 WG/PZ/TZ 分割网络"包装成方法贡献；
-- 它的误差是**下游真实输入分布的一部分**，不做任何人工修正。
+冻结的单 T2W anatomy model 输出 soft P(WG)、P(PZ)、P(TZ)，只作为先验生成器。
+它不是主要创新；监督来自算法伪标签，不等于人工解剖真值。
+anatomy model 不读取 lesion GT。验证和外部病例的 anatomy 必须来自其自身 MRI 的预测，
+且不得参与该 anatomy checkpoint 的训练。GT anatomy 只用于显式 ORACLE_GT 上界分析。
 
-### 必须成立的原则（fail-closed）
+训练病例若被 anatomy model 见过，预测标记为 IN_SAMPLE_PRED；这不是 lesion-label leakage，
+但可能产生先验质量的 train/test shift。最终优先评估 cross-fitted / OOF 方案，先核定成本，
+不因计划变化自动训练多个 anatomy model。OOF、HELD_OUT、EXTERNAL 模式必须可追踪。
 
-1. anatomy model **不读取 lesion GT**；
-2. validation / test 病例的 anatomy prior **必须**来自该病例自身 MRI 的预测；
-3. **禁止**把 GT WG/PZ/TZ 直接作为 lesion model 的推理输入（GT 只能用于显式标记的
-   `ORACLE_GT` 上界分析，且不得作为正式最终性能）；
-4. 训练 lesion model 时必须防止任何跨病例、跨 split 泄漏（由
-   `scripts/data/check_split_integrity.py` 自动检查，遇泄漏 fail closed）；
-5. 若改用 out-of-fold anatomy prediction，必须显式实现并记录；当前阶段使用**冻结 anatomy
-   model 对全部病例预测**，训练/评估隔离逻辑同样清晰（先验由固定模型产生，不与 lesion
-   训练过程耦合）；
-6. 为什么必须 soft：硬 mask 的边界错误会**直接删除**跨越 WG 边界的病灶；soft probability
-   让"解剖不确定"这一信息保留下来，可以被下游走 residual path 而不是被裁掉。
+重叠 sigmoid heads 的独立预测与按顺序覆盖的硬导出不同，质量必须直接评估 soft heads；
+不能从硬导出低 WG Dice 单独推断 WG 头塌缩。实际诊断记录见 Training_Log 与 Stage-1 实验文档。
 
-数据集的输入/输出/来源清单见 `docs/Method.md`；`predicted prior` 与 `GT` 的区分见
-`docs/Evaluation_Protocol.md` 的「先验来源」小节。
+## 6. Neutral Multimodal Representation
 
-## 6. Stage 2: Lesion-Aware Coarse-to-Fine Segmentation
+对 m∈{T2W, ADC, HBV}，H_m=E_m(X_m)，三个浅层 stem 不共享参数。
+F0=P0(concat(H_T2,H_ADC,H_HBV))，投影到原生 backbone 接受的三通道。
+只使用轻量卷积，不建立三个完整 encoder，不复制 nnU-Net。
+该表征是机制对照；其价值须由实验确认。
 
-**输入**：T2W + ADC + HBV + predicted `P(WG)` / `P(PZ)` / `P(TZ)`。
-**核心目标**：small-lesion detection + complete lesion segmentation + false-positive control。
+## 7. Lesion-Aware Coarse Localization
 
-整体逻辑：
+在 fusion controller 前，由中性表征产生 coarse logits，L=sigmoid(h_L(F0))。
+辅助目标只从训练 lesion GT 的物理半径膨胀生成；推理只使用模型预测。
+coarse 分支与最终分割联合训练，L 真正进入 controller，不只是最终分割之后的辅助头。
+L 是 soft context；禁止按阈值硬裁或硬乘，L=0 处仍保留完整 neutral path。
 
-```text
-T2W
- │
- ▼
-Anatomy Model  ──▶  P(WG) / P(PZ) / P(TZ)          （Stage 1，冻结）
-                        │
-T2W / ADC / HBV         │
-      +                 │
-predicted anatomy       ▼
-      │        Anatomy-Aware ROI                  （条件 B）
-      ▼                 │
-      └────────────────▶│
-                        ▼
-              Coarse Lesion Localization            （条件 C）
-                        │
-                        ▼
-              Lesion-Aware Feature Refinement       （条件 C，soft guidance）
-                        │
-                        ▼
-              Fine Lesion Segmentation
-                        │
-                        ▼
-              Zone-Aware Refinement（可选）          （条件 D）
-```
+## 8. Anatomy- and Lesion-Conditioned Local Fusion
 
-设计顺序（**任何时候都不允许颠倒**）：
+A=[P(WG),P(PZ),P(TZ),P(U)]，P(U)=1-max(P(PZ),P(TZ))。
+P(U) 只是 uncertainty-like context，不是概率校准结论。
 
-```text
-strong baseline → anatomy ROI → lesion localization → coarse-to-fine refinement
-→ zone anatomy context → hard-negative control
-```
+z=g(concat(H_T2,H_ADC,H_HBV,L,A))；w=softmax(z)，每位置三个系数和为 1。
+Hadaptive=Σ_m w_m H_m；Ffinal=F0+R(concat(Hadaptive,L,A))。
+R 的末层零初始化，在相同 neutral/backbone 权重下，初始 Ffinal=F0。
+随后由原生 nnU-Net 输出 fine lesion segmentation。
 
-而不是：`Gate → bigger Gate → attention Gate → reference Gate → another Gate`。
+C 只使用 L，D 再加入 A。anatomy 不进行 hard gating，不把不同区域送入独立完整 encoder。
+这与输出 logits 侧的 residual prediction refinement 是不同数据流；既有实现保留为 supporting ablation。
 
-**单变量纪律**：论文主线的每个条件只允许相对其**上一条**改变一件事。任何新模块都只在 strong
-baseline 上逐步增加，不同时修改 loss / sampling / network / ROI / anatomy 后再比较。
+## 9. Supporting Strategies
 
-模块机制细节见 `docs/Method.md`。
+Positive sampling 属于 strong baseline。ROI 是可选 search-space / sampling ablation；
+它不再占用核心条件 B 的名称，是否进入最终模型由独立证据决定。
+Hard-negative mining 只在最终 C/D 候选确定后研究，只用 training split，不用 validation error 挑样本。
+不把 ROI、采样、融合、loss、优化器同时改变后作单变量解释。
 
-## 7. Anatomy-Guided ROI
+## 10. Mechanism Analysis
 
-用 **predicted WG** 定位前列腺，但**禁止 hard mask**。
+融合系数只表示模型行为，不代表 MRI 的临床重要性或医学因果贡献。
+可分析 lesion/background、预测 WG/PZ/TZ、解剖不确定区及真实物理病灶大小分层中的系数分布和熵。
+GT lesion 只允许进入离线分析；不能作为推理条件。不得强求系数符合预期临床规则。
+必须区分导出的 patch 系数与经过审计的全体积系数。
 
-不做 `image = image * wg_mask`：WG 预测的边界错误会**直接删除**病灶，这是不可恢复的失败。采用
+## 11. Controlled Comparisons
 
-```text
-predicted WG → bounding box → physical margin expansion → prostate-centred ROI
-```
+A 是最佳 baseline loss 下的 early-fusion nnU-Net；B 为 neutral representation；
+C 增加 lesion-conditioned residual fusion；D 再增加 anatomy context；E 增加困难负样本采样。
+每个条件的预算与对照见 Experiment_Plan。C 的增量包含辅助监督与条件残差这一整体，
+仅 C vs B 不足以把收益单独归因到 softmax 系数；必要时加 auxiliary-only 机制消融。
+损失家族由 A1/A2 结果选择，不能永久绑定 FLCE。
 
-四条设计约束：
+## 12. Evaluation
 
-1. **margin 按物理距离 mm 定义**，不按固定 voxel 数。Dataset605/606 的 `3d_fullres` spacing 是
-   `[3.0, 0.5, 0.5] mm`，同一 mm 边界在 z 轴与面内对应的 voxel 数相差 6 倍；每轴 voxel 数
-   **向上取整**，保证实际物理边界不小于承诺值。
-2. **保留 gland 周围安全边界与可能跨越 gland / zone 边缘的病灶**；
-3. **不重采样**：crop 后通过 **padding** 满足网络输入尺寸，spacing / origin 保持不变，预测可以
-   **无损**恢复到原空间；crop transform 完整保存为可审计的 provenance；
-4. **空 WG 预测不得导致病灶被裁掉**：回退全视野并**显式记录**原因，绝不静默。
+Primary：所有 GT-positive 病例的 macro Dice，完全漏检记 0。
+Key secondary：病灶级/小病灶 sensitivity、matched-lesion Dice、complete miss、positive voxel
+recall/precision 与 FP burden。Matched-lesion Dice 必须与 sensitivity 同报。
+大小分层是 exploratory physical-volume strata，不是临床分级。
+评价仍为 segmentation failure analysis，不计算挑战赛 detection score。
+指标、匹配、空值语义与统计常量全部引用 Evaluation_Protocol，不在本文重新定义。
 
-ROI 作为**独立消融**（Baseline vs Baseline + Anatomy ROI），先回答一个朴素问题：
+## 13. Novelty Boundary
 
-> 单纯减少无关背景，是否已经能改善 lesion learning？
-
-## 8. Lesionness Localization
-
-这是新研究最重要的候选创新之一。它把模型的学习目标显式拆成两件事：
-
-- **Where is the lesion?** —— coarse lesionness 头，追求高 sensitivity，目标不是漂亮边界，而是
-  尽量不出现 `completely missed lesions`；
-- **What is the exact lesion boundary?** —— 最终 segmentation 头。
-
-在候选目标形式（Gaussian center heatmap / dilated lesion mask / coarse lesion mask /
-distance-transform target）中选择**唯一一种**：**物理半径膨胀的 coarse lesion mask**。理由：
-
-1. 与现有数据标签形式一致（仍是二值掩膜），可直接沿用 nnU-Net 原生损失与 deep supervision，
-   不引入新的损失族；
-2. 与 3D spacing 自洽（半径以 mm 定义，按各尺度真实 spacing 折算，使用椭球结构元素）；
-3. 最容易解释（"该体素是否在某个真实病灶 r mm 邻域内"）；
-4. 避免 Gaussian heatmap 的单体素峰与 sigma 调参带来的不可归因超参数。
-
-硬约束：
-
-- lesionness supervision **只来自 lesion GT**；validation / test **不使用**任何 GT 推导的目标；
-- coarse 头与 final segmentation 头**完全联合训练**（同一次 backward），不是两阶段；
-- 推理时使用 coarse 预测引导 refinement，且**只作为 soft guidance**。
-
-## 9. Zone-Aware Refinement
-
-### PZ/TZ 的作用被重新定义
-
-以后**禁止**把 PZ/TZ 的主要作用写成"根据区域调整 T2W / ADC / HBV 的 modality weight"。
-
-新的解释是：
-
-> PZ/TZ 为 lesion localization 和 lesion refinement 提供 **anatomical context**。
-
-也就是回答：
-
-```text
-Where is this candidate located?
-What tissue context surrounds it?
-Is this candidate in PZ, TZ, boundary or uncertain anatomy?
-```
-
-采用 **soft** `P(PZ)` / `P(TZ)`，不是硬 one-hot；`P(U) = 1 - max(P(PZ), P(TZ))` 承担分区边界与
-解剖不确定区域的权重。
-
-### 两个候选设计，默认先用最简单的
-
-1. **直接 concatenation soft anatomy maps**（默认）——把 `P(PZ)/P(TZ)/P(U)` 拼到 refinement 的
-   context 里；
-2. **Zone-Aware Refinement（两个 expert + soft 融合）**：
-
-   ```text
-   F_out = P(PZ) * F_PZ + P(TZ) * F_TZ + P(U) * F_shared
-   ```
-
-   **只有在第 1 种被证明不足、且参数增量可控时才启用第 2 种。** 参数量差异必须显式报告
-   （`zone_mode_parameter_delta`），不得笼统称"两者结构相同"。
-
-如果 D 相对 C 无稳定收益，最终模型**停在 C**，并立即停止 anatomy 架构扩张。
-
-## 10. Hard Negative Mining
-
-针对第三个失败模式的训练策略增强：
-
-> 如何让模型更多看到"最像癌但实际上不是癌"的困难背景？
-
-**Anatomy-Constrained Hard Negative Mining** 的候选定义（预先冻结）：
-
-```text
-prediction confidence high  AND  GT background  AND  inside / near prostate WG
-```
-
-（等价形式：anatomical ROI 内的高损失负区域。）
-
-分轮流程：Round 1 训练 strong baseline / coarse-to-fine → Round 2 对**训练 split**推理并挖掘
-高置信假阳 → Round 3 训练时提高这些位置的采样概率。
-
-**安全红线（全部 fail-closed）**：
-
-- 挖掘**只在 training split 内**执行；
-- validation / test **绝对不能**参与挖掘；
-- **不得**从 validation error 反向挑训练样本；
-- 困难负样本采样必须能**开关**（同一 Trainer 类的一个参数），方便作为独立 ablation；
-- 最初只实现**静态离线集合**，不做在线复杂 memory bank。
-
-定位：若效果稳定则进入最终方法；若效果有限，则作为 ablation / supplementary experiment。
-**不强行把所有模块都塞进最终模型。**
-
-## 11. Experimental Design
-
-设计原则（具体矩阵、预算与命令见 `docs/Experiment_Plan.md`）：
-
-1. 先把 **strong baseline** 确定下来：在同一次比较中只让**损失**不同
-   （PI-CAI Focal+CE vs nnU-Net 原生 Dice+CE），其余全部继承同一套 nnU-Net 原生机制；胜者成为
-   后续所有方法的唯一参照。
-2. 之后形成最小主线 **A → B → C → D**，每个条件只相对上一条改变一件事：
-
-   | 条件 | 内容 | 回答的问题 |
-   |---|---|---|
-   | **A** | strong baseline（T2W+ADC+HBV、nnU-Net、best loss、positive sampling） | 一个训练充分、病灶暴露合理的普通 nnU-Net 能达到什么水平？ |
-   | **B** | A + Anatomy-Guided ROI | 缩小无关背景搜索空间是否改善 lesion learning？ |
-   | **C** | B + lesion-aware coarse-to-fine | 显式 lesion localization 是否减少完全漏检，特别是小病灶？ |
-   | **D** | C + zone-aware refinement | 已有 lesion-aware 学习后，PZ/TZ 是否进一步改善覆盖或控制 FP？ |
-
-3. **E**（hard negative mining）是 training strategy enhancement，可进最终方法，也可只作
-   ablation。
-4. 硬负样本、难度采样等 strategy 层面的改动**必须**与架构层面的改动分开评估，否则无法归因。
-
-## 12. Evaluation Protocol
-
-**关键主张：以 lesion failure mode 为中心建立统一评价体系，不再只看 nnU-Net 的
-`foreground_mean Dice`。**
-
-分级（完整定义、空值语义、统计口径见 `docs/Evaluation_Protocol.md`）：
-
-- **Primary endpoint**：**Positive-case macro Dice**（所有 GT positive cases 纳入；完全漏检病例
-  Dice = 0，不得排除）。
-- **Key secondary endpoints**（必须同时报告）：
-  1. Lesion-level sensitivity（按 3D connected component 计算）；
-  2. Small-lesion sensitivity（按 reference lesion 的**真实物理体积**分层；区间
-     `< 500 / 500–1000 / > 1000 mm³` 只能称为 **exploratory size strata**，不是临床大小分类）；
-  3. Matched-lesion Dice（只对成功匹配的 pair 计算，**必须**与 lesion sensitivity 同时报告，
-     因为单独报告会隐藏完全漏检）；
-  4. Completely missed lesion / case rate；
-  5. Positive voxel recall（lesion 找到之后到底覆盖了多少 GT lesion）；
-  6. Positive voxel precision（防止粗暴扩大分割）；
-  7. False-positive burden（`negative cases with FP`、`FP components / case`、`FP voxel volume / case`，
-     必要时按 predicted anatomy 分解为 inside WG / outside WG / PZ / TZ / uncertain）。
-- **Exploratory**：病灶大小分层敏感度、按解剖区域的 FP 分解、表面距离指标、bootstrap CI。
-
-**lesion-level analysis 不是附加实验，它就是论文的核心评价体系。**
-
-## 13. Ablation Study
-
-消融严格遵循"一次一个变量"的阶梯，而不是并联的所有组合：
-
-- **A1 vs A2**：损失（Focal+CE vs 原生 Dice+CE），其余全同；
-- **A vs B**：Anatomy-Guided ROI 的增量；
-- **B vs C**：lesionness 头 + soft refinement 的增量（core method comparison）；
-- **C vs D**：zone-aware refinement 的增量；并对照 `concat` 与 `zone_experts` 两种候选；
-- **best(C, D) vs E**：困难负样本挖掘的增量（且必须报告关闭状态下的同规则复现）；
-- **B 内部的可选消融**（仅在需要解释 ROI 的机制时进行，不作为主线）：ROI margin 的 mm 取值、
-  ROI 内采样槽位比例的敏感性 —— 这些都必须作为**单独**报告，不得与其它改动混合；
-- **C 内部的可选消融**：lesionness 半径（预先冻结值的敏感性）、是否启用 lesionness guidance；
-- **ORACLE 上界**：用 `ORACLE_GT` 解剖标签替代 predicted prior 的 ROI/上下文，用于说明
-  "anatomy 预测误差占了多少"，**必须显式标记，不得作为正式最终性能**。
+不声称首次 adaptive fusion、lesion-guided MRI fusion、coarse-to-fine prostate segmentation 或
+anatomy-aware PCa analysis。待验证差异是 predicted zonal anatomy 与 coarse lesion localization
+共同条件化局部多模态融合。正式 novelty claim 必须另行文献调研。
 
 ## 14. Reproducibility
 
-1. **显式 seed 支持**：控制项目自身能控制的部分（Python random、NumPy、PyTorch、采样、模型
-   初始化）。
-2. **诚实边界**：
-   > explicit seed improves repeatability but does not guarantee bitwise determinism.
-   nnU-Net v2.6.2 的增强由多进程 `NonDetMultiThreadedAugmenter` 驱动，其完成顺序非确定；
-   因此本项目**不**声称 bitwise 可复现。
-3. **最终候选必须做 3 个独立 seed 的完整训练**，报告 each run、`mean ± std` 与病例级 paired
-   analysis；任何候选模块在单次 exploratory run 中出现很小的 Dice 上升，**都不能**立即作为最终
-   创新。
-4. **短预算探索机制**：先做 100 / 150 epoch 的 exploratory protocol，只用于 sanity check、
-   direction screening 与 obvious failure elimination；短预算不同模型必须 epoch 相同、
-   iterations per epoch 相同、scheduler 总周期匹配、validation protocol 相同。短预算结果
-   **不能**与历史 1000-epoch 模型直接声明性能优劣。
-5. **每个实验必须能打印并落盘冻结配置**（dataset / fold / seed / trainer / network / loss /
-   sampling / epochs / batch size / patch size / spacing / anatomy prior source / ROI setting /
-   lesionness setting / hard-negative setting）。
-6. **split 完整性自动检查**：leakage 一律 fail closed。
+历史无 seed baseline 只保留为历史证据。正式 loss 选择优先 matched-seed 对照。
+最终 baseline 与 proposed model 使用同 fold、同预算、同评估、三个显式 seed，报告各 run、
+mean±std 与病例级配对统计。Explicit seed improves repeatability but does not guarantee bitwise determinism.
+短预算只筛选方向，不与历史 full-budget 模型直接声明优劣。
 
 ## 15. Stop Rules
 
-防止再次无限扩张。判据的具体阈值与判定脚本见 `docs/Experiment_Plan.md`。
+H1 无可重复收益：先判断是否保留 independent stems，不立即加深 encoder。
+H2 未减少 complete miss 且未提高 sensitivity：记录假设未获支持，不立即增加 attention depth。
+H3 未显示稳定增量：停止 anatomy-conditioned fusion 扩张，最终模型可以停在 C。
+H4 未降低 FP 或损害 sensitivity：只作为 negative/ablation evidence。
+CI 跨 0 表示未观察到明确配对改善，不表示等效。具体运行判据见 Experiment_Plan。
 
-- **Rule 1**：若 Anatomy ROI 相对 strong baseline —— macro Dice、lesion sensitivity、
-  small-lesion sensitivity **三项都没改善**，则**不要**通过继续增加 ROI attention 来"救"。
-- **Rule 2**：若 lesionness / coarse-to-fine 相对 B —— completely missed lesions 没减少、
-  lesion-level sensitivity 没提高，则说明"coarse localization 假设未获支持"。**不要立即加入更
-  复杂的 Transformer / Mamba**。
-- **Rule 3**：若 zone-aware refinement 相对 C 无稳定收益，**立即停止 anatomy 架构扩张**：不继续
-  `AnatomyGate v2`、`CrossAttention`、`ZoneTransformer`、`ZoneMamba`。
-- **Rule 4**：最终候选必须 3 seed + `mean ± std` + 病例级 paired analysis；单次 run 的小幅上升
-  不构成证据。
-- **Rule 5**（贯穿）任何模块必须能回答"是否减少漏检 / 是否改善覆盖 / 是否减少假阳"三者之一；
-  回答不了就不进主模型。
+## 16. External Stress Test
 
-## 16. External Validation
-
-若使用 Prostate158，定位为 **external distribution-shift stress test**，而不是"在另一个数据集
-上也很好"的附加亮点：
-
-- 训练第三序列与外部数据的序列**可能并非完全同质**，必须在报告中说明；
-- 若最终模型依赖 predicted anatomy，**必须用冻结的 anatomy model** 在外部数据上生成 anatomy
-  prior；
-- **禁止**：人工修改外部 prior、使用 GT zone、在看到 test 结果后重新调参数。
+架构与选型冻结后才使用 Prostate158。使用同一冻结 anatomy pipeline，不用外部 GT anatomy，
+不根据 test 表现改参数。第三序列与 HBV 不完全同质时称 distribution-shift stress test。
 
 ## 17. Expected Contributions
 
-> **以下三条全部是待验证假设。本项目不提前写成已经取得提升。**
+1. Lesion-Aware Coarse Localization：显式学习可疑位置，针对小型/困难病灶完全漏检。
+2. Anatomy- and Lesion-Conditioned Multimodal Fusion：结合预测解剖与 lesionness 指导局部特征整合。
 
-### Contribution 1 — Lesion-Aware Coarse-to-Fine Learning
-
-显式把 `lesion localization` 与 `precise lesion segmentation` 联系起来，以减少 small /
-difficult lesion 的完全漏检。验证方式：条件 C 相对 B 的 completely missed lesions 与
-lesion-level sensitivity 的配对变化。
-
-### Contribution 2 — Predicted Anatomy-Guided Lesion Modeling
-
-使用**真实推理条件下预测得到的** WG / PZ / TZ 作为 lesion localization 与 refinement 的结构化
-先验。重点**不是** modality weighting。验证方式：条件 B/D 相对其前序条件的配对变化，以及
-`ORACLE_GT` 上界与 predicted prior 的差距。
-
-### Contribution 3 — Lesion-Centric Evaluation
-
-系统评价 lesion sensitivity、small-lesion sensitivity、matched-lesion Dice、missed lesions、
-false-positive burden，而不仅仅报告单一 Dice。验证方式：本项目的评价体系本身（
-`docs/Evaluation_Protocol.md` + `src/zonal_reliability_fusion/evaluation/`）。
+两条都是待验证贡献。Lesion-Centric Evaluation and Fusion Behaviour Analysis 是实验分析支撑，
+不必作为第三个方法创新。
 
 ## 18. Limitations
 
-1. **全部 preliminary evidence 都是单次运行**，无 run-to-run 方差估计；因此它们只能作为方向性
-   证据，不能作为效应量。
-2. **解剖先验是算法伪监督**：WG 来自已物化掩膜、PZ/TZ 来自自动分区结果，不是手工标注；因此
-   Stage-1 的"真值"本身有系统偏差，且 `11050_1001070` 因缺少可用 WG 而被**显式排除**。
-3. **anatomy 预测误差会传播**：Stage-2 的输入包含 predicted prior，因此最终指标包含解剖预测
-   的误差；`ORACLE_GT` 上界只能说明误差"有多大空间"，不能把它当作可达性能。
-4. **第三方序列同质性未知**：Dataset605/606 前三个 MRI 通道经逐数组一致性审计一致，但
-   PZ/TZ 不参与判等；Prostate158 的第三序列可能与训练数据不完全同质。
-5. **评估不做后处理**：不进行最小团块过滤、最大团块、形态学开闭、填洞或阈值优化；这使指标
-   反映的是原始网络输出，而不是经过临床后处理的性能。
-6. **评价是 segmentation failure analysis**，不是 detection metric：不计算 AUROC /
-   average precision / FROC / detection score，也不做阈值敏感性分析来模拟检出率曲线。
-7. **大小分层是探索性的**：`< 500 / 500–1000 / > 1000 mm³` 是按物理体积的工程分层，**不是**
-   临床风险类别，也不对应任何指南分级。
-8. **单中心、单 fold 主实验**：fold 0；外部数据只作为分布偏移压力测试。
-9. **标签噪声**：病灶 GT 为自动生成/派生标签（PI-CAI 派生），其自身误差不会被本项目的指标
-   所隔离。
+算法解剖伪监督、单 fold、训练随机性、标签噪声、prior quality shift、额外参数与计算量均须报告。
+增加模型容量本身可能解释收益，须报告参数增量，必要时采用容量对照。
+零初始化只保证初始 neutral 等价，不保证训练后效果，也不保证不同独立初始化模型逐值相同。
+不把单次改善写成稳定贡献，不把诊断阈值扫描当正式阈值选型。

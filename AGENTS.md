@@ -65,12 +65,16 @@
   不可归因的修改（如同时改采样、损失、patch size 与优化器）。
 - 仍禁止复制 nnU-Net 的完整训练器、U-Net encoder/decoder、验证器和推理器。
 - 所有训练从 `scripts/train/train_nnunet.py` 进入。
-- **当前研究主线**（2026-10-08 起，唯一主线）：Anatomy-Guided Lesion-Aware Coarse-to-Fine。
-  受控扩展的活跃集合只包含：Stage-1 解剖先验生成器、Anatomy-Guided ROI（物理 margin，禁 hard
-  mask，不重采样）、coarse lesionness 头 + soft 残差 refinement、soft PZ/TZ 解剖上下文、
-  解剖约束困难负样本挖掘。它们分别只改一件事，见 `docs/Method.md` §7 的单变量边界表。
-  旧的输入级 / 特征级 gate 与同区参照融合**不再扩张**，代码只读归档在
-  `src/zonal_reliability_fusion/legacy/`。
+- **当前研究主线**（2026-10-08 本轮明确更新）：预测解剖与粗病灶定位共同条件化局部多模态融合。
+  活跃扩展只包含 Stage-1 先验生成器、轻量独立 shallow stems + neutral projection、
+  pre-fusion coarse lesionness、soft anatomy/lesion-conditioned residual fusion。
+  禁 hard gating；neutral path 必须保留，residual末层零初始化。ROI与原logits refinement保留为
+  SUPPORTING ablation；hard negatives待best(C,D)冻结后加入。旧gate/fusion不得恢复为主线。
+  新融合实现不依赖legacy；不同loss家族使用明确Trainer类名，所有既有类名继续可解析。
+  predicted-prior Dataset608与历史Dataset606隔离，记录IN_SAMPLE/OOF/HELD_OUT/EXTERNAL模式、
+  checkpoint、split与geometry。不得把in-sample写成OOF或把hard export的WG失败当soft head失败。
+  一次只改一个明确机制，边界见 docs/Method.md §7。
+  `src/zonal_reliability_fusion/legacy/`仍只读，不扩张、不改变其实现。
 - anatomy 相关操作的硬约束：anatomy model 不读 lesion GT；validation / test 的解剖先验必须来自
   该病例自身 MRI 的预测；**禁止**把 GT WG/PZ/TZ 作为 lesion model 的推理输入（GT 仅允许用于
   显式标记 `ORACLE_GT` 的上界分析）。split 泄漏由 `scripts/data/check_split_integrity.py`
@@ -78,7 +82,7 @@
 
 ## 6. 文档纪律
 
-- **治理文档七份**（2026-10-08 起）：`README.md`、`docs/Research_Plan.md`、`docs/Method.md`、
+- **治理文档八份**（2026-10-08 起）：`README.md`、`docs/Research_Plan.md`、`docs/Method.md`、
   `docs/Experiment_Plan.md`、`docs/Evaluation_Protocol.md`、`docs/Training_Log.md`、
   `docs/Findings.md`（横向汇总）、`docs/Development_Log.md`。各文件**单一职责**，禁止互相抄写：
 
@@ -105,8 +109,8 @@
   兼容与历史复现。
 - 不再建立阶段门（G0/G1/G2/SAP/P2A/P2B 等）或步骤/runbook/readiness/gate 文档，也不为每个模型
   维护大 YAML；网络差异由 Trainer 类名与少量代码常量表达，结构参数继续来自 `nnUNetPlans.json`。
-- **Trainer 状态分层**：`nnunet/trainers.py` 的 `ACTIVE_TRAINERS` / `LEGACY_TRAINERS` 是
-  Trainer 分层的唯一真源；训练入口默认只显示 ACTIVE，归档条件需 `--legacy`。
+- **Trainer 状态分层**：`nnunet/trainers.py` 的 `ACTIVE_TRAINERS` / `SUPPORTING_TRAINERS` / `LEGACY_TRAINERS` 是
+  Trainer 分层的唯一真源；训练入口默认只显示 ACTIVE，supporting条件需`--supporting`，归档条件需 `--legacy`。
   `PROJECT_TRAINERS` 必须包含**全部历史类名**（输出目录由类名决定，缺一个即让历史产物失联）。
 - **单一状态真源**：variant 状态只在 `docs/Training_Log.md` 的「各 variant 状态」表维护；README 与
   Findings 引用它，不另立清单。

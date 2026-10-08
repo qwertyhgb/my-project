@@ -146,3 +146,140 @@ def prior_uncertainty_report(
             ),
         },
     }
+
+
+def soft_head_metrics(reference, probabilities, *, threshold=0.5):
+    """Independent sigmoid-head metrics; never reconstruct heads from ordered export.
+
+    Threshold uses >, matching nnU-Net region export. Quantiles are per-case,
+    over all FOV voxels and reference-positive voxels respectively.
+    """
+    from zonal_reliability_fusion.anatomy.contracts import validate_label_array
+
+    reference = validate_label_array(reference, range(8), "anatomy reference")
+    probabilities = np.asarray(probabilities)
+    if probabilities.shape != (3, *reference.shape):
+        raise EvaluationError("soft anatomy channels/shape mismatch")
+    if not np.issubdtype(probabilities.dtype, np.floating):
+        raise EvaluationError("soft anatomy must be floating point")
+    if not np.isfinite(probabilities).all() or np.any(probabilities < 0) or np.any(probabilities > 1):
+        raise EvaluationError("soft anatomy probabilities outside finite [0,1]")
+    if not 0 < threshold < 1:
+        raise EvaluationError("threshold must be in (0,1)")
+    result = {}
+    for index, name in enumerate(("WG", "PZ", "TZ")):
+        ref = (reference & (1 << index)) != 0
+        probability = probabilities[index]
+        pred = probability > threshold
+        tp = int(np.count_nonzero(ref & pred))
+        fp = int(np.count_nonzero(~ref & pred))
+        fn = int(np.count_nonzero(ref & ~pred))
+        result[name] = {
+            "Dice": ratio(2 * tp, 2 * tp + fp + fn),
+            "recall": ratio(tp, tp + fn), "precision": ratio(tp, tp + fp),
+            "TP": tp, "FP": fp, "FN": fn,
+            "volume_ratio": ratio(tp + fp, tp + fn),
+            "empty_prediction": not bool(pred.any()),
+            "probability_quantiles_fov": np.quantile(probability, [0, .1, .5, .9, 1]).tolist(),
+            "probability_quantiles_reference": (
+                np.quantile(probability[ref], [0, .1, .5, .9, 1]).tolist() if ref.any() else None
+            ),
+        }
+    return result
+
+
+def diagnose_soft_heads(validation_dir, *, no_progress=False):
+    """Read existing validation artifacts only. Return report; no files are written."""
+    import json
+    import time
+    from pathlib import Path
+
+    import SimpleITK as sitk
+    from tqdm import tqdm
+
+    from zonal_reliability_fusion.anatomy.contracts import anatomy_same_grid
+    from zonal_reliability_fusion.anatomy.inference import load_anatomy_probability_case
+
+    start = time.monotonic()
+    folder = Path(validation_dir)
+    summary = json.loads((folder / "summary.json").read_text())
+    plans = json.loads((folder.parent.parent / "plans.json").read_text())
+    records, errors = [], []
+    seen = set()
+    for entry in tqdm(summary["metric_per_case"], desc="soft anatomy heads", unit="case", disable=no_progress):
+        try:
+            reference_path = Path(entry["reference_file"])
+            cid = reference_path.name.removesuffix(".nii.gz")
+            if cid in seen:
+                raise EvaluationError(f"duplicate case {cid}")
+            seen.add(cid)
+            reference = sitk.ReadImage(str(reference_path))
+            probability, _, native = load_anatomy_probability_case(
+                folder, cid, reference, plans["transpose_forward"]
+            )
+            anatomy_same_grid(reference, native)
+            ref = sitk.GetArrayFromImage(reference)
+            hard = sitk.GetArrayFromImage(native)
+            reconstructed = np.zeros(ref.shape, dtype=np.uint8)
+            for index, label in enumerate((1, 2, 4)):
+                reconstructed[probability[index] > .5] = label
+            records.append({
+                "case_id": cid, "heads": soft_head_metrics(ref, probability),
+                "hard_export_mismatch_voxels": int(np.count_nonzero(reconstructed != hard)),
+                "hard_regions": anatomy_region_metrics(ref, hard),
+            })
+        except Exception as exc:
+            errors.append(f"{entry.get('reference_file')}: {type(exc).__name__}: {exc}")
+    print(f"[soft-head-diagnosis] success={len(records)} failed={len(errors)} skipped=0 "
+          f"elapsed={time.monotonic()-start:.2f}s output=stdout (read-only)", flush=True)
+    if errors:
+        raise EvaluationError("\n".join(errors))
+    def available_mean(items, axis=None):
+        present = [item for item in items if item is not None]
+        if not present:
+            return None
+        value = np.mean(present, axis=axis)
+        return value.tolist() if axis is not None else float(value)
+
+    aggregate = {}
+    for name in ("WG", "PZ", "TZ"):
+        values = [r["heads"][name] for r in records]
+        totals = {key: sum(v[key] for v in values) for key in ("TP", "FP", "FN")}
+        tp, fp, fn = (totals[k] for k in ("TP", "FP", "FN"))
+        aggregate[name] = {
+            **totals,
+            **{f"macro_{key}": available_mean([v[key] for v in values])
+               for key in ("Dice", "recall", "precision", "volume_ratio")},
+            "micro_Dice": ratio(2 * tp, 2 * tp + fp + fn),
+            "micro_recall": ratio(tp, tp + fn), "micro_precision": ratio(tp, tp + fp),
+            "micro_volume_ratio": ratio(tp + fp, tp + fn),
+            "empty_predictions": sum(v["empty_prediction"] for v in values),
+            "hard_export_macro_Dice": available_mean([r["hard_regions"][name]["Dice"] for r in records]),
+            "mean_per_case_probability_quantiles_fov": np.mean(
+                [v["probability_quantiles_fov"] for v in values], axis=0).tolist(),
+            "mean_per_case_probability_quantiles_reference": available_mean(
+                [v["probability_quantiles_reference"] for v in values], axis=0),
+        }
+    return {
+        "threshold": .5, "threshold_operator": ">", "cases": len(records),
+        "quantile_levels": [0, .1, .5, .9, 1],
+        "quantile_aggregation": "mean of case quantiles, not pooled voxel quantiles",
+        "source": str(folder), "heads": aggregate,
+        "hard_export_mismatch_voxels": sum(r["hard_export_mismatch_voxels"] for r in records),
+        "per_case": records,
+    }
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Read-only independent soft anatomy diagnosis")
+    parser.add_argument("validation_dir")
+    parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--per-case", action="store_true", help="Also print per-case metrics")
+    args = parser.parse_args()
+    report = diagnose_soft_heads(args.validation_dir, no_progress=args.no_progress)
+    if not args.per_case:
+        report.pop("per_case")
+    print(json.dumps(report, indent=2, allow_nan=False))

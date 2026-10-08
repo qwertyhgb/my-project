@@ -1,327 +1,111 @@
 # Experiment Plan
 
-> 本文件记录**具体实验矩阵、预算、命令入口与 stop rules 的运行判据**。
-> 科学问题与方法机制见 `docs/Research_Plan.md` 与 `docs/Method.md`；指标定义见
-> `docs/Evaluation_Protocol.md`；已发生的运行事实见 `docs/Training_Log.md`。
->
-> **本文件只描述计划。任何命令都必须由研究者本人执行；代理不启动长训练。**
+本文件记录实验矩阵、预算、命令入口与 stop rules；不记录结果。科学假设见 Research_Plan，
+实现契约见 Method，指标与统计口径唯一来源为 Evaluation_Protocol，真实运行见 Training_Log。
+所有训练、物化、预处理、推理、评测由研究者运行；本轮仅做已授权的既有输出诊断和合成测试。
 
----
-
-## 1. 主线总览
+## 1. Experimental Tree
 
 ```text
-A  strong baseline
-      ↓  只改训练 patch 采样空间
-B  A + Anatomy-Guided ROI
-      ↓  只加 coarse lesionness 头 + soft refinement + lesionness 辅助损失
-C  B + Lesion-Aware Coarse-to-Fine
-      ↓  只加两个 soft zone 概率通道（concat 模式）
-D  C + Zone-Aware Refinement
-      ↓  只加困难负样本采样（可开关）
-E  best(C, D) + Anatomy-Constrained Hard Negative Mining
+A  Native early-fusion strong baseline (best matched A1/A2 loss)
+└─ B  Sequence-specific neutral fusion
+   └─ C  Coarse lesionness-conditioned residual fusion
+      └─ D  Predicted anatomy + lesion-conditioned fusion
+         └─ E  Hard-negative sampling on best(C,D), only after selection
 ```
 
-任何模块只有在能回答"是否减少漏检 / 是否改善覆盖 / 是否减少假阳"三者之一时才进入主模型。
+ROI 不混入默认主树，作为独立 supporting training ablation。
+原 `lesion_roi` 等名字保留原含义；不能把原 ROI B 的结果记成新 neutral-fusion B。
 
----
+## 2. Strong Baseline Selection
 
-## 2. 阶段 0：strong baseline 的确定（A1 vs A2）
+A1=`positive_sampling`（FLCE+阳性采样），A2=`dicece_positive_sampling`（原生 DiceCE+相同阳性采样）。
+唯一变量是 loss：相同 native architecture、数据/split、patch/batch、augmentation、optimizer、
+LR schedule、epoch、DS、checkpoint、validation/inference、显式 seed。
+正式选择优先 matched-seed；历史无 seed A1 只作历史参照，不能称为 matched-seed。
 
-**唯一变量：损失函数。**
+历史 A1 目录已存在，禁止原命令从头覆盖。入口新增 `--seeded-output` 时从基类派生固定
+`_Seed<seed>` 类名，独立目录并可由 checkpoint trainer_name 解析；只给不同 JSON 名不隔离模型。
+A1/A2 同 seed 各自运行，按 primary + failure-mode endpoints 综合判断，不能只选单个 Dice。
+若证据接近，保留不确定性，不强行选“胜者”。B/C/D 提供两个显式 loss 家族，按选型使用同一家族。
 
-| 臂 | variant | Trainer 类 | 损失 |
+## 3. Variant Matrix
+
+| 条件 | FLCE variant | DiceCE variant | 唯一干预 |
 |---|---|---|---|
-| A1 | `positive_sampling` | `nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT` | PI-CAI `0.5*Focal(gamma=2)+0.5*CE`（项目实现） |
-| A2 | `dicece_positive_sampling` | `nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT` | nnU-Net v2.6.2 原生 `DC_and_CE_loss` + `MemoryEfficientSoftDiceLoss` |
+| B | neutral_fusion_flce | neutral_fusion_dicece | independent shallow stems + neutral projection |
+| C | lesion_fusion_flce | lesion_fusion_dicece | pre-fusion coarse lesionness + conditioned residual branch + auxiliary supervision |
+| D | anatomy_lesion_fusion_flce | anatomy_lesion_fusion_dicece | predicted WG/PZ/TZ 与派生 U context |
+| E | 待 best(C,D) 冻结后建立 | 同左 | 困难负样本采样 |
 
-**必须逐项相同**（启动前逐条核对，任一不符即停止）：
+B/C 使用 Dataset605；D 使用独立 Dataset608，冻结 605 网络结构/patch/batch/spacing，MRI
+预处理逐值一致性由合成测试核对，真实 608 产物仍需用户核查。
+每次正式比较逐项核对：split 与顺序、loss家族、epoch、iterations、DS、采样、增强、optimizer、
+PolyLR 与推理设置。不得直接以默认 planning 重新决定 D 网络后声称单变量。
 
-- 网络：由 `nnUNetPlans.json` 构建的原生 `PlainConvUNet`（不含 gate / 浅层 feature path）；
-- 数据集与 split：`Dataset605_PICAI` / `3d_fullres` / fold 0；
-- patch size、batch size、前景采样比例、deep supervision 权重；
-- 增强：同一默认管线 + 同一 NoFFT 修复；
-- optimizer（SGD+Nesterov）、初始学习率、PolyLR 总周期、epoch 数；
-- checkpoint 策略、validation、滑窗推理。
+## 4. Frozen First Version
 
-**启动日志必须显示**（任一不符即停止）：
+stem_channels=8；lesionness radius=3 mm；aux loss weight=0.5；softmax temperature=1；residual zero-init。
+不做初始超参数网格搜索。无 Transformer/Mamba/cross-attention/多完整 encoder。
+参数量使用相同真实 plans 对 A/B/C/D 报 total/trainable/delta/%；未测 FLOPs 或 GPU memory 明确未测。
 
-```text
-Dataset605 / fold 0 / 1277 train, 223 validation
-batch_size=2 / positive_cases=362 / negative_cases=915
-positive_cases_per_batch=1 / guaranteed_positive_patch_fraction=0.5
-network=PlainConvUNet / input_channels=3
-A2 额外：loss=DeepSupervisionWrapper (base=nnunetv2...DC_and_CE_loss)
-```
+## 5. Predicted Anatomy Prerequisites
 
-**胜者成为后续所有条件的 Strong Baseline。** 比较依据以 primary endpoint
-（`positive_case_macro_dice`）为主，并同时报告 key secondary（尤其 completely missed 与
-FP burden）——若两者在 Dice 上接近而在失败模式上不同，需在实验文档中如实记录，不强行选出一个
-"胜者"。
+先确认 Stage-1 soft heads 的质量（运行事实见 Training_Log）；不能凭硬导出 WG Dice 决定重训。
+训练先验和验证先验必须来自可追踪冻结模型，验证患者不在其训练范围。
+先支持显式 IN_SAMPLE_PRED，再评估 OOF 成本；不得把 in-sample 写成 OOF。
+Dataset608 物化、冻结 plans 准备、预处理命令由 README 给出；只采用 dataset 路径，不维护
+第二套 runtime injection。缺病例/几何/metadata 直接失败，禁止静默排除。
+Stage-1 缺 WG supervision 的已知排除病例仍需其自身 MRI 的预测，不能用空 prior 顶替。
 
-> **执行顺序的当前优先级**：Stage-1 的 anatomy 模型**已完成** 100 epoch + validation，但
-> **WG 区域头不可用**（逐区域 Dice：WG 0.0056 / PZ 0.8985 / TZ 0.9361；集合平均 0.6134 掩盖了
-> 这一点）。由于条件 B 的 ROI **唯一**来自 predicted WG，**必须先解决 WG 预测再启动 B**。
-> 诊断与修正的入口见 `docs/experiments/anatomy_joint_100ep.md`；本文件其余内容描述完整矩阵，
-> 不代表可以跳过该前置。
+## 6. Architecture and Construction Checks
 
-**命令模板**（工作目录 `/opt/data/private/lm/my-projects`，conda 环境 `lm`）：
+先做合成网络 shape、初始恒等、梯度、权重归一化、非法概率与 provenance 测试；
+再经真实 Trainer resolve/__init__/initialize/network/loss/backward。
+真实 plans smoke 使用较小但满足下采样约束的合成 patch，说明不是原始 full-size patch 显存测试。
+不能用测试通过替代真实训练/validation，更不能用它证明方法有效。
 
-```bash
-cd /opt/data/private/lm/my-projects
-source /root/anaconda3/etc/profile.d/conda.sh && conda activate lm
-source scripts/env_nnunet.sh
+## 7. Budget
 
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  positive_sampling 605 3d_fullres 0 \
-  --seed 20261008 --run-config outputs/run_configs/A1_positive_sampling_fold0_seed20261008.json
+筛选预算 100/150 epoch，同一比较同 epoch、iterations、scheduler总周期、评估设置。
+新增 active fusion Trainer 默认仍为原生 1000 epoch；**尚未提供独立短预算 Trainer**，
+因此不能把当前默认命令称为 100ep 筛选命令。短预算实现后再安排 B/C/D exploratory training。
+短预算不得与历史 1000ep 声称优劣；本轮不启动任何预算训练。
 
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  dicece_positive_sampling 605 3d_fullres 0 \
-  --seed 20261008 --run-config outputs/run_configs/A2_dicece_positive_sampling_fold0_seed20261008.json
-```
+## 8. Final Confirmation
 
-> A1（`positive_sampling`）**已经完成**训练与 validation（见 `docs/Training_Log.md`）。
-> 因此阶段 0 实际只需要按上面的 `--seed` 约定**补齐 A2**；若要严格对齐 seed，A1 也是
-> 无种子运行，须在实验文档中如实说明该边界。
+最终 baseline/proposed：same fold / budget / evaluation / 3 explicit seeds。
+报告各 run、mean±std、同 seed 病例配对；每 seed 使用独立输出目录，不重复覆盖同类名目录。
+病例 bootstrap 不覆盖 run-to-run variance，种子不保证 bitwise determinism。
 
----
+## 9. Stop Rules
 
-## 3. 条件 B：Anatomy-Guided ROI
-
-**唯一变量：训练 patch 采样空间。**
-
-| 项 | 值 |
-|---|---|
-| variant | `lesion_roi` |
-| Trainer | `nnUNetTrainerPICAI_LesionROI_NoFFT` |
-| 数据集 | `Dataset605_PICAI` / `3d_fullres` / fold 0 |
-| 网络 | **原生 `PlainConvUNet`**（ROI 不改网络） |
-| 损失 | 与 strong baseline 胜者**完全相同** |
-| 采样 | 阳性采样（不变）+ 非前景槽位的 ROI 约束（`roi_sampling_probability = 0.75`，冻结） |
-
-**前置（当前被阻塞）**：ROI 集合必须由 predicted WG 生成。Stage-1 的 WG 头目前不可用，因此
-第一步是修正 Stage-1 并重训/重导出，**然后**才运行下面的 ROI 构建命令。
-
-**前置：ROI 集合必须由预测 WG 生成**（`scripts/data/build_anatomy_roi_set.py`，长任务）：
-
-```bash
-# <Stage-1 的 validation 目录> = outputs/nnUNet_results/Dataset607_PICAI_Anatomy/
-#   nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/validation
-# （该目录已含 223 例验证病例的 soft prior；训练 split 的先验需先由预测生成）
-python scripts/data/build_anatomy_roi_set.py \
-  --prior-dir <Stage-1 的 validation 目录> \
-  --lesion-dataset Dataset605_PICAI --fold 0 \
-  --margin-mm 15 --wg-threshold 0.5 \
-  --output workdir/anatomy_rois/Dataset605_PICAI_fold0.json
-```
-
-训练：
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  lesion_roi 605 3d_fullres 0 --seed 20261008 \
-  --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json \
-  --run-config outputs/run_configs/B_lesion_roi_fold0_seed20261008.json
-```
-
-**回答的问题**：单纯减少无关背景搜索空间，是否已经能改善 lesion learning？
-
----
-
-## 4. 条件 C：Lesion-Aware Coarse-to-Fine（核心方法比较）
-
-**唯一变量：相对 B 加上 coarse lesionness 头 + soft 残差 refinement + lesionness 辅助损失。**
-
-| 项 | 值 |
-|---|---|
-| variant | `lesion_coarse_to_fine` |
-| Trainer | `nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT` |
-| 损失 | strong baseline 主损失 + `0.5 * lesionness`（`LESIONNESS_LOSS_WEIGHT = 0.5`） |
-| lesionness 目标 | 物理半径膨胀（`LESIONNESS_DILATION_RADIUS_MM = 3.0`）的 coarse lesion mask |
-| 采样 | 与 B 完全相同 |
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  lesion_coarse_to_fine 605 3d_fullres 0 --seed 20261008 \
-  --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json \
-  --run-config outputs/run_configs/C_lesion_c2f_fold0_seed20261008.json
-```
-
-**回答的问题**：显式 lesion localization 是否减少完全漏检，特别是小病灶漏检？
-这是本论文**最重要的方法比较**。
-
----
-
-## 5. 条件 D：Zone-Aware Refinement
-
-**唯一变量：相对 C 加上两个 soft zone 概率通道（`concat` 模式）。**
-
-| 项 | 值 |
-|---|---|
-| variant | `lesion_zone_refine` |
-| Trainer | `nnUNetTrainerPICAI_LesionZoneRefine_NoFFT` |
-| 数据集 | **`Dataset606_PICAI_Zonal`**（5 通道：T2W/ADC/HBV + P(PZ)/P(TZ)） |
-| zone 模式 | `concat`（默认；`zone_experts` 只在 `concat` 被证明不足时才启用） |
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  lesion_zone_refine 606 3d_fullres 0 --seed 20261008 \
-  --roi-set workdir/anatomy_rois/Dataset606_PICAI_Zonal_fold0.json \
-  --run-config outputs/run_configs/D_lesion_zone_refine_fold0_seed20261008.json
-```
-
-**回答的问题**：在已经具有 lesion-aware coarse-to-fine learning 之后，PZ/TZ 是否能够进一步
-改善病灶完整分割或控制 FP？
-
-**只有 D 相对 C 有稳定收益，PZ/TZ 才作为最终方法贡献。若 D 无收益，最终模型停在 C，并立即
-停止 anatomy 架构扩张。**
-
-### 5.1 Dataset605 ↔ 606 的归因边界（必须写进实验文档）
-
-条件 D 相对 C 的差异**不只是** PZ/TZ：两者数据集不同。前三个 MRI 通道已通过逐数组一致性审计
-（`outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`，PASS），但 **PZ/TZ 不参与判等**。
-因此 D 相对 C 的结论必须带上这条边界，**不得**声称"唯一差异是 PZ/TZ"。
-
----
-
-## 6. 条件 E：Anatomy-Constrained Hard Negative Mining
-
-**唯一变量：相对 best(C, D) 加上困难负样本采样。**
-
-| 项 | 值 |
-|---|---|
-| variant | `lesion_hard_negative` |
-| Trainer | `nnUNetTrainerPICAI_LesionHardNegative_NoFFT` |
-| 默认状态 | **关闭**（`hard_negative_set_path = None` ⇒ 完全退化为条件 C/D） |
-
-**Round 2 前置：只对训练 split 挖掘**（长任务）：
-
-```bash
-python scripts/data/mine_hard_negatives.py \
-  --prediction-dir outputs/predictions/round1_train_t2wadchbv \
-  --reference-dir  workdir/nnUNet_raw/Dataset605_PICAI/labelsTr \
-  --wg-dir         workdir/anatomy_priors/Dataset605_PICAI/train \
-  --lesion-dataset Dataset605_PICAI --fold 0 \
-  --confidence-threshold 0.5 --wg-threshold 0.5 --max-locations-per-case 8 \
-  --output workdir/hard_negatives/Dataset605_PICAI_fold0_round1.json
-```
-
-训练：
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  lesion_hard_negative 605 3d_fullres 0 --seed 20261008 \
-  --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json \
-  --hard-negative-set workdir/hard_negatives/Dataset605_PICAI_fold0_round1.json \
-  --run-config outputs/run_configs/E_lesion_hard_negative_fold0_seed20261008.json
-```
-
-**定位**：若效果稳定则进入最终方法；若效果有限，则作为 ablation / supplementary experiment，
-**不强行塞进最终模型**。
-
----
-
-## 7. 短预算探索机制（exploratory protocol）
-
-**不要再所有想法一上来就跑 1000 epochs。** 任何新模块先做短预算筛选：
-
-- 预算：**100 / 150 epoch**（同一批比较必须用同一预算）；
-- 用途**只限**：sanity check、direction screening、obvious failure elimination；
-- 必须满足：epoch 相同、iterations per epoch 相同、scheduler 总周期匹配、validation protocol 相同；
-- **不得**与历史 1000-epoch 模型直接声明性能优劣；
-- 候选通过短预算后才进入 full training。
-
-先例：旧的四个 `*_100ep` 同区参照条件在**构造阶段**就失败（`KeyError: 'args'`），修复后从未重跑；
-这说明"短预算先跑通"本身必须是一个显式步骤。已归档，仅供教训参考。
-
----
-
-## 8. Full Training 规则
-
-最终候选（**Strong baseline vs Final proposed model**）必须：
-
-```text
-same fold
-same training budget
-same evaluation protocol
-3 explicit seeds
-```
-
-报告：each run、`mean ± std`、病例级 paired analysis（口径见 `docs/Evaluation_Protocol.md` §7）。
-
----
-
-## 9. Stop Rules（运行判据）
-
-| 规则 | 触发条件 | 行动 |
+| 比较 | 判据 | 行动 |
 |---|---|---|
-| **Rule 1** | B 相对 A：`positive_case_macro_dice`、`lesion_sensitivity_any_overlap`、`small_lesion_sensitivity_any_overlap` **三项都没改善** | **不要**通过继续增加 ROI attention 来"救"；记录为 negative evidence，短暂评估 ROI margin 取值后停止扩张 |
-| **Rule 2** | C 相对 B：`completely_missed_lesion_rate` 未下降 **且** `lesion_sensitivity_any_overlap` 未提高 | coarse localization 假设未获支持；**不要**立即加入更复杂的 Transformer / Mamba；先检查 lesionness 目标与 guidance 是否真的生效（辅助损失是否在下降、coarse 头的指标是否合理） |
-| **Rule 3** | D 相对 C 无稳定收益（配对 CI 跨 0，或收益小于 seed 间波动） | **立即停止 anatomy 架构扩张**：不继续 `AnatomyGate v2` / `CrossAttention` / `ZoneTransformer` / `ZoneMamba`；最终模型停在 C |
-| **Rule 4** | 任何候选模块只有单次 exploratory run 的小幅 Dice 上升 | **不得**作为最终创新；必须 3 seed + `mean ± std` + 病例级 paired analysis |
-| **Rule 5** | 某个模块无法回答"是否减少漏检 / 是否改善覆盖 / 是否减少假阳"三者之一 | 不进主模型 |
-| **Rule 6** | 任何一步出现 split 泄漏（`scripts/data/check_split_integrity.py` 返回 FAIL） | **立即停止**，先修复泄漏再启动训练 |
+| B vs A | 表征改动未显示可重复收益 | 先判断是否保留 stem；不立即增加深度 |
+| C vs B | complete misses 未下降且 lesion sensitivity 未提高 | lesion-conditioned fusion 假设未获支持；先检查 coarse target、aux loss 与 conditioning 数据流，不立即加 attention |
+| D vs C | primary 与对应覆盖/sensitivity/FP 未显示稳定收益 | 停止 anatomy-conditioned fusion 扩张，模型可停在 C |
+| E vs best(C,D) | FP 未下降或 sensitivity 明显下降 | 记录为 negative/ablation，不强行纳入最终模型 |
+| 任一 | split/provenance/geometry 失败 | 停止该运行，先修复 |
 
-### 9.1 判定用的具体指标
+CI跨0表示无明确配对改善，不证明等效或无效。单run小幅提升不构成稳定方法贡献。
+需要同时报告 failure-mode指标和代价，不进行结果后择指标。
 
-Rule 1–3 的"改善 / 无改善"判定一律使用：
+## 10. Mechanism Analysis
 
-- **主判据**：primary endpoint `positive_case_macro_dice` 的配对比较；
-- **必要条件**：key secondary 中与该条件直接对应的失败模式指标（Rule 1/2 用
-  `completely_missed_*` 与 `lesion_sensitivity_*`；Rule 3 用
-  `matched_lesion_dice` 与 `false_positive_burden`）；
-- **方向一致性**：主判据与其对应的失败模式指标必须**同向**，否则视为无稳定收益，不得择一报告。
+C的干预包含 coarse监督与条件残差整体，不从 C vs B 单独断言 softmax weighting 的因果作用；
+需要时加入 auxiliary-only 或 capacity-matched对照。
+系数按 lesion/background、预测zone、物理体积分层报告分布/entropy，标记为 model-behaviour analysis。
+现有 hook 只导出 patch 系数；全体积聚合/恢复尚未实现，不把最近一个滑窗当整例系数。
 
----
+## 11. Run Configuration
 
-## 10. 评价执行顺序（每个条件训练完成后）
+入口记录 dataset/config/fold/variant/trainer/seed、baseline loss、sampling、epoch/patch/batch/spacing、
+fusion mode与冻结常量、prior source。计划不等于运行；状态唯一维护于 Training_Log。
+默认新 B/C/D 不带 ROI 或hard-negative；E在父模型选定后另行安排。
 
-一次只做**一步**，每步由研究者运行：
+## 12. External Stress Test
 
-```bash
-# 1) split 泄漏检查（秒级；任何 FAIL 都必须先修复）
-python scripts/data/check_split_integrity.py \
-  --anatomy-prior-dir outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/validation \
-  --roi-set workdir/anatomy_rois/Dataset605_PICAI_fold0.json
-
-# 2) summary 模式核对主终点（秒级）
-python scripts/evaluate_segmentation.py \
-  --model A1=<fold_0 目录> --model A2=<fold_0 目录> --mode summary \
-  --output outputs/reports/segmentation_metrics_A1_A2_summary.json
-
-# 3) full 模式补充病灶实例、体积分层与解剖区域分解（长任务）
-python scripts/evaluate_segmentation.py \
-  --model A1=<fold_0 目录> --model A2=<fold_0 目录> --mode full \
-  --nsd-tolerance-mm <研究者预先确定的值> \
-  --output outputs/reports/segmentation_metrics_A1_A2_full.json
-```
-
-`<fold_0 目录>` 形如
-`outputs/nnUNet_results/Dataset605_PICAI/<Trainer类名>__nnUNetPlans__3d_fullres/fold_0`；
-**命令与参数规范的唯一来源是 README 的「评估」小节**，本文件不维护第二份完整命令清单。
-
----
-
-## 11. 每个实验必须留存的 run 配置
-
-`--run-config <path>` 由训练入口写出（已存在则拒绝覆盖），字段包含：
-
-```text
-dataset / configuration / fold / variant / trainer / seed / seed_note
-network / input_channels / num_input_channels / loss / sampling
-epochs / batch_size / patch_size / spacing
-anatomy_prior_source / roi_setting / lesionness_setting / hard_negative_setting
-```
-
-该文件与 `docs/Training_Log.md` 的条目、`docs/experiments/<variant>.md` 单实验文档三者共同构成
-一次实验的完整记录。
-
----
-
-## 12. 外部测试（Prostate158）
-
-- 定位：**external distribution-shift stress test**；
-- 必须用**冻结的 anatomy model**在外部数据上生成 anatomy prior；
-- **禁止**人工修改外部 prior、使用 GT zone、或在看到 test 结果后重新调参数；
-- 使用 `scripts/evaluate_external_segmentation.py`，指标口径与主实验一致。
+Prostate158 在 architecture 与选型冻结后才使用，不因外部结果重新调整模型。
+prior 必须由冻结 pipeline 生成；不得使用 GT anatomy 或人工修正 prior。
+第三序列不等同 HBV 时明确 distribution-shift stress test。
