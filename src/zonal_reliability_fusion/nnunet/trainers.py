@@ -1,23 +1,28 @@
 """项目对 nnU-Net v2.6.2 的全部 Trainer 扩展（单文件）。
 
-十个 variant 共享同一套 nnU-Net 训练机制（optimizer=SGD+Nesterov、PolyLR、1000 epochs、
+十五个 variant 共享同一套 nnU-Net 训练机制（optimizer=SGD+Nesterov、PolyLR、
 增强主体、checkpoint/resume、validation、sliding-window inference），差异都通过覆盖
 nnU-Net 的钩子实现，绝不重实现训练循环：
 
 1. 损失：Focal+CE 分支使用 PI-CAI 官方风格 ``0.5*Focal(gamma=2) + 0.5*CE``；
-   ``optimized_baseline`` 则**不覆盖任何损失钩子**，直接用 nnU-Net 原生 Dice+CE；
+   ``optimized_baseline`` 与 ``dicece_positive_sampling`` 则**不覆盖任何损失钩子**，
+   直接用 nnU-Net 原生 Dice+CE；
 2. 网络：baseline / optimized_baseline / positive_sampling 用原生 backbone；
    image_gate / anatomy_gate 及其 ``_positive_sampling`` 组合在原生 backbone 前加一个
    零初始化的 spatial modality gate；``feature_*_positive_sampling`` 三个条件在原生 backbone
    前加三个**参数不共享**的浅层序列 stem + 1×1×1 投影（可选 feature gate）——见 Research Plan
    §8.10 与 ``networks.FeatureFusionNNUNet``；
-3. 采样：``positive_sampling``、两个 gate 组合与三个 ``feature_*_positive_sampling`` 在 FLCE 之上
-   **只**把训练 loader 换成 ``PositiveCaseDataLoader``（每批固定一个阳性病灶 patch，验证 loader
-   保持原生）。
+3. 采样：``positive_sampling``、两个 gate 组合、三个 ``feature_*_positive_sampling`` 与
+   ``dicece_positive_sampling`` **只**把训练 loader 换成 ``PositiveCaseDataLoader``（每批固定一个
+   阳性病灶 patch，验证 loader 保持原生）。新增四个短预算融合条件也复用此采样；
+4. 短预算融合：旧十一个条件保持 1000 epochs；四个独立 ``*_100ep_NoFFT`` 条件使用
+   Dataset606 五通道、100 epochs 与同步的原生 PolyLR 周期，分别为普通融合、分区 gate、
+   同区参照残差修正和自适应参照强度。不覆盖旧目录，也不改变旧模型。
 
-十个 Trainer 类名不同，nnU-Net 据此生成互不覆盖的 output folder：
+十五个 Trainer 类名不同，nnU-Net 据此隔离 output folder。旧十一个为：
     nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres      (baseline，即已完成的 N0)
-    nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres    (optimized_baseline)
+    nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres    (optimized_baseline，已中止)
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT__...       (dicece_positive_sampling，独立强参考基线)
     nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres       (image_gate)
     nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres     (anatomy_gate)
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__...         (positive_sampling)
@@ -37,6 +42,11 @@ Focal+CE 分支（baseline / image_gate / anatomy_gate / positive_sampling）与
 （optimized_baseline）是两个**独立的研究分支**：前者是既有的 PI-CAI 风格基线，后者是针对
 「长期停留在背景预测」现象的单变量优化。两者除损失外一切训练机制相同，但**不能互相作为
 归因门控收益的对照**。
+
+``dicece_positive_sampling`` 是**独立于 A→B→C→D 主研究链的增强参考基线 / 损失消融**，不是新的
+主研究阶段：它只回答「在 PositiveSampling 已稳定病灶暴露之后，nnU-Net 原生 Dice+CE 是否优于
+PI-CAI Focal+CE（A）」。已中止的 ``optimized_baseline`` 使用原生采样且未完成训练，不能回答该
+问题；本类相对 A 唯一改变损失，相对 ``optimized_baseline`` 唯一改变训练采样。
 
 公平比较的边界（Research Plan §8.9 / §15.12）：核心门控比较必须固定损失、病例/patch 采样、
 增强、optimizer、LR scheduler、split 与随机种子策略。
@@ -73,11 +83,154 @@ from zonal_reliability_fusion.nnunet.networks import (
     FeatureFusionNNUNet,
     GatedNNUNet,
     SpatialModalityReliabilityGate,
+    ZonalReferenceFusionNNUNet,
 )
 from zonal_reliability_fusion.nnunet.sampling import PositiveCaseSamplingMixin
 from zonal_reliability_fusion.nnunet.transforms import (
     restrict_intensity_transforms_to_mri,
 )
+
+
+# One contract shared by preparation, training, prediction and independent evaluation.
+ANATOMY_DATASET = "Dataset607_PICAI_Anatomy"
+ANATOMY_LABELS = {"background": 0, "WG": [1, 3, 5, 7],
+                  "PZ": [2, 3, 6, 7], "TZ": [4, 5, 6, 7]}
+ANATOMY_CLASS_ORDER = [1, 2, 4]
+ANATOMY_KNOWN_MISSING = "11050_1001070"
+ANATOMY_COUNTS = (1499, 1276, 223)  # studies, not patients
+ANATOMY_GEOMETRY_ATOL = 1e-4  # unchanged from the anatomy audit; rtol is always zero
+
+
+def anatomy_read_array(path):
+    # SimpleITK's NIfTI reader can replace stored NaN with zero. Inspect scaled raw
+    # NIfTI values through nibabel before any integer conversion or membership test.
+    import nibabel as nib
+    array = np.asanyarray(nib.load(str(path)).dataobj)
+    if array.ndim != 3 or not np.isfinite(array).all():
+        raise ValueError(f"{path}: expected finite stored 3D NIfTI values")
+    return array.transpose(2, 1, 0)  # XYZ -> native SimpleITK ZYX array order
+
+
+def anatomy_validate_array(array, allowed, name):
+    array = np.asarray(array)
+    if array.ndim != 3 or not np.isfinite(array).all():
+        raise ValueError(f"{name}: expected finite 3D labels")
+    if not np.equal(array, np.rint(array)).all() or not np.isin(array, allowed).all():
+        raise ValueError(f"{name}: non-integer or illegal labels; expected {allowed}")
+    return array
+
+
+def anatomy_encode(wg, yuan):
+    wg = anatomy_validate_array(wg, [0, 1], "WG")
+    yuan = anatomy_validate_array(yuan, [0, 1, 2], "Yuan")
+    if wg.shape != yuan.shape:
+        raise ValueError("WG/Yuan shape mismatch")
+    return ((wg == 1).astype(np.uint8) + 2 * (yuan == 1).astype(np.uint8)
+            + 4 * (yuan == 2).astype(np.uint8))
+
+
+def anatomy_encode_heads(masks):
+    masks = np.asarray(masks)
+    if masks.ndim != 4 or masks.shape[0] != 3 or not np.isin(masks, [0, 1]).all():
+        raise ValueError("expected three binary WG/PZ/TZ masks")
+    return sum(masks[i].astype(np.uint8) * bit for i, bit in enumerate((1, 2, 4)))
+
+
+def anatomy_geometry(image):
+    if image.GetDimension() != 3:
+        raise ValueError("expected 3D geometry")
+    size, spacing = image.GetSize(), np.asarray(image.GetSpacing())
+    origin, direction = np.asarray(image.GetOrigin()), np.asarray(image.GetDirection()).reshape(3, 3)
+    if (any(n <= 0 for n in size) or not np.isfinite(spacing).all() or (spacing <= 0).any()
+            or not np.isfinite(origin).all() or not np.isfinite(direction).all()
+            or not np.allclose(direction @ direction.T, np.eye(3), rtol=0, atol=ANATOMY_GEOMETRY_ATOL)):
+        raise ValueError("invalid physical geometry")
+    return {"size": list(size), "spacing": spacing.tolist(), "origin": origin.tolist(),
+            "direction": direction.flatten().tolist()}
+
+
+def anatomy_same_grid(reference, other):
+    a, b = anatomy_geometry(reference), anatomy_geometry(other)
+    for key in a:
+        same = a[key] == b[key] if key == "size" else np.allclose(
+            a[key], b[key], rtol=0, atol=ANATOMY_GEOMETRY_ATOL)
+        if not same:
+            raise ValueError(f"physical grid mismatch: {key}")
+
+
+def validate_anatomy_dataset(dataset_json, dataset_name=ANATOMY_DATASET, configuration="3d_fullres"):
+    if dataset_name != ANATOMY_DATASET or configuration != "3d_fullres":
+        raise ValueError("anatomy requires Dataset607_PICAI_Anatomy / 3d_fullres")
+    if dataset_json.get("channel_names") != {"0000": "T2W"}:
+        raise ValueError("anatomy requires single T2W channel 0000")
+    if list(dataset_json.get("labels", {}).items()) != list(ANATOMY_LABELS.items()):
+        raise ValueError("anatomy regions or region order mismatch")
+    if dataset_json.get("regions_class_order") != ANATOMY_CLASS_ORDER:
+        raise ValueError("anatomy regions_class_order mismatch")
+    contract = dataset_json.get("anatomy_contract", {})
+    if (contract.get("encoding") != "WG+2*PZ+4*TZ" or contract.get("zonal_source") != "zonal_yuan"
+            or contract.get("wg_source") != "materialized_wg"
+            or contract.get("explicit_exclusions") != [ANATOMY_KNOWN_MISSING]):
+        raise ValueError("missing or invalid anatomy provenance contract")
+    ids = contract.get("case_ids", [])
+    if len(ids) != ANATOMY_COUNTS[0] or len(ids) != len(set(ids)) or dataset_json.get("numTraining") != len(ids):
+        raise ValueError("anatomy study scope mismatch")
+    if ANATOMY_KNOWN_MISSING in ids:
+        raise ValueError("known missing WG cannot enter complete supervision")
+    for cid in ids:
+        if not isinstance(cid, str) or len(cid.split("_")) != 2 or not all(p.isdigit() for p in cid.split("_")):
+            raise ValueError(f"invalid anatomy case ID: {cid}")
+    return contract
+
+
+def validate_anatomy_split(split_path, dataset_json, fold=0):
+    import json
+    from pathlib import Path
+    contract = validate_anatomy_dataset(dataset_json)
+    if str(fold) != "0":
+        raise ValueError("anatomy frozen single split requires fold 0; no random fallback")
+    path = Path(split_path)
+    if not path.is_file():
+        raise ValueError(f"explicit anatomy split missing: {path}; no random fallback")
+    splits = json.loads(path.read_text())
+    if not isinstance(splits, list) or len(splits) != 1:
+        raise ValueError("expected one explicit frozen anatomy split")
+    split = splits[0]
+    tr, va = split.get("train", []), split.get("val", [])
+    if (len(tr) != ANATOMY_COUNTS[1] or len(va) != ANATOMY_COUNTS[2]
+            or len(tr) != len(set(tr)) or len(va) != len(set(va))
+            or set(tr) & set(va) or set(tr) | set(va) != set(contract["case_ids"])):
+        raise ValueError("anatomy split case scope/duplicates mismatch")
+    if set(tr) != set(contract.get("train_cases", [])) or set(va) != set(contract.get("val_cases", [])):
+        raise ValueError("anatomy split differs from frozen provenance")
+    if {c.split("_")[0] for c in tr} & {c.split("_")[0] for c in va}:
+        raise ValueError("anatomy train/validation patient overlap")
+    return tr, va
+
+
+def anatomy_validate_probabilities(probabilities, properties, reference):
+    """Native restored (C,Z,Y,X) arrays plus trusted native pkl physical metadata."""
+    probabilities = np.asarray(probabilities)
+    geometry = anatomy_geometry(reference)
+    shape = tuple(reversed(geometry["size"]))
+    if probabilities.shape != (3, *shape):
+        raise ValueError(f"anatomy probability channels/shape mismatch: {probabilities.shape} vs {(3, *shape)}")
+    if not np.isfinite(probabilities).all() or (probabilities < 0).any() or (probabilities > 1).any():
+        raise ValueError("anatomy probabilities must be finite within [0,1]")
+    stuff = properties.get("sitk_stuff", {})
+    for key in ("spacing", "origin", "direction"):
+        value = np.asarray(stuff.get(key, []))
+        if value.shape != np.asarray(geometry[key]).shape or not np.allclose(
+                value, geometry[key], rtol=0, atol=ANATOMY_GEOMETRY_ATOL):
+            raise ValueError(f"anatomy probability physical metadata mismatch: {key}")
+    if not np.allclose(properties.get("spacing", []), list(reversed(geometry["spacing"])), rtol=0, atol=ANATOMY_GEOMETRY_ATOL):
+        raise ValueError("anatomy probability array spacing mismatch")
+    # shape_before_cropping is stored in preprocessing-transposed coordinates.
+    before = properties.get("shape_before_cropping", [])
+    forward = properties.get("anatomy_transpose_forward")
+    if forward is None or sorted(forward) != [0, 1, 2] or tuple(before) != tuple(shape[i] for i in forward):
+        raise ValueError("anatomy probability original shape metadata mismatch")
+    return probabilities
 
 
 class PiCAIFocalCrossEntropyLoss(nn.Module):
@@ -200,6 +353,41 @@ class NoFFTAugmentationMixin:
         return transforms
 
 
+class nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT(NoFFTAugmentationMixin, nnUNetTrainer):
+    """Shared native network, three region heads; 100 epochs is an engineering trial."""
+
+    def __init__(self, plans, configuration, fold, dataset_json, device=torch.device("cuda")):
+        from pathlib import Path
+        from nnunetv2.paths import nnUNet_preprocessed
+        validate_anatomy_dataset(dataset_json, plans.get("dataset_name"), configuration)
+        if not nnUNet_preprocessed:
+            raise ValueError("nnUNet_preprocessed is required")
+        validate_anatomy_split(Path(nnUNet_preprocessed) / ANATOMY_DATASET / "splits_final.json", dataset_json, fold)
+        super().__init__(plans, configuration, fold, dataset_json, device)
+        self.num_epochs = 100  # before initialize/configure_optimizers constructs PolyLR
+
+    def initialize(self):
+        from pathlib import Path
+        validate_anatomy_dataset(self.dataset_json, self.plans_manager.dataset_name, self.configuration_name)
+        validate_anatomy_split(Path(self.preprocessed_dataset_folder_base) / "splits_final.json", self.dataset_json, self.fold)
+        if self.label_manager.num_segmentation_heads != 3 or not self.label_manager.has_regions:
+            raise ValueError("anatomy requires three native region heads")
+        if self.configuration_manager.previous_stage_name is not None:
+            raise ValueError("anatomy cannot use cascade inputs")
+        super().initialize()
+        if self.num_input_channels != 1:
+            raise ValueError("anatomy requires one input channel")
+
+    def do_split(self):
+        from pathlib import Path
+        tr, va = validate_anatomy_split(Path(self.preprocessed_dataset_folder_base) / "splits_final.json", self.dataset_json, self.fold)
+        if self.dataset_class is not None:
+            ids = self.dataset_class.get_identifiers(self.preprocessed_dataset_folder)
+            if set(ids) != set(tr) | set(va):
+                raise ValueError("preprocessed anatomy case set differs from explicit split")
+        return tr, va
+
+
 class nnUNetTrainerPICAI_FLCE_NoFFT(
     NoFFTAugmentationMixin, PICAIFocalCrossEntropyLossMixin, nnUNetTrainer
 ):
@@ -234,6 +422,65 @@ class nnUNetTrainerPICAI_DiceCE_NoFFT(NoFFTAugmentationMixin, nnUNetTrainer):
       不含任何 gate）；
     - 只保留 ``NoFFTAugmentationMixin`` 的 blur benchmark 关闭，blur 概率与 sigma 不变。
     """
+
+
+class nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT(
+    PositiveCaseSamplingMixin,
+    nnUNetTrainerPICAI_DiceCE_NoFFT,
+):
+    """``dicece_positive_sampling``：原生 nnU-Net Dice+CE + 阳性病例采样（独立强参考基线）。
+
+    定位：**独立于 A→B→C→D 主研究链的增强参考基线 / 损失消融**，不是新的主研究阶段。
+    它回答的问题是「在 PositiveSampling 已稳定病灶暴露之后，nnU-Net 原生 Dice+CE 是否优于
+    PI-CAI Focal+CE（A = ``positive_sampling``）」。已中止的 ``optimized_baseline`` 使用
+    原生采样且未完成训练，不能回答该问题。
+
+    单变量边界（两个方向都只有一个变量）：
+
+    - 相对 A（``nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT``）：**只**把损失从
+      ``0.5*Focal(gamma=2) + 0.5*CE`` 换成 nnU-Net v2.6.2 原生 Dice+CE；
+    - 相对 ``nnUNetTrainerPICAI_DiceCE_NoFFT``：**只**把训练集病例/patch 采样换成
+      ``PositiveCaseDataLoader``（每批固定一个阳性病灶 patch）。
+
+    MRO 与钩子来源（``PositiveCaseSamplingMixin`` 在最前）：
+
+    - ``_build_loss``：本类与 ``nnUNetTrainerPICAI_DiceCE_NoFFT`` 都不覆盖，解析到
+      ``nnUNetTrainer._build_loss`` 的**原生实现**（``DC_and_CE_loss(batch_dice=
+      plans.batch_dice, smooth=1e-5, do_bg=False, weight_ce=weight_dice=1,
+      MemoryEfficientSoftDiceLoss)``，deep supervision 由原生 ``DeepSupervisionWrapper``
+      按 1/2^i 加权）；``PICAIFocalCrossEntropyLossMixin`` **不在** MRO 中，项目没有自写
+      Dice+CE，也不含 focal gamma / alpha / 类别权重；
+    - ``get_dataloaders``：``PositiveCaseSamplingMixin``（训练 loader =
+      ``PositiveCaseDataLoader``，``positive_cases_per_batch=1``；验证 loader 保持原生
+      ``nnUNetDataLoader`` 与原生采样，无验证泄漏）；
+    - ``get_training_transforms``：``NoFFTAugmentationMixin``（复用同一 NoFFT 修复）；
+    - ``build_network_architecture``：不覆盖，解析到 ``nnUNetTrainer`` 的**原生实现**，由
+      plans 构建原生 ``PlainConvUNet``（3 个 MRI 通道；不含 gate / PZ/TZ / 浅层 feature path）；
+    - optimizer（SGD+Nesterov）、PolyLR、1000 epochs、deep supervision 权重、patch size、
+      batch size、checkpoint/resume、validation、滑窗推理全部继承原生实现。
+
+    ``initialize`` 只在原生初始化之后追加一行可审计日志（实际构建出的 loss / 网络 / 通道数），
+    不改变任何训练行为。输出目录由类名自然形成为独立新目录，不从任何既有 checkpoint 续训、
+    不复用任何既有产物。
+    """
+
+    def initialize(self):
+        """原生 ``initialize()`` + 一行可审计的启动配置日志（不复制、不修改训练循环）。"""
+        super().initialize()
+        base_loss = (
+            self.loss.loss
+            if isinstance(self.loss, DeepSupervisionWrapper)
+            else self.loss
+        )
+        self.print_to_log_file(
+            "DiceCE + PositiveSampling audit:\n"
+            f"trainer={type(self).__name__}\n"
+            f"loss={type(self.loss).__name__} "
+            f"(base={type(base_loss).__module__}.{type(base_loss).__name__})\n"
+            f"network={type(self.network).__name__}\n"
+            f"input_channels={self.num_input_channels}\n"
+            f"output_channels={self.label_manager.num_segmentation_heads}"
+        )
 
 
 class _GatedTrainerBase(nnUNetTrainerPICAI_FLCE_NoFFT):
@@ -662,12 +909,105 @@ class nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT(
         return nnUNetTrainerPICAI_AnatomyGate.get_training_transforms(*args, **kwargs)
 
 
+class _ShortZonalFusionTrainer(_FeatureFusionTrainerBase):
+    """独立 100-epoch 探索分支；四个条件均读 Dataset606 的五通道。
+
+    只调整预算和融合方式。保持 FLCE、阳性采样、原生训练/验证/推理机制；100 epochs 在
+    initialize/configure_optimizers 之前设置，使 PolyLR 总周期同步为 100。旧 Trainer 不变。
+    """
+
+    fusion_mode = "plain"
+    expected_input_channels = ANATOMY_INPUT_CHANNELS
+    num_prior_channels = PRIOR_CHANNELS_ANATOMY
+
+    # 注意：不要覆写 __init__。nnUNetTrainer.__init__ 用
+    #   for k in inspect.signature(self.__init__).parameters.keys(): self.my_init_kwargs[k] = locals()[k]
+    # 从**子类**签名反射参数名，却从**父类**作用域的 locals() 取值；任何 *args/**kwargs 形式的
+    # 子类 __init__ 都会让反射拿到 'args'/'kwargs' 这两个父类没有的名字，直接 KeyError: 'args'
+    # （曾导致四个 *_100ep 变体在构造阶段 5 秒内全部失败）。预算与 spacing 校验因此放在 initialize()。
+
+    def initialize(self):
+        # initialize() 在 nnUNetTrainer.__init__ 末尾即被调用，早于 perform_actual_training 中的
+        # configure_optimizers()（那里才用 self.num_epochs 构造 PolyLRScheduler），因此此处赋值
+        # 既能同步 100 epoch 的训练循环上界，也能同步 PolyLR 总周期；resume 时同样经由
+        # load_checkpoint -> initialize() 恢复，不依赖 __init__ 的 my_init_kwargs。
+        spacing = tuple(float(s) for s in self.configuration_manager.spacing)
+        if len(spacing) != 3 or any(abs(a - b) > 1e-6 for a, b in zip(spacing, (3.0, .5, .5))):
+            raise ValueError("100ep 同区参照分支限定当前 3d_fullres spacing [3.0,0.5,0.5]")
+        self.num_epochs = 100
+        super().initialize()
+        self.print_to_log_file(
+            "Short zonal fusion:", f"mode={self.fusion_mode}",
+            f"epochs={self.num_epochs}", f"iterations_per_epoch={self.num_iterations_per_epoch}",
+            "input_channels=5 (T2W/ADC/HBV/PZ/TZ)",
+            "priors=algorithmic_zonal_membership_weights_from_interpolated_binary_masks; "
+            "not_calibrated_probability_or_measured_geometric_voxel_fraction; "
+            "pooled_mean_and_support=algorithm_weighted_statistics; "
+            "reference_includes_center_and_may_include_lesions_not_normal_tissue_truth",
+        )
+
+    @classmethod
+    def build_network_architecture(
+        cls, architecture_class_name, arch_init_kwargs, arch_init_kwargs_req_import,
+        num_input_channels, num_output_channels, enable_deep_supervision=True,
+    ):
+        if num_input_channels != ANATOMY_INPUT_CHANNELS:
+            raise ValueError("100ep 分支全部要求五通道 Dataset606；禁止把缺失分区当成零输入")
+        if cls.fusion_mode in ("plain", "zone_gate"):
+            return cls._build_feature_network(
+                architecture_class_name, arch_init_kwargs, arch_init_kwargs_req_import,
+                num_input_channels, num_output_channels, enable_deep_supervision,
+                expected_input_channels=ANATOMY_INPUT_CHANNELS,
+                num_prior_channels=PRIOR_CHANNELS_ANATOMY,
+                use_gate=cls.fusion_mode == "zone_gate",
+            )
+        if cls.fusion_mode not in ("reference_fixed", "reference_adaptive"):
+            raise ValueError(f"未知融合模式 {cls.fusion_mode}")
+        backbone = get_network_from_plans(
+            architecture_class_name, arch_init_kwargs, arch_init_kwargs_req_import,
+            MRI_CHANNELS, num_output_channels, allow_init=True,
+            deep_supervision=enable_deep_supervision,
+        )
+        return ZonalReferenceFusionNNUNet(
+            backbone, adaptive=cls.fusion_mode == "reference_adaptive",
+            stem_channels=FEATURE_STEM_CHANNELS,
+        )
+
+    @staticmethod
+    def get_training_transforms(*args, **kwargs):
+        return nnUNetTrainerPICAI_AnatomyGate.get_training_transforms(*args, **kwargs)
+
+
+class nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT(_ShortZonalFusionTrainer):
+    """相同五通道数据的 MRI-only 普通特征融合对照；PZ/TZ 不参与预测。"""
+    fusion_mode = "plain"
+
+
+class nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT(_ShortZonalFusionTrainer):
+    """普通分区条件 feature gate，100-epoch 匹配参照。"""
+    fusion_mode = "zone_gate"
+
+
+class nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT(_ShortZonalFusionTrainer):
+    """同区参照修正：有效参照区域使用固定强度，局部无支持时回退。"""
+    fusion_mode = "reference_fixed"
+
+
+class nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT(_ShortZonalFusionTrainer):
+    """同区参照修正 + 学习式强度；强度不是校准质量/置信度。"""
+    fusion_mode = "reference_adaptive"
+
+
 #: 项目 Trainer 名 -> 类。训练入口与预测入口都用它做**进程内直接映射**，
 #: 避免依赖 nnU-Net 的 ``recursive_find_python_class``（该函数只在 nnunetv2 包目录内递归扫描，
 #: 找不到项目自定义类，且可能扫到环境中其他 nnunetv2 分支）。
 PROJECT_TRAINERS: dict[str, type[nnUNetTrainer]] = {
+    nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT.__name__: nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT.__name__: nnUNetTrainerPICAI_FLCE_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT.__name__: nnUNetTrainerPICAI_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT.__name__: (
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+    ),
     nnUNetTrainerPICAI_ImageGate.__name__: nnUNetTrainerPICAI_ImageGate,
     nnUNetTrainerPICAI_AnatomyGate.__name__: nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT.__name__: (
@@ -687,6 +1027,18 @@ PROJECT_TRAINERS: dict[str, type[nnUNetTrainer]] = {
     ),
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT.__name__: (
         nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT
+    ),
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT.__name__: (
+        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT
+    ),
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT.__name__: (
+        nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT
+    ),
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT.__name__: (
+        nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT
+    ),
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT.__name__: (
+        nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT
     ),
 }
 

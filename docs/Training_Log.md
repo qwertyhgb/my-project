@@ -5,6 +5,51 @@
 
 ---
 
+## 2026-10-08 — 串行队列运行事实、用户停止与 100ep 构造失败
+
+队列命令（用户于 2026-10-06 14:10 起在后台串行执行，逐项 `tee` 到 `outputs/logs/<variant>.log`）：
+
+| variant | 数据集 | 起止 | 结果 |
+|---|---|---|---|
+| feature_no_gate_positive_sampling_100ep | 606 | 14:11:00 → 14:11:05 | exit 1，构造阶段 `KeyError: 'args'`，零 epoch、无产物 |
+| feature_anatomy_gate_positive_sampling_100ep | 606 | 14:11:05 → 14:11:12 | 同上 |
+| zonal_reference_positive_sampling_100ep | 606 | 14:11:12 → 14:11:18 | 同上 |
+| zonal_reference_adaptive_positive_sampling_100ep | 606 | 14:11:18 → 14:11:23 | 同上 |
+| feature_anatomy_gate_positive_sampling | 606 | 2026-10-06 14:11:23 → 2026-10-07 07:57:23 | exit 0，1000 epoch 完成并 validation |
+| anatomy_gate | 606 | 2026-10-07 07:57:23 → 2026-10-07 23:06:40 | exit 0，1000 epoch 完成并 validation |
+| feature_image_gate_positive_sampling | 605 | 2026-10-07 23:06:40 → 2026-10-08 00:44 | **用户要求停止**，中断于 epoch 81 完成、epoch 82 起始 |
+
+- **feature_anatomy_gate_positive_sampling（Dataset606）**：训练 1000 epoch 完成，
+  `checkpoint_final.pth` 已生成；Mean Validation Dice = **0.20868**（223 例）。产物目录
+  `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`。
+- **anatomy_gate（Dataset606）**：训练 1000 epoch 完成（15 h 09 min），`checkpoint_final.pth` 已生成；
+  Mean Validation Dice = **0.18267**（223 例）。产物目录
+  `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/`。
+- **feature_image_gate_positive_sampling（Dataset605）**：用户要求停止全部训练后，以 SIGTERM 终止队列
+  进程组（PID 314998）及其全部子进程；训练停在 epoch 81 完成处（best EMA pseudo Dice 0.3142，
+  epoch 81 pseudo dice 0.5587），`checkpoint_best.pth`（00:44）与 `checkpoint_latest.pth`（00:01）
+  均在，未生成 `checkpoint_final.pth`、无 validation。**可用原生 continue-training 续训，
+  既有产物未删除或覆盖。**
+- **四个 `*_100ep` 变体**：均在 Trainer 构造阶段失败，`outputs/nnUNet_results/Dataset606_PICAI_Zonal/`
+  下无对应输出目录，无 checkpoint。根因与修复见 `docs/Development_Log.md` 同日条目；修复仅经静态与
+  反射验证，**修复后尚未重跑，100 epoch 能否跑完未验证**。
+- 本节仅为运行事实登记；本次未启动训练、validation、推理或数据处理，仅执行进程终止与产物核对。
+
+---
+
+## 2026-10-06 — 现有产物核对与新分支状态
+
+- 原 `feature_no_gate_positive_sampling` / Dataset605 / fold 0 已有 2026-09-28 启动日志、
+  `checkpoint_best.pth` 与 `checkpoint_latest.pth`。现有日志最后完整 epoch 为 335，
+  后续记录 epoch 336 起始；无 `checkpoint_final.pth` 或 `validation/summary.json`。
+  这是既有运行的产物核对，不是本次新启动训练；停止原因未据日志确认。
+- 新增四个 `_100ep` 融合条件均为代码就绪、未运行：
+  `feature_no_gate_positive_sampling_100ep`、`feature_anatomy_gate_positive_sampling_100ep`、
+  `zonal_reference_positive_sampling_100ep`、`zonal_reference_adaptive_positive_sampling_100ep`。
+  本次未启动训练、真实验证、推理或批量影像评估，无新 checkpoint 或结果可引用。
+
+---
+
 ## N0 — baseline（已完成）
 
 - variant / Trainer：`baseline` → `nnUNetTrainerPICAI_FLCE_NoFFT`
@@ -77,13 +122,13 @@
 | baseline | Dataset605 / 3d_fullres / 0 | 已完成（见上） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | optimized_baseline | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中止（见下）** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | image_gate | Dataset605 / 3d_fullres / 0 | 已完成 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_gate | Dataset606 / 3d_fullres / 0 | 数据已就绪，训练未运行 | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
+| anatomy_gate | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
 | positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **未运行** | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已启动，缺最终 validation**（2026-10-06 产物核对见首节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中断于 epoch 81**（见 2026-10-08 节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 
 ### image_gate（已完成）
 
@@ -233,7 +278,8 @@
 - 网络：三个参数不共享、不下采样的浅层 3×3×3 stem（`C_s = 8`）+ 1×1×1 投影回 3 通道 +
   由 plans 构建的原生 `PlainConvUNet`；后两者带零初始化的 feature gate（anatomy 的 gate 额外读
   clamp(0,1) 后的 PZ/TZ，PZ/TZ 不进入 stem/投影/backbone）
-- 状态：**三者均未运行**，无任何训练或 validation 产物，输出目录尚未创建
+- 状态（2026-10-06 核对）：普通融合已启动，日志最后完整 epoch 335，缺最终 checkpoint / validation；
+  其余两个门控条件未运行。中间训练动态不能代替完整滑窗验证结果。
 - 结构、参数量与比较边界的登记位置见 `README.md`「浅层特征融合」小节
 
 ### Dataset606 / anatomy_gate 数据状态

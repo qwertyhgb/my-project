@@ -417,3 +417,135 @@ class FeatureFusionNNUNet(nn.Module):
     def compute_conv_feature_map_size(self, input_size):
         """代理到 backbone，供 nnU-Net 显存估算等使用（不改变其语义）。"""
         return self.backbone.compute_conv_feature_map_size(input_size)
+
+
+class ZonalReferenceResidualFusion(nn.Module):
+    """同区局部参照产生特征修正；不使用病灶标签、不估计校准可靠性。
+
+    Dataset606 的 PZ/TZ 来自自动分区二值掩膜，经既有插值处理形成分区隶属权重；
+    不是校准概率，也不是实测几何体素占比。区域权重和大于 1 时归一化，保留背景权重余量。
+    池化后的权重均值与支持量是算法加权统计，不是实测区域体积。
+    统计在 float32 下、面内降采样 4 倍后计算：在当前 spacing [3,.5,.5] 上，
+    3×5×5 邻域的采样足迹约为 9×10×10 mm。局部参照包含中心、可能含病灶，非正常组织真值。
+    固定/自适应两条件共享相同修正模块，后者额外学习一个标量修正强度。
+    """
+
+    pool_factor = (1, 4, 4)
+    reference_kernel = (3, 5, 5)
+    minimum_support = 4.0  # coarse 网格上的算法权重和单位，非实测体积或病例/病灶计数
+    variance_epsilon = 1e-4
+    residual_clip = 5.0
+
+    def __init__(self, feature_channels: int, *, adaptive: bool, hidden_channels: int = 8):
+        super().__init__()
+        self.feature_channels = int(feature_channels)
+        if self.feature_channels <= 0 or hidden_channels <= 0:
+            raise ValueError("feature_channels / hidden_channels 必须为正")
+        self.adaptive = bool(adaptive)
+        # H + PZ/TZ 两组参照残差 + 两个分区权重均值 + 两个局部平均支持权重。
+        context_channels = 3 * self.feature_channels + 4
+        self.correction = nn.Sequential(
+            nn.Conv3d(context_channels, hidden_channels, 1),
+            nn.LeakyReLU(inplace=False),
+            nn.Conv3d(hidden_channels, self.feature_channels, 1),
+        )
+        nn.init.zeros_(self.correction[-1].weight)
+        nn.init.zeros_(self.correction[-1].bias)
+        self.strength = nn.Conv3d(context_channels, 1, 1) if self.adaptive else None
+        if self.strength is not None:
+            nn.init.zeros_(self.strength.weight)
+            nn.init.zeros_(self.strength.bias)
+
+    def reference_context(self, features: Tensor, prior: Tensor):
+        """返回 coarse context 和有效参照掩膜；空局部分区合法，缺通道/非有限值报错。"""
+        if features.ndim != 5 or features.shape[1] != self.feature_channels:
+            raise ValueError("features 必须为 [B,feature_channels,D,H,W]")
+        if prior.ndim != 5 or prior.shape[:2] != (features.shape[0], 2):
+            raise ValueError("PZ/TZ 必须恰好为两个通道")
+        if prior.shape[2:] != features.shape[2:]:
+            raise ValueError("特征与 PZ/TZ 空间尺寸必须一致")
+        if not bool(torch.isfinite(prior).all()):
+            raise ValueError("PZ/TZ 包含非有限值")
+        if any(n < f for n, f in zip(features.shape[2:], self.pool_factor)):
+            raise ValueError("输入空间尺寸小于参照池化因子")
+        # 禁用 AMP，避免二阶矩在 fp16 下溢出。学习式卷积仍在调用者的 AMP 上下文内。
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            fp_features = features.float()
+            squared_features = fp_features.square()
+            z = prior.float().clamp(0.0, 1.0)
+            z = z / z.sum(dim=1, keepdim=True).clamp_min(1.0)
+            h = torch.nn.functional.avg_pool3d(
+                fp_features, self.pool_factor, stride=self.pool_factor, ceil_mode=True
+            )
+            # 同时汇聚 z*H 与 z，防止 coarse voxel 内不同区域先被混合后再加权。
+            occupancy = torch.nn.functional.avg_pool3d(
+                z, self.pool_factor, stride=self.pool_factor, ceil_mode=True
+            )
+            def neighborhood(t):
+                # 显式零 padding 兼容小合成张量；零隶属权重不会增加算法加权支持量。
+                padding = tuple(k // 2 for k in self.reference_kernel)
+                t = torch.nn.functional.pad(t, (padding[2], padding[2], padding[1], padding[1], padding[0], padding[0]))
+                return torch.nn.functional.avg_pool3d(
+                    t, self.reference_kernel, stride=1,
+                    count_include_pad=True,
+                )
+            mass = neighborhood(occupancy)
+            kernel_volume = float(self.reference_kernel[0] * self.reference_kernel[1] * self.reference_kernel[2])
+            valid = mass * kernel_volume >= self.minimum_support
+            residuals = []
+            for zone in range(2):
+                zone_weight = z[:, zone:zone + 1]
+                first = torch.nn.functional.avg_pool3d(
+                    fp_features * zone_weight, self.pool_factor,
+                    stride=self.pool_factor, ceil_mode=True,
+                )
+                second = torch.nn.functional.avg_pool3d(
+                    squared_features * zone_weight, self.pool_factor,
+                    stride=self.pool_factor, ceil_mode=True,
+                )
+                denom = mass[:, zone:zone + 1].clamp_min(1e-6)
+                mean = neighborhood(first) / denom
+                variance = (neighborhood(second) / denom - mean.square()).clamp_min(0.0)
+                center = first / occupancy[:, zone:zone + 1].clamp_min(1e-6)
+                contrast = ((center - mean) / torch.sqrt(variance + self.variance_epsilon))
+                contrast = contrast.clamp(-self.residual_clip, self.residual_clip)
+                # 当前位置所属区域与局部参照都有效时才注入该区域对比。
+                contrast = contrast * occupancy[:, zone:zone + 1] * valid[:, zone:zone + 1]
+                residuals.append(contrast)
+            active = (occupancy * valid).sum(dim=1, keepdim=True).clamp(0.0, 1.0)
+            context = torch.cat([h, *residuals, occupancy, mass], dim=1)
+        return context.to(dtype=features.dtype), active.to(dtype=features.dtype)
+
+    def forward(self, features: Tensor, prior: Tensor) -> Tensor:
+        context, active = self.reference_context(features, prior)
+        strength = active
+        if self.strength is not None:
+            strength = strength * torch.sigmoid(self.strength(context))
+        delta = self.correction(context) * strength
+        delta = torch.nn.functional.interpolate(
+            delta, size=features.shape[2:], mode="trilinear", align_corners=False
+        )
+        # 上采样会跨 coarse 分区边界；原分辨率分区隶属权重限制修正扩散。
+        occupancy = prior.float().clamp(0.0, 1.0).sum(dim=1, keepdim=True).clamp(max=1.0)
+        return features + delta * occupancy.to(dtype=features.dtype)
+
+
+class ZonalReferenceFusionNNUNet(FeatureFusionNNUNet):
+    """复用旧 stem/投影/backbone；只替换融合，不修改任何旧模型的 forward。"""
+
+    def __init__(self, backbone: nn.Module, *, adaptive: bool, stem_channels=FEATURE_STEM_CHANNELS):
+        super().__init__(backbone, stem_channels=stem_channels, use_gate=False, num_prior_channels=2)
+        self.reference_fusion = ZonalReferenceResidualFusion(3 * stem_channels, adaptive=adaptive)
+
+    def _split_input(self, x: Tensor):
+        if x.ndim != 5 or x.shape[1] != 5:
+            raise ValueError("同区参照网络严格要求 [B,5,D,H,W]：T2W/ADC/HBV/PZ/TZ")
+        # clamp 之前检查；不能把 inf 静默转换为合法分区隶属权重。
+        if not bool(torch.isfinite(x[:, 3:]).all()):
+            raise ValueError("PZ/TZ 包含非有限值")
+        return super()._split_input(x)
+
+    def forward(self, x: Tensor):
+        features, prior = self._stem_features(x)
+        fused = self.reference_fusion(torch.cat(features, dim=1), prior)
+        return self.backbone(self.projection(fused))
