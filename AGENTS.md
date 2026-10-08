@@ -65,23 +65,55 @@
   不可归因的修改（如同时改采样、损失、patch size 与优化器）。
 - 仍禁止复制 nnU-Net 的完整训练器、U-Net encoder/decoder、验证器和推理器。
 - 所有训练从 `scripts/train/train_nnunet.py` 进入。
+- **当前研究主线**（2026-10-08 起，唯一主线）：Anatomy-Guided Lesion-Aware Coarse-to-Fine。
+  受控扩展的活跃集合只包含：Stage-1 解剖先验生成器、Anatomy-Guided ROI（物理 margin，禁 hard
+  mask，不重采样）、coarse lesionness 头 + soft 残差 refinement、soft PZ/TZ 解剖上下文、
+  解剖约束困难负样本挖掘。它们分别只改一件事，见 `docs/Method.md` §7 的单变量边界表。
+  旧的输入级 / 特征级 gate 与同区参照融合**不再扩张**，代码只读归档在
+  `src/zonal_reliability_fusion/legacy/`。
+- anatomy 相关操作的硬约束：anatomy model 不读 lesion GT；validation / test 的解剖先验必须来自
+  该病例自身 MRI 的预测；**禁止**把 GT WG/PZ/TZ 作为 lesion model 的推理输入（GT 仅允许用于
+  显式标记 `ORACLE_GT` 的上界分析）。split 泄漏由 `scripts/data/check_split_integrity.py`
+  自动检查，遇泄漏 fail closed。
 
 ## 6. 文档纪律
 
-- **治理文档五份**：`README.md`、`docs/Research_Plan.md`、`docs/Development_Log.md`、
-  `docs/Training_Log.md`、`docs/Findings.md`。
-  - `docs/Findings.md` 只记录**跨实验**的观察、问题优先级与下一步判据，是所有实验记录的横向汇总；
-    单实验详情仍分别写入 `docs/experiments/` 下各自的文件。
+- **治理文档七份**（2026-10-08 起）：`README.md`、`docs/Research_Plan.md`、`docs/Method.md`、
+  `docs/Experiment_Plan.md`、`docs/Evaluation_Protocol.md`、`docs/Training_Log.md`、
+  `docs/Findings.md`（横向汇总）、`docs/Development_Log.md`。各文件**单一职责**，禁止互相抄写：
+
+  | 文档 | 只记录什么 | 不记录什么 |
+  |---|---|---|
+  | `README.md` | 当前项目状态与快速入口（唯一主线、pipeline、状态表、命令、目录结构） | 旧研究线介绍（最多一段 + 链接 archive） |
+  | `docs/Research_Plan.md` | 研究问题、科学假设、方法机制、研究边界、预期贡献、限制、预先定义的报告指标分级 | 具体实验流程 / 数据划分 / 训练参数 / 运行命令 / 已发生的结果 |
+  | `docs/Method.md` | 方法机制与实现边界（含每个模块的 fail-closed 清单） | 结果、指标定义、实验矩阵 |
+  | `docs/Experiment_Plan.md` | 实验矩阵、预算、命令模板、stop rules 的运行判据 | 科学假设的论证、指标定义、已发生的结果 |
+  | `docs/Evaluation_Protocol.md` | 指标定义、空值语义、匹配协议、统计口径、冻结常量（**唯一来源**） | 实验结果、方法论证 |
+  | `docs/Training_Log.md` | 只记录**真实发生**的训练/验证（命令、时间、状态、结果、产物路径） | 协议叙述、跨 run 结论 |
+  | `docs/Findings.md` | 只记录**已有证据支持**的结论 + 证据边界（Preliminary Findings / Mainline Findings 分开） | 单实验详情、尚未验证的推断 |
+  | `docs/Development_Log.md` | 实质性代码/架构变更 | 训练事实 |
+
 - **实验详情文档**位于 `docs/experiments/`，**每个实验一份**，文件名即 variant 名
-  （如 `baseline.md`、`image_gate.md`）。每份只记录该实验自身：标识、一次性配置、运行事实、
-  训练动态、验证结果、产物、观察与限制、待办、后续记录模板。
+  （如 `positive_sampling.md`、`lesion_roi.md`）。每份只记录该实验自身：标识、一次性配置、
+  运行事实、训练动态、验证结果、产物、观察与限制、待办、后续记录模板。
   - 各实验文档**互相独立**：不写跨实验对比、不互相引用；要对比由读者自行并列阅读。
   - 分工：治理文档记录跨实验的事实与索引，实验文档记录单实验详情。
+- **归档**：旧研究路线一律进入 `docs/archive/`（`old_research_plans/`、
+  `legacy_gate_research/`、`historical_experiments/`），并带归档头（"已被 X 取代"）。归档材料
+  不得被继续扩张；主 README / Research Plan / Experiment Plan 不得介绍旧模块。
+  `src/zonal_reliability_fusion/legacy/` 下的代码**只读**：类名与实现逐字保留，仅供 checkpoint
+  兼容与历史复现。
 - 不再建立阶段门（G0/G1/G2/SAP/P2A/P2B 等）或步骤/runbook/readiness/gate 文档，也不为每个模型
   维护大 YAML；网络差异由 Trainer 类名与少量代码常量表达，结构参数继续来自 `nnUNetPlans.json`。
-- `docs/Research_Plan.md` 可以记录研究问题、科学假设、方法机制、研究边界，以及**预先定义的论文
-  报告指标**；不记录具体实验流程、数据划分、训练参数、运行命令或已发生的实验结果。已发生的结果
-  继续归 `Training_Log` / `Findings` / `experiments`。
+- **Trainer 状态分层**：`nnunet/trainers.py` 的 `ACTIVE_TRAINERS` / `LEGACY_TRAINERS` 是
+  Trainer 分层的唯一真源；训练入口默认只显示 ACTIVE，归档条件需 `--legacy`。
+  `PROJECT_TRAINERS` 必须包含**全部历史类名**（输出目录由类名决定，缺一个即让历史产物失联）。
+- **单一状态真源**：variant 状态只在 `docs/Training_Log.md` 的「各 variant 状态」表维护；README 与
+  Findings 引用它，不另立清单。
+- **新模块进入主模型的门槛**：必须能回答"是否减少漏检 / 是否改善覆盖 / 是否减少假阳"三者之一
+  （见 `docs/Research_Plan.md` §15 与 `docs/Experiment_Plan.md` §9 的 stop rules）。
+- **表述纪律**：CI 跨 0 **不得**被写成"无差异/等效"，也**不得**写成"证明无效"；单次运行不得声明
+  run-to-run 方差；`ORACLE_GT` 结果不得作为正式性能；predicted anatomy 与 GT anatomy 不得混淆。
 - 代码/架构变更记入 `docs/Development_Log.md`；训练与验证的运行事实记入 `docs/Training_Log.md`。
 
 ## 7. 文件创建权限

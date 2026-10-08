@@ -3,6 +3,106 @@
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
+## 2026-10-08 — 系统级重构：确立单一主线（Anatomy-Guided Lesion-Aware Coarse-to-Fine）
+
+### 背景
+
+仓库此前同时存在三条竞争性主线（旧输入级 Gate 线、特征级融合线、短预算同区参照 + 两阶段解剖候选），
+README 首页不是主线、Trainer 数量口径三处不一致（11 / 15 / 16），文档与事实有 6 处冲突。本轮做
+**系统级重构、清理与重新定线**，把项目收敛到单一主线：
+**基于预测解剖先验的病灶感知粗到细前列腺癌分割**。
+
+### 新增
+
+- `pyproject.toml`——依赖声明 + ruff / pytest 配置（此前 ruff 使用默认激进规则，pytest 配置只在
+  `pytest.ini`）。
+- `src/zonal_reliability_fusion/evaluation/`（`protocol.py` / `case_metrics.py` /
+  `lesion_metrics.py` / `anatomy_metrics.py`）——把评价体系从 2352 行的脚本中抽出来，成为与模型
+  **完全解耦**的独立包（不 import torch / nnU-Net）。
+- `src/zonal_reliability_fusion/anatomy/`（`contracts.py` / `dataset.py` / `inference.py` /
+  `validation.py`）——Stage-1 的契约、先验布局、预测校验与质量评价。
+- `src/zonal_reliability_fusion/lesion/`（`baseline.py` / `roi.py` / `lesionness.py` /
+  `coarse_to_fine.py` / `zone_conditioning.py` / `prior_channels.py`）——新主线的方法本体：
+  Anatomy-Guided ROI（物理 margin，禁 hard mask，不重采样）、物理半径膨胀的 lesionness 目标、
+  原生 backbone + coarse 头 + soft 残差 refinement、soft PZ/TZ 解剖上下文。
+- `src/zonal_reliability_fusion/sampling/`（`positive_sampling.py` / `hard_negative.py`）——阳性
+  采样移入并把训练 loader 的构造抽成扩展点（`_resolve_train_loader_class` /
+  `_train_loader_kwargs`），使困难负样本采样可以叠加而**不复制** `get_dataloaders`。
+- `src/zonal_reliability_fusion/nnunet/`（`runtime.py` / `bases.py` / `losses.py` /
+  `augmentation.py` / `roi_sampling.py` / `seeds.py`）——运行时校验、共用 Trainer 基类、
+  只有两样东西的损失模块、NoFFT 修补、ROI 训练采样层、显式种子控制。
+- `scripts/data/check_split_integrity.py`——§24 要求的 split 泄漏自动检查，输出 PASS / FAIL，
+  遇泄漏 fail closed。
+- `scripts/data/build_anatomy_roi_set.py`——由**预测 WG** 构建 ROI 集合（不读 lesion GT、不读
+  原始影像、不重采样）。
+- `scripts/data/mine_hard_negatives.py`——Round-2 困难负样本挖掘（`--split` 只允许 `train`）。
+- `docs/`：`Research_Plan.md` 重写、`Method.md`、`Experiment_Plan.md`、
+  `Evaluation_Protocol.md`、`REFACTOR_AUDIT.md`、`archive/`（README + legacy_gate_research +
+  old_research_plans + historical_experiments）。
+- 测试：`test_lesion_roi.py`、`test_lesionness_coarse_to_fine.py`、`test_hard_negative_sampling.py`、
+  `test_anatomy_priors.py`、`test_split_integrity_and_roi_set.py`。
+
+### 修改
+
+- `src/zonal_reliability_fusion/nnunet/trainers.py`——重写为 ACTIVE（B/C/D/E + Stage 1）+
+  legacy 兼容再导出 + `ACTIVE_TRAINERS` / `LEGACY_TRAINERS` / `PROJECT_TRAINERS` 分层注册表。
+- `scripts/train/train_nnunet.py`——variant 分 `ACTIVE_VARIANTS` / `LEGACY_VARIANTS`，默认
+  `--help` 只显示主线，加 `--legacy` 才显示归档条件；新增 `--seed` / `--roi-set` /
+  `--hard-negative-set` / `--run-config`；新条件在构造 Trainer 前做前置校验（缺 ROI 集合即报错，
+  不静默退化）。
+- `scripts/inference/predict_nnunet.py`——`PROJECT_TRAINER_NAMES` 改为**由注册表派生**（消除
+  第二份手写清单），解剖先验逻辑委托给 `anatomy.inference`。
+- `scripts/evaluate_segmentation.py`——指标实现改为从 `evaluation/` 导入，脚本只保留 CLI、产物
+  读取、模型间可比性检查、编排与落盘；顶部加 `sys.path` 引导使其可独立运行。
+- `scripts/data/prepare_picai_nnunet.py`——解剖契约导入收敛到 `anatomy.contracts`（canonical）。
+- `docs/Findings.md`——旧结论重新归类为 **Preliminary Findings**，新增 **Mainline Findings**
+  章节（当前只记录「尚无证据」与判据指针），并修正「五次完成训练」为实际的 7 次。
+- `docs/Training_Log.md`——新增 2026-10-08 重构条目与新主线未训练状态表；更正一处过期索引
+  （`anatomy_gate` 曾写作"训练未运行"，实际已完成）。
+- `README.md`——彻底重写：只介绍新主线、单一 pipeline、strong baseline、评价体系、状态表、
+  命令与目录结构。
+- `AGENTS.md` —— §6 文档纪律与新的五份治理文档对齐。
+- `.gitignore`——补充生成型缓存、新主线中间产物、更多二进制兜底。
+
+### 测试
+
+- 修正 26 个**既有失败**：其中 20 个是环境缺少 `medpy`（已安装），5 个 `test_short_zonal_*` 断言
+  已迁移到 `initialize()` 的旧实现，1 个硬编码 variant 集合缺少新条件。
+- 把结构性测试从"硬编码名单"改为"与注册表一致"的断言（`test_nnunet_trainers.py` /
+  `test_positive_case_sampling.py` / `test_predict_entry.py`），使新增条件不再需要同步修改三处。
+- `pytest`：**552 passed, 0 failed**。
+- `ruff check src scripts tests`：**All checks passed**。
+- `python -m compileall src scripts tests`：通过。
+
+### 未运行（明确声明）
+
+- **未启动任何训练**：`dicece_positive_sampling`、`anatomy_joint_100ep`、`lesion_roi`、
+  `lesion_coarse_to_fine`、`lesion_zone_refine`、`lesion_hard_negative` 全部未训练；
+- **未运行** validation、推理、模型实例化、dataloader 真实构造、GPU 命令；
+- **未运行**数据准备、preprocessing、planning、ROI 集合构建、困难负样本挖掘；
+- **未读取**任何真实医学影像；测试全部为纯合成 CPU 测试；
+- **未创建**任何模型输出目录 / checkpoint / 先验产物；
+- **未删除或覆盖**任何既有 checkpoint、validation 产物、summary、训练日志或数据；
+- **未修改** `third_party/nnUNet`（仍为只读 v2.6.2）；
+- **未推送**到远端。
+
+### 兼容性声明
+
+- 全部 16 个历史 Trainer 类名与实现**逐字保留**（现位于 `legacy/fusion_trainers.py`），
+  `PROJECT_TRAINERS` 仍包含全部历史键，因此既有 checkpoint 的输出目录解析不受影响；
+- `nnunet/networks.py`、`nnunet/transforms.py`、`nnunet/sampling.py` 保留为**兼容转发层**，
+  历史导入路径与测试引用继续有效；
+- Python 包名仍为 `zonal_reliability_fusion`（历史内部标识），改名会让既有 checkpoint 输出目录
+  解析失效且无研究收益；
+- `scripts/` 下既有脚本路径保持不变（被本文件与 `Training_Log` 的历史记录引用）。
+- **历史文档引用映射**：本文件与 `Training_Log` 的旧条目中出现的
+  `docs/experiments/image_gate.md` / `image_gate_positive_sampling.md` /
+  `anatomy_gate_positive_sampling.md` 现已移至 `docs/archive/historical_experiments/` 下的同名文件。
+  治理文档（README / Findings / Training_Log）内的链接已更新为新路径；**历史条目正文一字未改**，
+  以便保留当时的写作语境。
+
+---
+
 ---
 
 ## 2026-10-06 — 解剖标签审计工具修订（同日第二轮，代码就绪，真实审计仍未运行）

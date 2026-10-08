@@ -5,6 +5,75 @@
 
 ---
 
+## 2026-10-08 — 项目重构：新主线确立，主实验尚未运行
+
+本节登记**重构本身造成的状态变化**，不包含任何新的训练结果。
+
+- **旧线四个 `*_100ep` 条件原地归档**：构造阶段失败的根因已修复（`__init__` 反射问题），但
+  **修复后从未重跑**，因此仍然零 epoch、零 checkpoint、零结果。它们现在归入 `--legacy` 视图，
+  不再是主线。
+- **新主线（Anatomy-Guided Lesion-Aware Coarse-to-Fine）的全部条件均未训练**：
+
+| variant | 数据集 | 状态 | 输出目录 |
+|---|---|---|---|
+| `positive_sampling`（条件 A1） | Dataset605 / 3d_fullres / 0 | **已完成**（历史运行，无显式 seed；见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| `dicece_positive_sampling`（条件 A2） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
+| `anatomy_joint_100ep`（Stage 1） | Dataset607 / 3d_fullres / 0 | **已完成**（训练 + validation；**WG 头不可用**，见下） | `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| `lesion_roi`（条件 B） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_LesionROI_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
+| `lesion_coarse_to_fine`（条件 C） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
+| `lesion_zone_refine`（条件 D） | Dataset606 / 3d_fullres / 0 | 代码就绪，**未训练**（需 Dataset606 的 zone 概率通道） | 目标：`.../nnUNetTrainerPICAI_LesionZoneRefine_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
+| `lesion_hard_negative`（条件 E） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练**（需先做 Round-2 挖掘） | 目标：`.../nnUNetTrainerPICAI_LesionHardNegative_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
+
+- **前置产物的实际状态**：
+  - 验证 split 的解剖 **soft prior 已经存在**（Stage-1 的 `validation/*.npz`，223 例），
+    但**训练 split 的先验尚未生成**（`workdir/anatomy_priors/**` 不存在）；
+  - `workdir/anatomy_rois/**`（ROI 集合）与 `workdir/hard_negatives/**`（困难负样本集合）
+    在本次重构结束时**均不存在**。
+- **本条的更正说明**：重构过程中最初把 Stage-1 记为"未训练"。经核查
+  `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/` 后确认它**已完成 100 epoch 训练与
+  validation**（2026-10-06）。事实与逐区域结果见下一小节。
+
+### Stage-1（`anatomy_joint_100ep`）的真实结果
+
+- 数据集：`Dataset607_PICAI_Anatomy` / `3d_fullres` / fold 0（train 1276 / val 223 study）；
+- 起止（UTC）：2026-10-06 11:02:00 → 12:28:20 训练完成 100 epoch；validation 至 12:38:15；
+- 输出目录：`outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
+  （`checkpoint_final.pth`、`checkpoint_best.pth`、`progress.png`、`debug.json`、
+  `training_log_2026_10_6_11_01_59.txt`、`validation/`）。**勿删除 / 勿覆盖。**
+- `validation/` 含 223 例的 `.npz`（soft probability，键 `probabilities`，形状 `(3,Z,Y,X)`）、
+  223 例 `.pkl`（物理元数据）、223 例 `.nii.gz`（原生 region 导出）与 `summary.json`。
+  即**验证 split 的解剖 soft prior 已经存在**。
+- `Mean Validation Dice = 0.6134037658907373`——但这是**三个 region 的算术平均**，逐区域为：
+
+| region | 标签集合 | Dice | TP | FP | FN | n_ref（逐例均值） | n_pred（逐例均值） |
+|---|---|---:|---:|---:|---:|---:|---:|
+| WG | `[1,3,5,7]` | **0.00558** | 334.79 | 282.83 | 121303.20 | 121637.99 | 617.63 |
+| PZ | `[2,3,6,7]` | 0.89849 | 34955.74 | 3496.52 | 4224.70 | 39180.44 | 38452.26 |
+| TZ | `[4,5,6,7]` | 0.93614 | 83959.15 | 4893.40 | 4946.05 | 88905.20 | 88852.55 |
+
+- **关键观察（必须如实记录）**：**WG 区域头实际不可用**。GT 的 WG 参考体积并不小
+  （`n_ref` 逐例均值 121637 voxel，与 PZ ∪ TZ 量级相当），但模型只预测出约 618 voxel/例，
+  因此 Dice ≈ 0.006。集合平均的 0.6134 **掩盖**了这一点。
+- **对主线的直接影响**：条件 B 的 Anatomy-Guided ROI **以 predicted WG 为唯一来源**，因此
+  在当前 Stage-1 权重下**不可运行**（空 WG 预测会触发 `full_fov` 回退，退化成"没有 ROI"）。
+  因此下一步不是启动 B，而是**先解决 WG 预测**（诊断 + 必要的数据/损失修正 + 重训 Stage-1）。
+- 归因边界：本机无法从已有产物判断 WG 失败属于「优化/损失」还是「位编码与 region 定义下的
+  数据问题」；两者都可能。诊断入口（由研究者运行）：
+  `python -c "from zonal_reliability_fusion.anatomy.validation import anatomy_region_metrics"` 对应的
+  解剖区域评估命令见 README「评估」小节；数据侧用
+  `scripts/data/audit_prostate_anatomy_labels.py`（已存在，只读）。**本文件不预判原因。**
+- 既有审计报告（只读）：`outputs/reports/prostate_anatomy_labels_audit_v2.json`
+  （`inputs` stage：1500 例中 1499 例有 WG，1 例为已知缺失 `11050_1001070`；
+  `source_audit_status = unresolved`，35 例"无可比较候选"）。
+
+
+- **本次未启动**训练、validation、推理或任何数据处理；未创建任何模型目录或 checkpoint；
+  未删除或覆盖任何既有产物。
+- 条件 A1（`positive_sampling`）在时间上属于**历史运行**，其训练与命令记录在下方条目；
+  它是新主线的 strong baseline 候选之一，但**没有显式 seed**，这一边界必须保留。
+
+---
+
 ## 2026-10-08 — 串行队列运行事实、用户停止与 100ep 构造失败
 
 队列命令（用户于 2026-10-06 14:10 起在后台串行执行，逐项 `tee` 到 `outputs/logs/<variant>.log`）：
@@ -144,7 +213,7 @@
 - validation probabilities：**未导出**
 - 输出目录（勿删除/覆盖）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/`
-- 详细记录：`docs/experiments/image_gate.md`
+- 详细记录：`docs/archive/historical_experiments/image_gate.md`
 
 ### optimized_baseline（**用户已停止 / 中止**）
 
@@ -222,7 +291,7 @@
 - checkpoint（**勿删除/覆盖**）：`checkpoint_final.pth`、`checkpoint_best.pth`
 - 输出目录（勿删除/覆盖）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
-- 详细记录：`docs/experiments/image_gate_positive_sampling.md`
+- 详细记录：`docs/archive/historical_experiments/image_gate_positive_sampling.md`
 
 ### anatomy_gate_positive_sampling（**已完成**：训练 + actual validation）
 
@@ -266,7 +335,7 @@
 - 旧输入级 RQ2 配对比较（与 `image_gate_positive_sampling`，delta = anatomy − image）报告已落盘：
   `outputs/reports/segmentation_metrics_rq2_anatomy_gate.json`；结论与完整指标登记在
   `docs/Findings.md` §3.11。
-- 详细记录：`docs/experiments/anatomy_gate_positive_sampling.md`
+- 详细记录：`docs/archive/historical_experiments/anatomy_gate_positive_sampling.md`
 
 ### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
 - variant / Trainer：
@@ -290,8 +359,10 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
   labels `background=0` / `lesion=1`
 - `workdir/nnUNet_preprocessed/Dataset606_PICAI_Zonal/`：含 `nnUNetPlans.json` 与 `nnUNetPlans_3d_fullres`
 - `splits_final.json`（raw 与 preprocessed 各一份）：1 fold，**train=1277，val=223**
-- `anatomy_gate`（原生采样旧 variant）：数据已就绪，**训练未运行**（旧输入级解剖问题由
-  `anatomy_gate_positive_sampling` 承担，见上文）
+- `anatomy_gate`（原生采样旧 variant）：**已完成**训练 + validation（2026-10-07 07:57 → 23:06 UTC，
+  Mean Validation Dice = 0.18267）；见 2026-10-08 节与「各 variant 状态」表。
+  > 更正说明（2026-10-08）：本行此前写作"训练未运行"，与同一文件的状态表及 2026-10-08 节的运行事实
+  > 冲突。运行事实以状态表与 2026-10-08 节为准；此处只是更正过期索引，不涉及任何结果改动。
 - **Dataset605 ↔ Dataset606 前三 MRI 通道逐数组一致性审计：已执行并通过**，且在本训练启动前完成。
   工具 `scripts/data/audit_dataset605_606_mri_equivalence.py`（只读、fail-closed）；
   报告 `outputs/reports/dataset605_606_mri_equivalence_audit_v2.json`（2026-09-24 03:33 UTC，

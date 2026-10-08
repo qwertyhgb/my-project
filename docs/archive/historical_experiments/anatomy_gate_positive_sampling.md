@@ -1,3 +1,16 @@
+> **已归档（2026-10-08）。** 本文档属于旧研究线（输入级 / 特征级 modality 门控），
+> **不再是项目主线**。保留原因：已完成的实验是论文的 preliminary / negative evidence，
+> 且对应 Trainer 类名决定既有 checkpoint 的输出目录，记录必须可核查。
+>
+> **不得**在本文件上继续扩张方法（例如 `AnatomyGate v2` / `CrossAttention` /
+> `ZoneTransformer` / `ZoneMamba`）。当前主线见 `docs/Research_Plan.md` 与 `docs/Method.md`。
+>
+> **表述纪律**：全部对比均为**单次运行**；CI 跨 0 **既不支持提升也不支持下降，更不证明等效**。
+> 不得写成"gate 无效"或"PZ/TZ 无用"。本文档中的数字与产物路径**未被改动**，只在开头加了这段
+> 归档说明。表格与结论的行文保持原样，以免破坏与 `docs/Training_Log.md` 的对应关系。
+
+---
+
 # 实验记录：`anatomy_gate_positive_sampling`
 
 > 本文档只记录 `anatomy_gate_positive_sampling` 实验本身：配置、运行事实、训练动态、验证结果、

@@ -5,25 +5,42 @@
 
 所有数字均取自各实验自己的 `validation/summary.json` 与训练日志，并已独立复算核对。
 
-**2026-10-06 更新**：同区参照残差融合已接入独立短预算分支及匹配参照，尚未训练，
-没有新性能结论。优先取得相同数据与预算下普通融合和候选的整例验证，联合判断阳性宏平均
-Dice、漏分与阴性假阳；若有候选增益，再评估区域参照和自适应强度的归因及分区误差稳健性。
-旧长预算结果不能直接充当短预算机制的匹配参照。计算成本必须实测，不能仅按参数量推断。
+**2026-10-08 重构说明**：本文件在结构上分成两部分。
 
-**研究定位更新**：下文已完成的输入级门控比较是新 [Research Plan](Research_Plan.md) §3 的
-preliminary evidence。§3.10 / §3.11 保留历史比较方向、数字和原有记录；其中“旧 RQ1 / 旧 RQ2”
-仅指计划重构前的输入级问题。新论文主线的 RQ1–RQ3 是
-`positive_sampling` → `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`
-→ `feature_anatomy_gate_positive_sampling`；其中原 feature_no_gate 已启动但无最终验证，
-其余两条件未运行，不能从本文件的历史结果推断
-新问题已有答案。阳性采样是统一的前景感知训练条件，不是主要方法贡献。
+1. **Preliminary Findings（旧研究线，本文件 §1–§7 的全部内容）**——输入级 / 特征级 modality
+   门控与同区参照融合线的证据。这些结论**继续有效**，但现在的角色是**新主线的 motivation**：
+   它们说明"单纯 input-level modality weighting 未观察到稳定的最终分割增益"，而"增加病灶暴露
+   （阳性采样）能明显减少完全漏检、但代价是假阳上升"。旧实验**不删除、不篡改**，对应代码与
+   文档归档在 `../archive/`。
+2. **Mainline Findings（新主线）**——见本文件末尾的「Mainline Findings」章节。新主线
+   （`docs/Research_Plan.md`：Anatomy-Guided Lesion-Aware Coarse-to-Fine）的主实验
+   **尚未开始运行**，因此该章节目前只记录**尚无证据**这一事实与判据指针。
+
+**表述纪律（对 Preliminary Findings 必须遵守）**：两次公平匹配的配对比较（旧 RQ1 输入级 MRI
+门控、旧 RQ2 输入级解剖条件）病例级 Dice 变化的 95% CI **均跨 0**。CI 跨 0 既不支持提升也不
+支持下降，**更不证明等效**。因此**不得**写成"gate 无效""证明 gate 没有作用""gate 降低性能"
+或"PZ/TZ 无用"。此外全部对比均为**单次运行**（nnU-Net v2.6.2 不设随机种子），配对 CI 只反映
+病例间变异。可以写的是：
+
+> Direct input-level modality reweighting did not provide a consistent segmentation
+> improvement in the tested runs, motivating a shift toward lesion-aware anatomical modeling.
+
+**§3.10 / §3.11 的历史编号说明**："旧 RQ1 / 旧 RQ2"**仅**用于指代计划重构前的问题编号，与新主线
+的假设 H1–H4 没有对应关系。旧编号不再被 `docs/Research_Plan.md` 使用。
 
 ---
 
 ## 1. 核心判断
 
-五次完成训练（N0 / `image_gate` / `positive_sampling` / `image_gate_positive_sampling` /
-`anatomy_gate_positive_sampling`）反映出的首要问题**仍不是「假阳性太多」**，而是：
+旧线共 **7 次完成训练 + validation**（fold 0 / 223 例；逐项事实见 `docs/Training_Log.md`
+的「各 variant 状态」表）：N0(`baseline`) / `image_gate` / `positive_sampling` /
+`image_gate_positive_sampling` / `anatomy_gate` / `anatomy_gate_positive_sampling` /
+`feature_anatomy_gate_positive_sampling`。下表与 §3 的逐病例分析使用其中**五个**（口径一致的
+FLCE + 采样对照体系）；另外两次（legacy `anatomy_gate`，以及 1000-epoch 完成的
+`feature_anatomy_gate_positive_sampling`）的记录见 `Training_Log`，本文件**不**为它们编造新的
+分层口径。
+
+这五次反映出的首要问题**仍不是「假阳性太多」**，而是：
 
 1. **病灶漏检严重**，尤其对小病灶不敏感；
 2. **即使检出，也常只分出病灶核心**，范围明显不足。
@@ -173,7 +190,7 @@ N0 有 **34** 个阳性病例完全没有重叠，`image_gate` 仍有 **33** 个
 > **口径限制（分箱单位）**：分箱只基于 `summary.json` 的**体素数**。validation 导出的逐例参考
 > 掩膜位于各例**原始几何**，体素体积逐例不同，因此本表**不能**换算为 mL 或物理体积；物理体积
 > 分层需逐例读取 spacing 后计算（full 模式，见第 7 节）。同一更正见
-> `docs/experiments/image_gate_positive_sampling.md` §5.5。
+> `docs/archive/historical_experiments/image_gate_positive_sampling.md` §5.5。
 
 > 最小档的 `pred/ref = 2.108`、精确仅 **0.159**，方向与其它三档（`pred/ref < 1`，欠分割）**相反**：
 > 该档的"检出"里混入了大量**过预测**。也就是说 ≤ 1000 体素档的检出数提升，**不能**简单读成
@@ -320,11 +337,11 @@ N0 有 **34** 个阳性病例完全没有重叠，`image_gate` 仍有 **33** 个
    只是被抬高了；
 5. `image_gate_positive_sampling` 属于**阳性采样这一族**：早收敛同样很快（首个非零 pseudo Dice
    在 epoch 7，前 100 epoch 均值 0.3437，与其参照臂同量级；本 run 自身细节见
-   `docs/experiments/image_gate_positive_sampling.md` §4），但最终全量指标与参照臂基本同档
+   `docs/archive/historical_experiments/image_gate_positive_sampling.md` §4），但最终全量指标与参照臂基本同档
    （macro Dice 0.2991 vs 0.3068，配对 CI 含 0）⇒ 它**没有**在阳性采样之上再抬一次上限。
 6. `anatomy_gate_positive_sampling` 同属**阳性采样这一族**：早收敛是五次里最快的（首个非零
    pseudo Dice 在 epoch 3，前 100 epoch 分箱均值 0.2939，最佳 EMA 0.6236 @ epoch 952；本 run
-   自身细节见 `docs/experiments/anatomy_gate_positive_sampling.md` §4），但**最终全量指标没有
+   自身细节见 `docs/archive/historical_experiments/anatomy_gate_positive_sampling.md` §4），但**最终全量指标没有
    超过 image 条件臂**（macro Dice 0.2937 vs 0.2991、micro 0.5332 vs 0.5397，配对 CI 含 0，
    见 §3.11）⇒ 加解剖条件同样**没有**再抬一次上限。
 
@@ -760,3 +777,60 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
    审计只对**前三个 MRI 通道**做逐值判等，**PZ/TZ 不参与**，因此旧输入级解剖条件比较仍不是「只差 PZ/TZ」的
    严格单变量对照（边界见 §3.11）。首轮 v1 报告（FAIL，源于把合法的 -1 判为非法标签）按原样保留
    作追溯：`outputs/reports/dataset605_606_mri_equivalence_audit.json`。
+
+
+---
+
+## Mainline Findings
+
+> 新主线：**Anatomy-Guided Lesion-Aware Coarse-to-Fine Prostate Cancer Segmentation**
+> （`docs/Research_Plan.md`、`docs/Method.md`）。本文件的上半部分（Preliminary Findings）是它的
+> motivation；从本节开始记录**新主线自身**的结论。
+
+### 当前状态：**尚无新主线证据**
+
+主实验 A → B → C → D（以及可选的 E）**尚未开始训练**。因此本节目前只有状态与判据，没有任何
+性能数字。可以如实记录的事实：
+
+| 项 | 状态 |
+|---|---|
+| Strong baseline A1 `positive_sampling` | **已完成**（属于历史运行，无显式 seed） |
+| Strong baseline A2 `dicece_positive_sampling` | 代码就绪，**未训练** |
+| Stage 1 `anatomy_joint_100ep` | **已完成**（100 epoch + validation）；Mean Dice 0.6134 是三区域平均，**其中 WG 仅 0.0056、PZ 0.8985、TZ 0.9361 ⇒ WG 头实际不可用** |
+| 条件 B `lesion_roi` | 代码就绪，**未训练**；**当前被 Stage-1 的 WG 结果阻塞**（ROI 的唯一来源是 predicted WG） |
+| 条件 C `lesion_coarse_to_fine` | 代码就绪，**未训练** |
+| 条件 D `lesion_zone_refine` | 代码就绪，**未训练**（需 Dataset606 的 zone 概率通道） |
+| 条件 E `lesion_hard_negative` | 代码就绪，**未训练**（需先做 Round-2 挖掘） |
+| `scripts/data/check_split_integrity.py` | 已实现并**已在真实路径上运行**（anatomy_split / lesion_split 均 PASS，先验与 ROI 集合两项 SKIP） |
+| 评价体系（`src/.../evaluation/`） | 已实现并对历史 summary 可用；新主线的 full 模式评估**尚未运行** |
+| Stage-1 的 **WG 失败** | 已确认事实（见上），**原因尚未定位** |
+
+### 判据指针（不要在证据到位前提前解读）
+
+- 主终点与关键次要终点的定义 → `docs/Evaluation_Protocol.md` §1–§6；
+- 配对比较必须报告的内容与解释纪律 → `docs/Evaluation_Protocol.md` §7；
+- 每个条件的"改善 / 无改善"判定与此对应的 stop rules → `docs/Experiment_Plan.md` §9；
+- 单实验详情将写入 `docs/experiments/<variant>.md`，本节只做横向汇总。
+
+### 新主线自身的第一个实质观察
+
+Stage-1 的 `Mean Validation Dice = 0.6134` 是**三个 region 的算术平均**，逐区域为
+WG **0.0056** / PZ **0.8985** / TZ **0.9361**。GT 的 WG 参考体积并不小（`n_ref` 逐例均值
+121637 voxel），但模型只预测出约 618 voxel/例，因此 **WG 区域头实际不可用**，
+集合平均**掩盖**了这一点。
+
+这条观察有两层意义：
+
+1. **方法层面**：它直接阻塞条件 B——Anatomy-Guided ROI 的唯一来源是 predicted WG。空 WG 预测
+   会触发 `full_fov` 回退，ROI 退化为"没有 ROI"。因此必须先解决 WG 预测，再启动 B。
+2. **评价层面**：这正是本项目主张"不看单一聚合指标"的现实案例，与
+   `docs/Evaluation_Protocol.md` §1 的分级报告纪律一致。**不预判 WG 失败的原因**
+   （优化/损失 vs 位编码与 region 定义下的数据问题）；诊断由研究者运行，见
+   `docs/experiments/anatomy_joint_100ep.md`。
+
+### 本节不得做的事
+
+- **不得**在 A2 / Stage 1 / B / C / D / E 尚未运行时推断它们的表现；
+- **不得**把 Preliminary Findings 的效应量（如阳性采样 +0.1093）当作新条件的预期收益；
+- **不得**因为模块"看起来合理"就把假设写成结论。Research Plan §17 的三条 Contribution 全部是
+  **待验证假设**。

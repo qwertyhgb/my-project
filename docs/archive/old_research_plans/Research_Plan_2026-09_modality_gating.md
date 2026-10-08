@@ -1,3 +1,25 @@
+# Research Plan（2026-09，分区条件自适应多序列融合）
+
+> **ARCHIVED — 已被取代（SUPERSEDED）2026-10-08。**
+>
+> 本文档是项目重构**之前**的研究计划全文（旧主线：基于前列腺解剖分区条件的多序列 MRI 空间
+> 自适应融合，即 modality gating / feature fusion 线）。它**不再是项目的研究计划**，仅供历史
+> 查阅与论文 motivation 引用。
+>
+> - 当前研究计划 → `docs/Research_Plan.md`（Anatomy-Guided Lesion-Aware Coarse-to-Fine）
+> - 方法机制 → `docs/Method.md`
+> - 实验矩阵 → `docs/Experiment_Plan.md`
+> - 指标定义 → `docs/Evaluation_Protocol.md`
+> - 归档索引与使用规则 → `docs/archive/README.md`
+>
+> **不要把本文档的任何章节号（§4.4 / §8.10 等）当作现行引用来源**：那些编号在现行计划中已不
+> 存在。旧实验文档里残留的 `Research_Plan §8.10` 一类引用属于历史文本，保留原样以便核查当时的
+> 写作语境，不代表现行结构。
+>
+> 本文档的正文**未做任何修改**。
+
+---
+
 # Research Plan
 
 ## 基于前列腺解剖分区条件的多序列 MRI 空间自适应融合
