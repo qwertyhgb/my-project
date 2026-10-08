@@ -3,6 +3,70 @@
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
+## 2026-10-08 — 正式实验前最后一次收口（短预算筛选臂 / 608 审计 / 语义清理）
+
+本轮**不新增任何研究模块**，只修复语义、补齐公平比较所需的工具，并冻结 baseline 判据；
+未启动任何训练、validation、推理或数据处理。
+
+### 实现与修复
+
+- `multimodal/conditioned_fusion.py`：融合系数由 `logits.softmax(dim=1)` 改为显式
+  `(controller_logits / SOFTMAX_TEMPERATURE).softmax(dim=1)`。常量仍冻结 **1.0**（无 CLI 旋钮、
+  不做温度搜索）；T=1 时与直接 softmax **逐值相同**。同时清理 controller / lesionness 的
+  `logits` 变量名冲突，避免两个不同 logits 在阅读时混淆。
+- `nnunet/trainers.py`：新增 `SHORT_BUDGET_EPOCHS = 100`、`_ShortBudgetMixin` 与 8 个短预算类
+  （A1/A2 + B/C/D × FLCE/DiceCE，类名 = 正式类名插入 `_100ep`），并登记 `SHORT_BUDGET_TRAINERS`。
+  混搭在 `initialize()` 中、`super().initialize()` **之前**写 `self.num_epochs`，使训练循环上界、
+  PolyLR 总周期（`PolyLRScheduler.max_steps`）与 checkpoint `current_epoch` 上界三者一致；
+  正式 1000 epoch 类不声明类级预算、实现未动。短预算类并入 `ACTIVE_TRAINERS`（独立输出目录）。
+- `scripts/train/train_nnunet.py`：ACTIVE 变体加入 8 个 `*_100ep` 变体；新增
+  `expected_epoch_limit()` / `is_short_budget()`；checkpoint 预算校验与 run_config 的
+  `epochs` / `fusion_constants` 改为从 Trainer 类与代码常量派生，不再硬编码 1000 与 temperature=1.0。
+- 新增只读工具 `scripts/data/audit_dataset605_608_equivalence.py`（fail-closed）：raw 层比较
+  病例集合/顺序、`splits_final.json`、`dataset.json`、6 通道结构、T2W/ADC/HBV 的
+  size/spacing/origin/direction 与逐数组相等性、lesion 的原始/有效标签语义；preprocessed 层
+  比较前三个 MRI 通道与 seg，并核对两侧 `nnUNetPlans.json`。PASS 要求两层；仅 raw 通过为
+  `RAW_ONLY_PASS`（退出码 2）。608 prior 通道只做信息性统计（不评价 prior 质量）。
+  **尚未在真实 Dataset608 上运行**（608 未物化/未预处理）。
+- 文档：Experiment Plan 新增 §2.1「baseline selection rule」（先于结果冻结）并重写 §7 Budget
+  （单一 100 epoch 档位、同预算互比、实现边界、禁止与 1000 epoch 比较）；Method 记录温度的显式
+  计算与热路径检查的实测代价；README 给出短预算与 608 审计命令；Training Log 为旧 WG 解释加
+  `SUPERSEDED` 标注并登记本轮无训练。
+
+### 实际执行的检查
+
+均在 conda `lm`、固定 nnU-Net 环境执行；测试只使用合成数据与 pytest 临时目录。
+
+- `PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -B -m pytest -p no:cacheprovider`：
+  **717 passed，174 dependency deprecation warnings，42.84s**（本轮新增 40 个用例：短预算 12、
+  temperature 1、608 审计 28 中 27 为新增文件 + 既有套件不受影响）。
+- `python -m ruff check --no-cache src scripts tests`：通过。
+- `compileall`、`git diff --check`、训练入口 `--help`、审计工具 `--help`：通过。
+- 短预算真实性检查（`tests/unit/test_multimodal_fusion.py`）：8 个短预算类经真实
+  `nnUNetTrainer.__init__` + `initialize()` 后 `num_epochs == lr_scheduler.max_steps == 100`，
+  正式同类仍为 1000；短预算类不覆盖 `run_training` / `configure_optimizers` /
+  `perform_actual_validation`。入口 resume 守卫对 100 epoch 类只接受 `current_epoch <= 100`
+  且 trainer 名匹配的 checkpoint。
+- 热路径 fail-closed 检查的合成 CUDA 计时（真实 patch 形状 `[1,6,16,320,320]`，RTX 3090，3 次
+  独立 trial，每次 30 iteration）：`fuse` 前端 25.98 / 26.01 / 26.00 ms，
+  三项检查（`isfinite().all()` + 两个范围 `.any()`）0.351 / 0.351 / 0.350 ms，
+  占比 **1.34–1.35%**。**结论：保留逐 patch 检查**，不做热点路径弱化。
+  边界：合成张量、单卡、非 profiler trace，不含 backbone 前向，不构成吞吐声明。
+
+### 参数与未验证边界
+
+网络容量**未变**（本轮只改系数计算方式、预算类与工具）。用真实 Dataset605 plans 重新打印：
+
+| model | total / trainable | delta | delta % |
+|---|---:|---:|---:|
+| A | 44,577,932 | 0 | 0 |
+| B | 44,583,983 | 6,051 | 0.013574 |
+| C | 44,584,913 | 6,981 | 0.015660 |
+| D | 44,584,957 | 7,025 | 0.015759 |
+
+未验证：短预算训练是否真的在 100 epoch 内产生可用的方向信号（未运行任何 100ep 训练）；
+Dataset608 审计未在真实数据上运行；未测 FLOPs 与 GPU 显存。
+
 ## 2026-10-08 — 预测解剖与粗定位共同条件化局部多模态融合
 
 ### 实现与修复

@@ -331,3 +331,138 @@ def test_seeded_trainer_names_preserve_history_and_checkpoint_resolution():
 
 def test_empty_weight_region_has_null_statistics():
     assert all(value is None for value in fusion_weight_statistics(torch.empty(3, 0)).values())
+
+
+def _controller_logits_and_weights(model, x):
+    """独立重算 controller 的原始 logits（不使用 model.fuse），作为数值参照。"""
+    features = [stem(x[:, i:i + 1]) for i, stem in enumerate(model.stems)]
+    concatenated = torch.cat(features, dim=1)
+    neutral = model.neutral_projection(concatenated)
+    lesionness_logits = model.lesionness_head(F.avg_pool3d(neutral, 2))
+    lesionness = F.interpolate(lesionness_logits.sigmoid(), size=neutral.shape[2:],
+                               mode="trilinear", align_corners=False)
+    return model.controller(torch.cat([concatenated, lesionness], dim=1))
+
+
+def test_softmax_temperature_is_frozen_at_one_and_matches_plain_softmax(monkeypatch):
+    """temperature 常量必须真正进入前向；冻结值 1.0 时与直接 softmax 逐值一致。"""
+    from zonal_reliability_fusion.multimodal import conditioned_fusion
+
+    assert conditioned_fusion.SOFTMAX_TEMPERATURE == 1.0
+    torch.manual_seed(11)
+    model = ConditionedMultimodalNNUNet(nn.Identity(), condition="lesion")
+    x = torch.randn(1, 3, 4, 4, 4)
+    with torch.no_grad():
+        _, weights, _ = model.fuse(x)
+        raw_logits = _controller_logits_and_weights(model, x)
+        plain = torch.softmax(raw_logits, dim=1)
+    # T=1：除以 1.0 是精确运算，因此必须逐位相同，而不是「近似相等」
+    assert torch.equal(weights, plain)
+
+    # 常量确实被使用（不是死代码）：改变它必须改变权重，且严格等于 logits/T 的 softmax
+    monkeypatch.setattr(conditioned_fusion, "SOFTMAX_TEMPERATURE", 0.5)
+    with torch.no_grad():
+        _, hot, _ = model.fuse(x)
+    assert not torch.equal(hot, plain)
+    assert torch.allclose(hot, torch.softmax(raw_logits / 0.5, dim=1))
+    assert torch.allclose(hot.sum(1), torch.ones_like(hot[:, 0]))
+
+
+SHORT_BUDGET_FORMAL_PAIRS = [
+    ("nnUNetTrainerPICAI_FLCE_PositiveSampling_100ep_NoFFT",
+     "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"),
+    ("nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT",
+     "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"),
+    ("nnUNetTrainerPICAI_NeutralFusion_FLCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT"),
+    ("nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT"),
+    ("nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT"),
+    ("nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT"),
+    ("nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT"),
+    ("nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT",
+     "nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT"),
+]
+
+
+def test_short_budget_classes_mirror_formal_classes_and_keep_native_mechanisms():
+    """短预算 = 独立类名 + 原生训练机制；它不引入第二套训练框架。"""
+    from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
+
+    assert len(trainers.SHORT_BUDGET_TRAINERS) == len(SHORT_BUDGET_FORMAL_PAIRS) == 8
+    for short_name, formal_name in SHORT_BUDGET_FORMAL_PAIRS:
+        short = trainers.PROJECT_TRAINERS[short_name]
+        formal = trainers.PROJECT_TRAINERS[formal_name]
+        assert short in trainers.ACTIVE_TRAINERS and formal in trainers.ACTIVE_TRAINERS
+        assert issubclass(short, formal)
+        # 类名只差一个 _100ep，输出目录因此自动隔离，不会与 1000 epoch 产物互相覆盖
+        assert short.__name__.replace("_100ep_NoFFT", "_NoFFT") == formal.__name__
+        assert trainers.resolve_trainer_class(short_name) is short
+        assert getattr(short, "num_epochs", None) == trainers.SHORT_BUDGET_EPOCHS == 100
+        # 正式臂不声明类预算：仍由 nnUNetTrainer.__init__ 提供原生 1000 epoch
+        assert not hasattr(formal, "num_epochs")
+        # 训练循环 / optimizer / LR scheduler / 验证 / 推理全部原生，短预算不重实现任何一项
+        for attribute in ("run_training", "configure_optimizers", "perform_actual_validation",
+                          "train_step", "on_train_epoch_start"):
+            assert getattr(short, attribute) is getattr(nnUNetTrainer, attribute), attribute
+    assert trainers.seeded_trainer_class(
+        trainers.PROJECT_TRAINERS["nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT"], 20261008
+    ).__name__ == "nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT_Seed20261008"
+
+
+@pytest.mark.parametrize("short_name,formal_name", SHORT_BUDGET_FORMAL_PAIRS)
+def test_short_budget_real_native_initialize_syncs_epochs_and_poly_lr(
+    tmp_path, monkeypatch, synthetic_arch, short_name, formal_name
+):
+    """真实 nnU-Net 构造 + initialize：num_epochs 与 PolyLR 总周期必须同时是 100。"""
+    plans_path = ROOT / "workdir/nnUNet_preprocessed/Dataset605_PICAI/nnUNetPlans.json"
+    if not plans_path.is_file():
+        pytest.skip("real Dataset605 plan unavailable")
+    plans = json.loads(plans_path.read_text())
+    config = plans["configurations"]["3d_fullres"]
+    cls = trainers.PROJECT_TRAINERS[short_name]
+    condition = getattr(cls, "fusion_condition", None)
+    dataset = PREDICTED_DATASET if condition == "anatomy" else "Dataset605_PICAI"
+    plans["dataset_name"] = dataset
+    config["architecture"] = {
+        "network_class_name": synthetic_arch["architecture_class_name"],
+        "arch_kwargs": synthetic_arch["arch_init_kwargs"],
+        "_kw_requires_import": synthetic_arch["arch_init_kwargs_req_import"],
+    }
+    if condition == "anatomy":
+        config["preprocessor_name"] = "PredictedAnatomyPreprocessor"
+        config["normalization_schemes"] += ["NoNormalization"] * 3
+        config["use_mask_for_norm"] += [False] * 3
+    doc = predicted_document() if condition == "anatomy" else {
+        "channel_names": {"0000": "T2W", "0001": "ADC", "0002": "HBV"},
+        "labels": {"background": 0, "lesion": 1}, "numTraining": 2,
+    }
+    native = importlib.import_module("nnunetv2.training.nnUNetTrainer.nnUNetTrainer")
+    monkeypatch.setattr(native, "nnUNet_preprocessed", str(tmp_path / "preprocessed"))
+    monkeypatch.setattr(native, "nnUNet_results", str(tmp_path / "results"))
+    base = tmp_path / "preprocessed" / dataset
+    folder = base / config["data_identifier"]
+    folder.mkdir(parents=True)
+    (base / "splits_final.json").write_text(json.dumps([{"train": ["1_10"], "val": ["2_20"]}]))
+    channels = len(doc["channel_names"])
+    np.savez(folder / "1_10.npz", data=np.zeros((channels, 2, 2, 2), np.float32),
+             seg=np.zeros((1, 2, 2, 2), np.int8))
+
+    trainer = cls(plans, "3d_fullres", 0, doc, device=torch.device("cpu"))
+    trainer.initialize()  # 真实 nnU-Net initialize：network / optimizer / PolyLR / loss
+    assert trainer.num_epochs == 100
+    assert trainer.lr_scheduler.__class__.__name__ == "PolyLRScheduler"
+    assert trainer.lr_scheduler.max_steps == trainer.num_epochs == 100
+    # 训练循环上界与 scheduler 总周期一致（不出现 100 epoch 训练 + 1000 epoch 衰减）
+    assert trainer.lr_scheduler.max_steps != 1000
+    assert trainer.optimizer.__class__.__name__ == "SGD"
+
+    # 正式臂的同类构造必须仍是原生 1000 epoch（短预算类不得改动正式类）
+    formal = trainers.PROJECT_TRAINERS[formal_name]
+    formal_trainer = formal(plans, "3d_fullres", 0, doc, device=torch.device("cpu"))
+    formal_trainer.initialize()
+    assert formal_trainer.num_epochs == 1000
+    assert formal_trainer.lr_scheduler.max_steps == 1000

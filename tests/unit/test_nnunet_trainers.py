@@ -1577,3 +1577,102 @@ def test_seeded_lesion_checkpoint_resume_checks_own_trainer_plans_and_budget(tmp
             module.guard_anatomy_checkpoint(output, True, False, **kwargs)
     with pytest.raises(SystemExit, match="拒绝从头覆盖"):
         module.guard_anatomy_checkpoint(output, False, False, **kwargs)
+
+
+def test_short_budget_variants_are_registered_with_frozen_epoch_limit_and_no_extra_knobs():
+    """入口对短预算变体的预算必须来自 Trainer 类；不得再出现「写 100 epoch 但按 1000 衰减」。"""
+    from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
+
+    from zonal_reliability_fusion.nnunet.trainers import (
+        SHORT_BUDGET_EPOCHS,
+        SHORT_BUDGET_TRAINERS,
+    )
+
+    module = _load_train_entry()
+    assert SHORT_BUDGET_EPOCHS == 100
+    short_names = {cls.__name__ for cls in SHORT_BUDGET_TRAINERS}
+    short_variants = {
+        name: trainer for name, trainer in module.ACTIVE_VARIANTS.items()
+        if trainer in short_names
+    }
+    assert len(short_variants) == len(short_names) == 8
+    for variant, trainer_name in short_variants.items():
+        assert variant.endswith("_100ep"), variant
+        cls = module.resolve_trainer_class(variant)
+        assert cls.__name__ == trainer_name
+        assert module.expected_epoch_limit(cls) == 100
+    # 正式臂（含 seeded 变体）仍按 nnU-Net 原生 1000 epoch 校验 checkpoint 上界
+    formal = module.resolve_trainer_class("neutral_fusion_flce")
+    assert module.expected_epoch_limit(formal) == module.DEFAULT_EPOCH_LIMIT == 1000
+    assert module.is_short_budget(formal) is False
+    assert module.is_short_budget(module.resolve_trainer_class("neutral_fusion_flce_100ep")) is True
+    # 短预算不是新的超参数接口：入口不得出现 num_epochs/temperature 之类的 CLI 旋钮
+    parser = module.build_parser()
+    destinations = {action.dest for action in parser._actions}
+    assert not {"epochs", "num_epochs", "temperature", "max_steps"} & destinations
+    for cls in SHORT_BUDGET_TRAINERS:
+        assert issubclass(cls, nnUNetTrainer)
+
+    # run_config 的预算与融合常量必须从类/代码派生，不得是手写副本（否则 provenance 会漂移）
+    from zonal_reliability_fusion.multimodal.conditioned_fusion import (
+        SOFTMAX_TEMPERATURE,
+        STEM_CHANNELS,
+    )
+
+    plans = {
+        "dataset_name": "Dataset605_PICAI",
+        "configurations": {
+            "3d_fullres": {"batch_size": 2, "patch_size": [16, 320, 320],
+                           "spacing": [3.0, 0.5, 0.5], "architecture": {}}
+        },
+    }
+    dataset_json = {"channel_names": {"0": "T2W", "1": "ADC", "2": "HBV"}}
+
+    def _args(variant):
+        return SimpleNamespace(variant=variant, configuration="3d_fullres", fold="0",
+                               seed=20261008, roi_set=None, hard_negative_set=None)
+
+    short_payload = module.build_run_config(
+        _args("neutral_fusion_flce_100ep"),
+        module.resolve_trainer_class("neutral_fusion_flce_100ep"), plans, dataset_json)
+    assert short_payload["epochs"] == 100
+    assert "short_budget_screening" in short_payload["budget"]
+    assert short_payload["fusion_constants"] == {
+        "stem_channels": STEM_CHANNELS, "temperature": SOFTMAX_TEMPERATURE,
+        "zero_init_residual": True}
+    formal_payload = module.build_run_config(
+        _args("neutral_fusion_flce"),
+        module.resolve_trainer_class("neutral_fusion_flce"), plans, dataset_json)
+    assert formal_payload["epochs"] == module.DEFAULT_EPOCH_LIMIT == 1000
+    assert formal_payload["budget"].startswith("formal")
+
+
+def test_short_budget_checkpoint_resume_guard_uses_its_own_epoch_limit(tmp_path):
+    """100 epoch 类的 resume/validation 只接受 current_epoch <= 100 的自身 checkpoint。"""
+    from zonal_reliability_fusion.nnunet.trainers import (
+        PROJECT_TRAINERS,
+        seeded_trainer_class,
+    )
+
+    module = _load_train_entry()
+    base = PROJECT_TRAINERS["nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT"]
+    cls = seeded_trainer_class(base, 20261008)
+    init = {"plans": {"dataset_name": "Dataset605_PICAI"}, "configuration": "3d_fullres",
+            "fold": 0, "dataset_json": {"labels": {"background": 0, "lesion": 1}}}
+    output = tmp_path / cls.__name__ / "fold_0"
+    output.mkdir(parents=True)
+    state = {"network_weights": {"weight": torch.ones(1)},
+             "optimizer_state": torch.optim.SGD(nn.Linear(1, 2).parameters(), lr=.01).state_dict(),
+             "current_epoch": 100, "trainer_name": cls.__name__, "init_args": init}
+    checkpoint = output / "checkpoint_latest.pth"
+    torch.save(state, checkpoint)
+    kwargs = {"expected_trainer_name": cls.__name__,
+              "expected_epoch_limit": module.expected_epoch_limit(cls),
+              "expected_dataset_json": init["dataset_json"], "expected_init_args": init}
+    assert kwargs["expected_epoch_limit"] == 100
+    module.guard_anatomy_checkpoint(output, True, False, **kwargs)
+    for changed in ({"current_epoch": 101}, {"current_epoch": 1000},
+                    {"trainer_name": base.__name__}):
+        torch.save({**state, **changed}, checkpoint)
+        with pytest.raises(SystemExit, match="不可用"):
+            module.guard_anatomy_checkpoint(output, True, False, **kwargs)

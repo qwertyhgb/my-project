@@ -4,6 +4,8 @@ ACTIVE：A1 FLCE/A2 native DiceCE + positive sampling，Stage-1 anatomy，
 以及各自继承 A1/A2 的 B neutral fusion、C lesion-conditioned residual fusion、
 D predicted-anatomy + lesion-conditioned residual fusion。
 B 仅加独立浅层表征；C 加 coarse lesionness 条件分支及辅助监督；D 仅加预测解剖上下文。
+同一 A/B/C/D 各有 1000 epoch 正式类与 100 epoch 短预算筛选类（``_100ep_`` 类名后缀），
+两者类名/输出目录完全隔离；短预算只做 sanity 与方向筛选，不用于结论。
 SUPPORTING：既有 ROI、logits refinement、zone refinement、hard-negative 实现。
 新的 E = best(C,D) + hard negatives 尚未绑定，不把既有固定父类 E 当作新 E。
 LEGACY：只读再导出历史 gate/fusion 类，保持 checkpoint 可解析。
@@ -516,6 +518,103 @@ class nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT(nnUNetTrainerPICAI_Les
     fusion_condition = "anatomy"
 
 
+# ===========================================================================
+# ACTIVE：短预算（100 epoch）方向筛选臂
+# ===========================================================================
+#: 预先冻结的短预算 epoch 数。**第一版只保留这一个短预算**：不同时维护 50/100/150/300。
+#: 短预算只用于启动期 sanity 与方向筛选，不与历史 1000 epoch 模型比较优劣，也不用于结论。
+SHORT_BUDGET_EPOCHS = 100
+
+
+class _ShortBudgetMixin:
+    """把训练上界与 PolyLR 总周期一起压到冻结短预算；不改任何其它训练机制。
+
+    用途边界（必须与 1000 epoch 正式臂区分）
+    ----------------------------------------
+    短预算运行**只**回答「这个条件是否明显跑不起来 / 是否明显朝错误方向走」。它不能与历史
+    1000 epoch 模型比较优劣；要做 B/C/D 筛选，必须使用**同一短预算**下的 A（baseline 胜出
+    loss 家族）与相应条件互比，见 ``docs/Experiment_Plan.md``。
+
+    为什么必须在 ``initialize()`` 里同步
+    ------------------------------------
+    ``nnUNetTrainer.__init__`` 会把 ``self.num_epochs`` 设为 1000，而 PolyLR 在 ``initialize()``
+    内部经 ``configure_optimizers()`` 用 ``self.num_epochs`` 构造。只声明类属性会被实例属性
+    覆盖，从而出现「训练循环 100 epoch、scheduler 仍按 1000 epoch 衰减」的历史缺陷。
+    这里在 ``super().initialize()`` **之前**写实例属性，使训练循环上界
+    （``range(current_epoch, num_epochs)``）、PolyLR 总周期与 checkpoint 的 ``current_epoch``
+    上界三者一致；resume 同样经由 ``initialize()`` 恢复，不依赖 ``__init__``。
+    """
+
+    #: 类属性供训练入口的 run-config 与静态检查读取（实例属性在 initialize 中同步）
+    num_epochs: int = SHORT_BUDGET_EPOCHS
+
+    def initialize(self):
+        self.num_epochs = SHORT_BUDGET_EPOCHS
+        super().initialize()
+
+
+class nnUNetTrainerPICAI_FLCE_PositiveSampling_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+):
+    """A1（FLCE + positive sampling）的 100 epoch 筛选臂：短预算下的公平参照。"""
+
+
+class nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+):
+    """A2（原生 DiceCE + positive sampling）的 100 epoch 筛选臂：短预算下的公平参照。"""
+
+
+class nnUNetTrainerPICAI_NeutralFusion_FLCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT
+):
+    """B（neutral fusion，FLCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+class nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT
+):
+    """B（neutral fusion，DiceCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+class nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT
+):
+    """C（lesion-conditioned fusion，FLCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+class nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT
+):
+    """C（lesion-conditioned fusion，DiceCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+class nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT
+):
+    """D（anatomy + lesion-conditioned fusion，FLCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+class nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT(
+    _ShortBudgetMixin, nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT
+):
+    """D（anatomy + lesion-conditioned fusion，DiceCE 家族）的 100 epoch 方向筛选臂。"""
+
+
+#: 短预算（100 epoch）筛选 Trainer。**独立类名 → 独立输出目录**，不与 1000 epoch 正式产物混用；
+#: 只有这一个短预算档位，不为同一条件维护多个预算版本。
+SHORT_BUDGET_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
+    nnUNetTrainerPICAI_FLCE_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_NeutralFusion_FLCE_100ep_NoFFT,
+    nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT,
+    nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT,
+    nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT,
+    nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_100ep_NoFFT,
+    nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT,
+)
+
+
 #: Previous ROI / logits-refinement implementations are supporting ablations.
 SUPPORTING_TRAINERS = (
     nnUNetTrainerPICAI_LesionROI_NoFFT,
@@ -535,6 +634,8 @@ ACTIVE_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
     nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT,
     nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT,
     nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT,
+    # 短预算方向筛选臂（100 epoch，独立类名/输出目录；不参与最终结论）
+    *SHORT_BUDGET_TRAINERS,
 )
 
 #: 归档（LEGACY）Trainer：需要 ``--legacy`` 才出现在训练入口的可见列表里
@@ -597,6 +698,8 @@ __all__ = (
     "ANATOMY_LABELS",
     "LEGACY_TRAINERS",
     "PROJECT_TRAINERS",
+    "SHORT_BUDGET_EPOCHS",
+    "SHORT_BUDGET_TRAINERS",
     "SUPPORTING_TRAINERS",
     "ROIError",
     "nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT",

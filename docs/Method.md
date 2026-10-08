@@ -64,7 +64,11 @@ F0 + delta ─ unchanged native PlainConvUNet ─ fine lesion segmentation
 
 三个 stem 各为两层 Conv3d(3³)+InstanceNorm+LeakyReLU，不共享参数。
 stem_channels=8，neutral projection 24→3；coarse 分支在 F0 上先做 factor-two average pooling。
-controller 两层 1³ 卷积，softmax temperature=1，输出 [B,3,D,H,W]。
+controller 两层 1³ 卷积，输出 [B,3,D,H,W]。
+系数按 `weights = (controller_logits / SOFTMAX_TEMPERATURE).softmax(dim=1)` 计算：
+温度在**前向里显式出现**，因此代码、run_config 与文档对该常量的语义一致；
+`SOFTMAX_TEMPERATURE` 冻结为 1.0（不设 CLI 超参数、不做温度搜索），
+T=1 时与直接 `logits.softmax(dim=1)` **逐值相同**（有单元测试）。
 D 的 context 为 [WG,PZ,TZ,U]，U=1-max(PZ,TZ)，只是 uncertainty-like 数值通道。
 residual 最后 1³ projection 零初始化，初始 delta=0。
 
@@ -74,6 +78,12 @@ C/D 永远保留 neutral path，不以 L 或 anatomy 二值阈值硬乘输入、
 D 只接收预测概率，输入必须有限且在 [0,1]；不能仅靠数值断言区分合法全零背景 patch 与硬掩膜来源，
 因此来源由数据契约保证。张量 shape 不能代替物理几何检查，后者发生在物化与预处理。
 
+热路径检查的代价已在真实 patch 形状（`[1,6,16,320,320]`，RTX 3090）上用合成张量测量：
+有限性/范围的 reduce 与 bool 同步约 **0.350–0.351 ms/patch**，约为 fusion 前端（约 26.0 ms/patch）
+的 **1.35%**。因此**保留**逐 patch 检查，不把 full-tensor 检查挪到仅在物化/预处理阶段：
+没有证据支持用失去 fail-closed 换这点开销。边界：合成张量、单卡、非 profiler trace，
+不含 backbone 前向，未测 FLOPs/显存，不构成训练吞吐声明。
+
 ## 5. Loss and Native Integration
 
 复用 `LesionnessAuxiliaryLoss` 与物理膨胀 target，radius=3 mm、weight=0.5 保持冻结。
@@ -82,6 +92,9 @@ coarse target 从全分辨率训练 lesion GT 膨胀，再 max-pool；各向异�
 推理不需要 GT，网络只返回原生分割 tensor/DS list。
 
 新 B/C/D 分别提供 FLCE 与 DiceCE 类，方法 mixin 与显式 baseline 继承组合，不复制训练器。
+同一 A/B/C/D 另有 100 epoch 短预算类（类名插入 `_100ep`，独立输出目录）：短预算类只把
+`num_epochs` 在 `initialize()` 中同步为 `SHORT_BUDGET_EPOCHS`，从而让训练循环上界与
+PolyLR 总周期一致；其余机制完全不变，正式 1000 epoch 类不被修改。
 train loop、optimizer、PolyLR、checkpoint、validation、sliding-window/export 全部原生。
 辅助 logits 暂用同进程属性通道，prototype 限单进程，禁 DDP；项目 fusion Trainer 禁 compile，
 避免编译包装隐藏该属性。A1/A2 正式对照需同样冻结 compile 设置。

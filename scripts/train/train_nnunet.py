@@ -4,6 +4,8 @@
 默认 ACTIVE：A1/A2 strong baseline、B neutral stems、C lesion-conditioned fusion、
 D predicted-anatomy + lesion-conditioned fusion、Stage-1 anatomy generator。
 每个 B/C/D 都有 FLCE 与 DiceCE 两套类，基线损失选择后固定一套。
+同一 A/B/C/D 另有 100 epoch 短预算筛选臂（``*_100ep`` 变体，独立类名/输出目录）：
+只用于启动期 sanity 与**同预算**方向筛选，不与 1000 epoch 正式臂比较优劣。
 --supporting 显示旧 ROI/refinement/HN 扩展，--legacy 显示只读归档条件。
 --seeded-output --seed X 使用独立 Trainer 类名/输出路径，保留历史 checkpoint。
 不重实现训练循环、optimizer、scheduler、验证或滑窗推理。
@@ -17,17 +19,33 @@ import argparse
 import json
 from pathlib import Path
 
-#: ACTIVE（研究主线）：默认 `--help` 只显示这些
+#: ACTIVE（研究主线）：默认 `--help` 只显示这些。
+#: 前 9 项是 1000 epoch 正式臂；``*_100ep`` 是同一 A/B/C/D 的 100 epoch 方向筛选臂，
+#: 独立类名 → 独立输出目录，只做 sanity 与方向筛选，不与历史 1000 epoch 结果比较优劣。
 ACTIVE_VARIANTS = {
     "anatomy_joint_100ep": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
     "positive_sampling": "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
     "dicece_positive_sampling": "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT",
+    "positive_sampling_100ep": "nnUNetTrainerPICAI_FLCE_PositiveSampling_100ep_NoFFT",
+    "dicece_positive_sampling_100ep": (
+        "nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT"
+    ),
     "neutral_fusion_flce": "nnUNetTrainerPICAI_NeutralFusion_FLCE_NoFFT",
     "neutral_fusion_dicece": "nnUNetTrainerPICAI_NeutralFusion_DiceCE_NoFFT",
+    "neutral_fusion_flce_100ep": "nnUNetTrainerPICAI_NeutralFusion_FLCE_100ep_NoFFT",
+    "neutral_fusion_dicece_100ep": "nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT",
     "lesion_fusion_flce": "nnUNetTrainerPICAI_LesionFusion_FLCE_NoFFT",
     "lesion_fusion_dicece": "nnUNetTrainerPICAI_LesionFusion_DiceCE_NoFFT",
+    "lesion_fusion_flce_100ep": "nnUNetTrainerPICAI_LesionFusion_FLCE_100ep_NoFFT",
+    "lesion_fusion_dicece_100ep": "nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT",
     "anatomy_lesion_fusion_flce": "nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_NoFFT",
     "anatomy_lesion_fusion_dicece": "nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_NoFFT",
+    "anatomy_lesion_fusion_flce_100ep": (
+        "nnUNetTrainerPICAI_AnatomyLesionFusion_FLCE_100ep_NoFFT"
+    ),
+    "anatomy_lesion_fusion_dicece_100ep": (
+        "nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT"
+    ),
 }
 
 #: LEGACY（归档）：需要 ``--legacy`` 才出现。类名与实现逐字保留在 legacy/fusion_trainers.py
@@ -71,6 +89,30 @@ SUPPORTING_VARIANTS = {
 }
 
 VARIANT_TO_TRAINER = {**ACTIVE_VARIANTS, **SUPPORTING_VARIANTS, **LEGACY_VARIANTS}
+
+#: nnU-Net 原生正式预算（Trainer 不声明短预算时使用）
+DEFAULT_EPOCH_LIMIT = 1000
+
+
+def expected_epoch_limit(trainer_class) -> int:
+    """该 Trainer 的冻结 epoch 上界：短预算类显式声明，正式臂沿用 nnU-Net 原生 1000。
+
+    正式 A/B/C/D **不**声明类属性（``nnUNetTrainer.__init__`` 里把实例 ``num_epochs``
+    设为 1000），因此缺省回退值就是 1000。checkpoint 的 ``current_epoch`` 必须落在该上界
+    之内，避免把 1000 epoch 的 checkpoint 续到 100 epoch 类或反向混用。
+    """
+    declared = getattr(trainer_class, "num_epochs", None)
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared <= 0:
+        return DEFAULT_EPOCH_LIMIT
+    return declared
+
+
+def is_short_budget(trainer_class) -> bool:
+    """该 Trainer 是否属于预先冻结的短预算（100 epoch）筛选臂（唯一真源在 trainers 模块）。"""
+    from zonal_reliability_fusion.nnunet.trainers import SHORT_BUDGET_TRAINERS
+
+    return trainer_class in SHORT_BUDGET_TRAINERS
+
 
 #: 旧 100-epoch 同区参照分支：严格限定 Dataset606 / 3d_fullres
 SHORT_FUSION_VARIANTS = frozenset(
@@ -183,6 +225,8 @@ def build_parser(include_legacy: bool = False, include_supporting: bool = False)
             + ", ".join(sorted(ACTIVE_VARIANTS))
             + ("；SUPPORTING = " + ", ".join(sorted(SUPPORTING_VARIANTS)) if include_supporting else "")
             + ("；LEGACY = " + ", ".join(sorted(LEGACY_VARIANTS)) if include_legacy else "")
+            + "。ACTIVE 的 *_100ep 变体是 100 epoch 方向筛选臂（独立类名/输出目录），"
+            "只做 sanity 与同预算互比，不与历史 1000 epoch 结果比较优劣。"
         ),
     )
     parser.add_argument(
@@ -192,6 +236,7 @@ def build_parser(include_legacy: bool = False, include_supporting: bool = False)
             "[ACTIVE] positive_sampling / dicece_positive_sampling = strong baseline A1 / A2"
             "（唯一差异是损失）；neutral_fusion_* = B；lesion_fusion_* = C；"
             "anatomy_lesion_fusion_* = D (Dataset608, predicted soft anatomy)；"
+            "带 _100ep 后缀的同名条件是 100 epoch 方向筛选臂（不与 1000 epoch 正式臂混用）；"
             "ROI/logits-refinement variants are supporting ablations；"
             "new E remains planned until best(C,D) is selected；"
             "anatomy_joint_100ep = Stage 1 解剖先验生成器。"
@@ -271,7 +316,15 @@ def resolve_trainer_class(variant: str):
 
 
 def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> dict:
-    """组装可审计的 ``run_config.json``（新主线要求每个实验都能打印自己的冻结配置）。"""
+    """组装可审计的 ``run_config.json``（新主线要求每个实验都能打印自己的冻结配置）。
+
+    ``fusion_constants``/``epochs`` 全部**从代码读取**，不在此手写第二份常量：常量一旦
+    与实现漂移，run_config 就会变成误导性的 provenance。
+    """
+    from zonal_reliability_fusion.multimodal.conditioned_fusion import (
+        SOFTMAX_TEMPERATURE,
+        STEM_CHANNELS,
+    )
     from zonal_reliability_fusion.nnunet.seeds import describe_seed_limitations
 
     configuration = plans.get("configurations", {}).get(args.configuration, {})
@@ -301,10 +354,17 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
         ),
         "sampling": "positive_sampling; ROI only for explicit supporting variants",
         "fusion_condition": getattr(trainer_class, "fusion_condition", None),
-        "fusion_constants": {"stem_channels": 8, "temperature": 1.0, "zero_init_residual": True},
-        "epochs": trainer_class.num_epochs
-        if isinstance(getattr(trainer_class, "num_epochs", None), int)
-        else "nnU-Net default（1000）",
+        "fusion_constants": {
+            "stem_channels": STEM_CHANNELS,
+            "temperature": SOFTMAX_TEMPERATURE,
+            "zero_init_residual": True,
+        },
+        "epochs": expected_epoch_limit(trainer_class),
+        "budget": (
+            "short_budget_screening（100 epoch：仅 sanity 与方向筛选，不与 1000 epoch 比较）"
+            if is_short_budget(trainer_class)
+            else "formal（nnU-Net 原生 1000 epoch）"
+        ),
         "batch_size": configuration.get("batch_size"),
         "patch_size": configuration.get("patch_size"),
         "spacing": configuration.get("spacing"),
@@ -485,7 +545,8 @@ def main(argv=None) -> None:
         guard_anatomy_checkpoint(
             output_folder, args.continue_training, args.validation_only,
             expected_dataset_json=dataset_json, expected_trainer_name=trainer_class.__name__,
-            expected_epoch_limit=1000, expected_init_args={
+            # 上界由 Trainer 类自身决定（短预算类声明 100；正式臂回退 1000），不在此硬编码
+            expected_epoch_limit=expected_epoch_limit(trainer_class), expected_init_args={
                 "plans": plans, "configuration": args.configuration,
                 "fold": int(args.fold) if args.fold != "all" else "all", "dataset_json": dataset_json})
         if getattr(trainer_class, "fusion_condition", None) == "anatomy":

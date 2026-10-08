@@ -29,6 +29,34 @@ LR schedule、epoch、DS、checkpoint、validation/inference、显式 seed。
 A1/A2 同 seed 各自运行，按 primary + failure-mode endpoints 综合判断，不能只选单个 Dice。
 若证据接近，保留不确定性，不强行选“胜者”。B/C/D 提供两个显式 loss 家族，按选型使用同一家族。
 
+### 2.1 Baseline selection rule（2026-10-08 冻结，先于任何 A1/A2 结果）
+
+判据顺序与 tie-break 原则在**看到任何 A1/A2 结果之前**固定；禁止事后按“哪个指标更好”择指标。
+所有比较必须 matched seed、同 fold、同预算、同 inference、同 evaluation，
+指标定义与空值语义引用 `docs/Evaluation_Protocol.md`（不在本文重新定义）。
+
+1. **Primary**：`positive_case_macro_dice`（全部 GT 阳性病例纳入，完全漏检记 0）。
+   单项配对均值差 **CI95 不跨 0** 才算“有明确差异”；CI 跨 0 一律记为“未观察到明确差异”，
+   **不得**写成等效、也不得写成无效。
+2. **Secondary**（仅当 primary 差异很小或 CI95 跨 0 时进入，顺序固定）：
+   `completely_missed_lesion_rate` / `completely_missed_case_rate` →
+   `lesion_sensitivity_any_overlap` → `small_lesion_sensitivity_any_overlap`。
+   理由：当前研究的核心 failure mode 是漏检，而不是整体体素重叠。
+3. **Third level**（仅当 sensitivity 仍接近时进入）：
+   `negative_cases_with_fp`、`fp_components_per_case`、`fp_voxel_volume_per_case`、
+   `positive_voxel_precision`（防止用扩大预测换 recall）。
+4. **若仍无法区分**（冻结的处理原则，必须先于结果确定）：
+   优先选择 **native DiceCE（A2）**。允许写下的唯一理由是
+   “standard nnU-Net loss 更容易作为审稿人可接受的 strong reference”；
+   **不得**写成“DiceCE better”，除非有实验支持。该选择是**可解释性/可接受性**决策，
+   不是性能结论，登记时必须与实验结果分开叙述。
+   替代方案（两个 loss 家族都进入 B/C/D 短预算 screening）需要 **2× 训练与评估预算**
+   （每个条件两套短预算 + 后续正式预算），只有在短预算 screening 明确显示 loss 家族
+   影响方向时才启用；不默认启用，也不在结果出来后再决定。
+
+选择结论与依据的**运行事实**登记在 `docs/Training_Log.md`；**证据与边界**登记在
+`docs/Findings.md`。选定后 B/C/D/E 只使用同一 loss 家族，另一家族保留为可解析的类名。
+
 ## 3. Variant Matrix
 
 | 条件 | FLCE variant | DiceCE variant | 唯一干预 |
@@ -58,6 +86,13 @@ Dataset608 物化、冻结 plans 准备、预处理命令由 README 给出；只
 第二套 runtime injection。缺病例/几何/metadata 直接失败，禁止静默排除。
 Stage-1 缺 WG supervision 的已知排除病例仍需其自身 MRI 的预测，不能用空 prior 顶替。
 
+**C vs D 单变量解释的前置条件**：`scripts/data/audit_dataset605_608_equivalence.py`（只读、
+fail-closed）必须对真实 Dataset605 与 Dataset608 的前三个 MRI 通道、lesion 标签、病例集合/顺序
+与 split 取得 **PASS**（raw 与 preprocessed 两层）。仅有 raw 层通过（`RAW_ONLY_PASS`）**不足以**
+支撑“D 只增加 predicted anatomy context”。该工具只回答 MRI/lesion/split 是否保持不变，
+**不**评价 prior 质量；若存在数值差异必须记录 `max |delta|` / affected voxels / 来源，不得默认相同。
+工具已就绪但**尚未在真实 Dataset608 上运行**（608 未物化/未预处理）。
+
 ## 6. Architecture and Construction Checks
 
 先做合成网络 shape、初始恒等、梯度、权重归一化、非法概率与 provenance 测试；
@@ -67,10 +102,32 @@ Stage-1 缺 WG supervision 的已知排除病例仍需其自身 MRI 的预测，
 
 ## 7. Budget
 
-筛选预算 100/150 epoch，同一比较同 epoch、iterations、scheduler总周期、评估设置。
-新增 active fusion Trainer 默认仍为原生 1000 epoch；**尚未提供独立短预算 Trainer**，
-因此不能把当前默认命令称为 100ep 筛选命令。短预算实现后再安排 B/C/D exploratory training。
-短预算不得与历史 1000ep 声称优劣；本轮不启动任何预算训练。
+正式预算 1000 epoch。筛选预算固定 **100 epoch**，且**只有这一个档位**
+（`zonal_reliability_fusion.nnunet.trainers.SHORT_BUDGET_EPOCHS = 100`；不同时维护 50/100/150/300）。
+
+短预算运行**只**用于启动期 sanity 与方向筛选（`short-budget runs are only for sanity and
+directional screening`）：
+
+- **不得**与历史 1000 epoch 模型比较优劣，也不得据此声称某条件更好；
+- 短预算内部必须同预算、同 seed、同评估互比：`A-short`（baseline 胜出 loss 家族的 100ep 臂）
+  vs `B-short` vs `C-short` vs `D-short`。**没有同预算 baseline 就没有公平参照**，
+  禁止只跑 B/C/D 短臂后与历史长预算结果对比；
+- 短预算结论只用于决定“该条件是否值得进入正式预算”，不进入论文结论。
+
+实现边界（不构成第二套训练框架）：
+
+- 每个 A/B/C/D 各有 1000 epoch 正式类与 100 epoch 筛选类；筛选类名 = 正式类名插入 `_100ep`
+  （例 `nnUNetTrainerPICAI_NeutralFusion_FLCE_100ep_NoFFT`），因此输出目录、checkpoint、
+  validation 产物天然隔离。禁止用命令行临时改 `num_epochs` 后复用正式输出目录；
+- 短预算类只在 `initialize()` 里同步 `num_epochs`，使训练循环上界、PolyLR 总周期
+  （`PolyLRScheduler.max_steps`）与 checkpoint `current_epoch` 上界三者一致；
+  训练循环、optimizer、scheduler、DS、checkpoint、validation、滑窗推理全部仍为原生实现；
+- 正式 1000 epoch 类**不被修改**（无类级预算声明，回退即 nnU-Net 原生 1000）；
+- 入口的 checkpoint 预算校验按 Trainer 类自身声明取值（短预算 100，正式 1000），
+  并对每个短预算变体校验 dataset/plans/configuration/fold 一致。
+
+2026-10-08 状态：短预算 Trainer 与其测试**已完成**；**尚未启动任何 100ep 或 1000ep 训练**。
+B/C/D exploratory training 需在 baseline 选型（§2.1）之后另行安排。
 
 ## 8. Final Confirmation
 

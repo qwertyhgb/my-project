@@ -18,7 +18,7 @@
 |---|---|---|---|
 | `positive_sampling`（条件 A1） | Dataset605 / 3d_fullres / 0 | **已完成**（历史运行，无显式 seed；见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | `dicece_positive_sampling`（条件 A2） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
-| `anatomy_joint_100ep`（Stage 1） | Dataset607 / 3d_fullres / 0 | **已完成**（训练 + validation；**WG 头不可用**，见下） | `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| `anatomy_joint_100ep`（Stage 1） | Dataset607 / 3d_fullres / 0 | **已完成**（训练 + validation；表内旧注“**WG 头不可用**”已 **[SUPERSEDED]**，见本节末尾标注与末节诊断） | `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | `lesion_roi`（条件 B） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_LesionROI_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
 | `lesion_coarse_to_fine`（条件 C） | Dataset605 / 3d_fullres / 0 | 代码就绪，**未训练** | 目标：`.../nnUNetTrainerPICAI_LesionCoarseToFine_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
 | `lesion_zone_refine`（条件 D） | Dataset606 / 3d_fullres / 0 | 代码就绪，**未训练**（需 Dataset606 的 zone 概率通道） | 目标：`.../nnUNetTrainerPICAI_LesionZoneRefine_NoFFT__nnUNetPlans__3d_fullres/fold_0/`（**未创建**） |
@@ -50,6 +50,12 @@
 | WG | `[1,3,5,7]` | **0.00558** | 334.79 | 282.83 | 121303.20 | 121637.99 | 617.63 |
 | PZ | `[2,3,6,7]` | 0.89849 | 34955.74 | 3496.52 | 4224.70 | 39180.44 | 38452.26 |
 | TZ | `[4,5,6,7]` | 0.93614 | 83959.15 | 4893.40 | 4946.05 | 88905.20 | 88852.55 |
+
+> **SUPERSEDED BY 2026-10-08 SOFT-HEAD DIAGNOSIS** — 见
+> [`docs/experiments/anatomy_joint_100ep.md`](experiments/anatomy_joint_100ep.md)。
+> 以下“WG 头实际不可用 / WG 预测必然为空 / 条件 B 因此不可运行”的旧解释**已被后续的
+> soft-head 只读诊断推翻**：原数值保留（ordered region hard export 的确如此），只是**解释失效**。
+> 当前口径：soft WG head 未显示塌缩；Stage-1 不因此重训。（本节其余内容保持原样，不追改历史。）
 
 - **关键观察（必须如实记录）**：**WG 区域头实际不可用**。GT 的 WG 参考体积并不小
   （`n_ref` 逐例均值 121637 voxel，与 PZ ∪ TZ 量级相当），但模型只预测出约 618 voxel/例，
@@ -423,3 +429,19 @@ python -B -m zonal_reliability_fusion.anatomy.validation outputs/nnUNet_results/
 - 先验与伪监督reference的一致性不能证明人工解剖准确性或下游lesion收益。
 
 新融合B/C/D无新训练/validation结果。NO NEW LONG TRAINING STARTED。
+
+---
+
+## 2026-10-08 — 正式实验前收口（无新训练 / 无新 validation）
+
+本轮只做代码、测试、文档与只读诊断，**未启动**任何训练、validation、推理或数据处理；
+未创建任何模型目录或 checkpoint，未删除或覆盖任何既有产物。状态变化（不含运行结果）：
+
+- 短预算（100 epoch）筛选 Trainer 类与 8 个入口变体已实现，**未运行任何 100ep 训练**；
+  正式 1000 epoch 类未被修改（类名与输出目录不变）。
+- 融合系数按 `(logits / SOFTMAX_TEMPERATURE).softmax(dim=1)` 显式计算（T 仍固定 1.0，数值不变）。
+- 新增只读工具 `scripts/data/audit_dataset605_608_equivalence.py`（Dataset605↔608 一致性审计）；
+  **尚未在真实 Dataset608 上运行**（608 未物化/未预处理）。
+- `A1 vs A2` 的 baseline selection rule 已冻结在 `docs/Experiment_Plan.md` §2.1（先于任何结果）。
+
+NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.

@@ -14,6 +14,9 @@ from torch import nn
 from torch.nn import functional as F
 
 STEM_CHANNELS = 8
+#: 局部融合 softmax 的温度。**预先冻结为 1.0**：不做搜索、不设 CLI 超参数。
+#: 它显式出现在前向计算里（``weights = (logits / T).softmax(dim=1)``），因此代码、run_config
+#: 与文档对这一常量的语义完全一致；T=1 时与直接 ``logits.softmax(dim=1)`` 数值完全相同。
 SOFTMAX_TEMPERATURE = 1.0
 
 
@@ -77,14 +80,17 @@ class ConditionedMultimodalNNUNet(nn.Module):
         self.last_fusion_weights = None
         if self.condition == "neutral":
             return neutral, None, neutral
-        logits = self.lesionness_head(F.avg_pool3d(neutral, 2))
-        lesionness = F.interpolate(logits.sigmoid(), size=neutral.shape[2:],
+        lesionness_logits = self.lesionness_head(F.avg_pool3d(neutral, 2))
+        lesionness = F.interpolate(lesionness_logits.sigmoid(), size=neutral.shape[2:],
                                   mode="trilinear", align_corners=False)
         context = [lesionness] + ([] if anatomy is None else [anatomy])
-        weights = self.controller(torch.cat([concatenated, *context], dim=1)).softmax(dim=1)
+        controller_logits = self.controller(torch.cat([concatenated, *context], dim=1))
+        # Temperature is applied explicitly instead of being asserted only in the run config;
+        # at the frozen value 1.0 this is numerically identical to a plain softmax over dim=1.
+        weights = (controller_logits / SOFTMAX_TEMPERATURE).softmax(dim=1)
         adaptive = sum(weights[:, i:i+1] * feature for i, feature in enumerate(features))
         delta = self.residual_projection(torch.cat([adaptive, *context], dim=1))
-        self.auxiliary_outputs = {"lesionness_logits": logits}
+        self.auxiliary_outputs = {"lesionness_logits": lesionness_logits}
         return neutral + delta, weights, neutral
 
     def forward(self, x):

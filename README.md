@@ -29,7 +29,8 @@ F0 + delta → native PlainConvUNet → fine lesion segmentation
 
 主实验树：A strong baseline → B neutral fusion → C lesion-conditioned fusion →
 D anatomy+lesion-conditioned fusion → E optional hard-negative strategy。
-A1/A2 比较 FLCE 与原生 DiceCE，后续使用胜出 loss 家族。ROI 为 supporting ablation。
+A1/A2 比较 FLCE 与原生 DiceCE，后续使用胜出 loss 家族；判据顺序、failure-mode 层级与
+tie-break 原则已**先于任何结果冻结**在 Experiment Plan §2.1。ROI 为 supporting ablation。
 新融合骨架尚无训练效果证据；详细实现/构造/训练/validation 状态只在 Training_Log 维护。
 
 ## Stage-1 Diagnosis
@@ -119,9 +120,18 @@ nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py
 run-config 已存在拒绝覆盖，已有模型目录拒绝从头重训；`--continue-training` 只用于未完成运行。
 终端显示原生 epoch 进度；成功需 epoch 1000、final checkpoint 与 validation summary。
 
-B/C/D variant 与 loss 家族映射见 Experiment_Plan。正式比较须先完成 baseline 选型，
-短预算独立 Trainer 尚未实现，当前默认命令不能冒充 100ep 筛选。
-`--seeded-output` 同样适用于 active fusion 类；不要只改 run-config 文件名后覆盖模型目录。
+B/C/D variant 与 loss 家族映射见 Experiment_Plan。正式比较须先完成 baseline 选型。
+短预算（100 epoch）筛选臂是**独立 Trainer 类 + 独立输出目录**，只用于 sanity 与同预算方向筛选，
+不与历史 1000 epoch 结果比较优劣（边界与实现约束见 Experiment Plan §7）：
+
+```bash
+nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
+  neutral_fusion_flce_100ep 605 3d_fullres 0 --seed 20261008 --seeded-output
+```
+
+筛选必须同时跑**同预算 baseline 臂**（按选型使用 `positive_sampling_100ep` 或
+`dicece_positive_sampling_100ep`）作为参照；只跑 B/C/D 短臂没有公平参照。
+`--seeded-output` 同样适用于 active fusion 类与短预算类；不要只改 run-config 文件名后覆盖模型目录。
 E 在 best(C,D) 冻结后单独建立；旧 supporting E 不能充当新 E。
 
 ## Commands: Independent Predicted-Prior Dataset (Not Run)
@@ -159,6 +169,20 @@ python -m zonal_reliability_fusion.nnunet.prior_preprocessor preprocess --proces
 MRI 继续走原生 preprocessing；prior 按相同几何链线性插值，不改变 MRI crop。
 失败保留 INCOMPLETE 目录，不能将部分病例结果作为完成；不提供自动删除/覆盖。
 
+4. 真实一致性审计（**C vs D 单变量解释的前置条件**；只读、fail-closed）：
+
+```bash
+python scripts/data/audit_dataset605_608_equivalence.py \
+  --output outputs/reports/dataset605_608_equivalence_audit.json
+```
+
+判据：退出码 0、`status=DATASET605_608_EQUIVALENCE_PASS`、`n_cases_mri_mismatch=0`、
+`n_cases_label_mismatch=0`、`case_set_equal` / `split_equal` / `metadata_ok` 为 true、
+`prior_contract_status=VALID`；仅有 raw 层通过（`RAW_ONLY_PASS`）不足以支撑该解释。
+差异（含 `max |delta|`、affected voxels 与逐例来源）如实写入报告，不默认为相同。
+它只回答 MRI/lesion/split 是否保持不变，**不**评价解剖先验质量（后者见 Stage-1 诊断）。
+**本工具尚未在真实 Dataset608 上运行**（608 未物化/未预处理）。
+
 ## Evaluation and Prediction
 
 分割评价不改原协议，primary 为 positive-case macro Dice，漏检纳入分母；
@@ -190,8 +214,9 @@ src/zonal_reliability_fusion/
   evaluation/    frozen segmentation metrics
   nnunet/        native Trainer integration, prior preprocessing wrapper, registry
   legacy/        unchanged historical implementations
-scripts/train/train_nnunet.py    only training entry
+scripts/train/train_nnunet.py    only training entry（含 100ep 短预算筛选变体）
 scripts/inference/predict_nnunet.py   native prediction entry + project resolvers
+scripts/data/                  只读审计（含 audit_dataset605_608_equivalence.py）与物化入口
 tests/unit/                     synthetic tests and true native constructor checks
 third_party/nnUNet/              fixed v2.6.2, read-only
 ```
