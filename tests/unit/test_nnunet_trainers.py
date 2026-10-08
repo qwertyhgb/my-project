@@ -46,7 +46,12 @@ from zonal_reliability_fusion.nnunet.trainers import (
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
@@ -54,6 +59,7 @@ from zonal_reliability_fusion.nnunet.trainers import (
     nnUNetTrainerPICAI_ImageGate,
     nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
 )
+from zonal_reliability_fusion.nnunet.trainers import nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
 from zonal_reliability_fusion.nnunet.transforms import MRIChannelRestrictedTransform
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -95,8 +101,10 @@ def test_pi_cai_flce_rejects_invalid_or_ignore_targets(bad_target):
 
 # --------------------------------------------------------------------------- #2 继承关系
 _ALL_PROJECT_TRAINERS = (
+    nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_ImageGate,
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
@@ -105,6 +113,10 @@ _ALL_PROJECT_TRAINERS = (
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
 )
 
 
@@ -117,6 +129,14 @@ def test_all_trainers_are_nnunettrainer_subclasses():
     # positive_sampling 在 FLCE baseline 之上只叠加采样 mixin
     assert issubclass(
         nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT, nnUNetTrainerPICAI_FLCE_NoFFT
+    )
+    # dicece_positive_sampling 在 DiceCE baseline 之上只叠加采样 mixin
+    assert issubclass(
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_NoFFT,
+    )
+    assert issubclass(
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT, PositiveCaseSamplingMixin
     )
     # 两个组合 Trainer：gate（结构）+ 阳性采样 mixin（公平匹配 RQ1/RQ2）
     assert issubclass(
@@ -229,6 +249,7 @@ def test_optimized_baseline_build_loss_is_native_dice_plus_ce(enable_deep_superv
     [
         nnUNetTrainerPICAI_FLCE_NoFFT,
         nnUNetTrainerPICAI_DiceCE_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
@@ -260,6 +281,10 @@ def test_nofft_keeps_blur_but_disables_fft_benchmark(trainer):
         nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
     ],
 )
 def test_combined_trainers_keep_nofft_and_limit_intensity_to_mri(trainer):
@@ -301,6 +326,7 @@ def test_combined_trainers_keep_nofft_and_limit_intensity_to_mri(trainer):
     [
         (nnUNetTrainerPICAI_FLCE_NoFFT, 3),
         (nnUNetTrainerPICAI_DiceCE_NoFFT, 3),
+        (nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT, 3),
         (nnUNetTrainerPICAI_ImageGate, 3),
         (nnUNetTrainerPICAI_AnatomyGate, 5),
         (nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT, 3),
@@ -356,10 +382,14 @@ def test_optimized_baseline_builder_returns_plain_network_without_gate(synthetic
 # --------------------------------------------------------------------------- #15 类名互不相同
 def test_trainer_class_names_are_distinct():
     names = {t.__name__ for t in _ALL_PROJECT_TRAINERS}
-    assert len(names) == 10  # nnU-Net 按类名隔离 output folder，重名会互相覆盖
+    assert len(names) == 16  # nnU-Net 按类名隔离 output folder，重名会互相覆盖
     # 类名必须与各自已存在/预期的输出目录一致（不得改名导致无法续训/验证）
     assert nnUNetTrainerPICAI_FLCE_NoFFT.__name__ == "nnUNetTrainerPICAI_FLCE_NoFFT"
     assert nnUNetTrainerPICAI_DiceCE_NoFFT.__name__ == "nnUNetTrainerPICAI_DiceCE_NoFFT"
+    assert (
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT.__name__
+        == "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
+    )
     assert (
         nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT.__name__
         == "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
@@ -384,9 +414,9 @@ def test_trainer_class_names_are_distinct():
         nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT.__name__
         == "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT"
     )
-    # 输出目录由类名自然形成：十个类名互异 => 十个目录互异
+    # 输出目录由类名自然形成：十一个类名互异 => 十一个目录互异
     dirs = {f"{n}__nnUNetPlans__3d_fullres" for n in names}
-    assert len(dirs) == 10
+    assert len(dirs) == 16
 
 
 # --------------------------------------------------------------------------- #16 train_nnunet.py --help
@@ -406,10 +436,12 @@ def test_train_entry_help_succeeds():
 
 def test_train_entry_variant_mapping_is_complete_and_distinct():
     module = _load_train_entry()
-    # 有且仅有这十个 variant
+    # 有且仅有这十一个 variant
     assert set(module.VARIANT_TO_TRAINER) == {
+        "anatomy_joint_100ep",
         "baseline",
         "optimized_baseline",
+        "dicece_positive_sampling",
         "image_gate",
         "anatomy_gate",
         "positive_sampling",
@@ -418,12 +450,20 @@ def test_train_entry_variant_mapping_is_complete_and_distinct():
         "feature_no_gate_positive_sampling",
         "feature_image_gate_positive_sampling",
         "feature_anatomy_gate_positive_sampling",
+        "feature_no_gate_positive_sampling_100ep",
+        "feature_anatomy_gate_positive_sampling_100ep",
+        "zonal_reference_positive_sampling_100ep",
+        "zonal_reference_adaptive_positive_sampling_100ep",
     }
-    assert len(set(module.VARIANT_TO_TRAINER.values())) == 10
+    assert len(set(module.VARIANT_TO_TRAINER.values())) == 16
     assert module.resolve_trainer_class("baseline") is nnUNetTrainerPICAI_FLCE_NoFFT
     assert (
         module.resolve_trainer_class("optimized_baseline")
         is nnUNetTrainerPICAI_DiceCE_NoFFT
+    )
+    assert (
+        module.resolve_trainer_class("dicece_positive_sampling")
+        is nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
     )
     assert module.resolve_trainer_class("image_gate") is nnUNetTrainerPICAI_ImageGate
     assert (
@@ -455,6 +495,76 @@ def test_train_entry_variant_mapping_is_complete_and_distinct():
     )
 
 
+_SHORT_ZONAL_TRAINERS = (
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+    nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
+)
+
+
+@pytest.mark.parametrize("trainer", _SHORT_ZONAL_TRAINERS)
+def test_short_zonal_budget_and_scheduler_horizon_without_real_trainer(monkeypatch, trainer):
+    # 禁止原生 __init__ 创建目录/读计划；仅提供合成 configuration state。
+    def fake_parent_init(self, *args, **kwargs):
+        self.configuration_manager = SimpleNamespace(spacing=[3.0, .5, .5])
+        self.num_epochs = 1000
+        self.network = nn.Linear(2, 2)
+        self.initial_lr = .01
+        self.weight_decay = 3e-5
+    monkeypatch.setattr(_FeatureFusionTrainerBase, "__init__", fake_parent_init)
+    instance = trainer()
+    assert instance.num_epochs == 100
+    optimizer, scheduler = nnUNetTrainer.configure_optimizers(instance)
+    assert scheduler.max_steps == 100
+    scheduler.step(100)
+    assert optimizer.param_groups[0]["lr"] == 0
+    assert trainer.run_training is nnUNetTrainer.run_training
+    assert trainer.perform_actual_validation is nnUNetTrainer.perform_actual_validation
+    assert trainer.configure_optimizers is nnUNetTrainer.configure_optimizers
+    assert trainer.get_dataloaders is PositiveCaseSamplingMixin.get_dataloaders
+
+
+def test_short_zonal_spacing_and_cli_fail_closed(monkeypatch):
+    def fake_parent_init(self, *args, **kwargs):
+        self.configuration_manager = SimpleNamespace(spacing=[1, 1, 1])
+    monkeypatch.setattr(_FeatureFusionTrainerBase, "__init__", fake_parent_init)
+    with pytest.raises(ValueError, match="spacing"):
+        _SHORT_ZONAL_TRAINERS[0]()
+    module = _load_train_entry()
+    for dataset, configuration in [("605", "3d_fullres"), ("606", "2d")]:
+        with pytest.raises(SystemExit, match="Dataset606"):
+            module.main(["zonal_reference_positive_sampling_100ep", dataset, configuration, "0"])
+
+
+def test_short_zonal_entry_refuses_overwrite_or_silent_fresh_resume(monkeypatch):
+    module = _load_train_entry()
+    # 不创建目录/影像/checkpoint，模拟两个不安全的文件系统状态。
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    with pytest.raises(SystemExit, match="拒绝从头覆盖"):
+        module.main(["zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0"])
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+    with pytest.raises(SystemExit, match="拒绝静默重训"):
+        module.main(["zonal_reference_positive_sampling_100ep", "606", "3d_fullres", "0", "--continue-training"])
+
+
+@pytest.mark.parametrize("trainer", _SHORT_ZONAL_TRAINERS)
+def test_short_zonal_builders_require_five_channels_and_run_synthetic_forward(synthetic_arch, trainer):
+    arguments = (
+        synthetic_arch["architecture_class_name"], synthetic_arch["arch_init_kwargs"],
+        synthetic_arch["arch_init_kwargs_req_import"],
+    )
+    with pytest.raises(ValueError, match="五"):
+        trainer.build_network_architecture(*arguments, 3, 2, False)
+    net = trainer.build_network_architecture(*arguments, 5, 2, True)
+    x = torch.randn(2, 5, 8, 16, 16)
+    x[:, 3:] = torch.rand_like(x[:, 3:])
+    out = net(x)
+    assert len(out) == 2
+    sum(t.square().mean() for t in out).backward()
+    assert all(torch.isfinite(p.grad).all() for p in net.parameters() if p.grad is not None)
+
+
 def test_project_trainers_registry_contains_new_trainer():
     from zonal_reliability_fusion.nnunet.trainers import (
         PROJECT_TRAINERS,
@@ -462,9 +572,12 @@ def test_project_trainers_registry_contains_new_trainer():
     )
 
     name = "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT"
+    dicece_positive_sampling = "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
     assert set(PROJECT_TRAINERS) == {
+        "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
         "nnUNetTrainerPICAI_FLCE_NoFFT",
         "nnUNetTrainerPICAI_DiceCE_NoFFT",
+        dicece_positive_sampling,
         "nnUNetTrainerPICAI_ImageGate",
         "nnUNetTrainerPICAI_AnatomyGate",
         name,
@@ -473,6 +586,10 @@ def test_project_trainers_registry_contains_new_trainer():
         "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT",
         "nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT",
         "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT",
+        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT",
+        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT",
+        "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT",
+        "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT",
     }
     assert PROJECT_TRAINERS[name] is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
     assert resolve_trainer_class(name) is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
@@ -481,8 +598,17 @@ def test_project_trainers_registry_contains_new_trainer():
     for cls in (
         nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     ):
         assert resolve_trainer_class(cls.__name__) is cls
+    assert (
+        PROJECT_TRAINERS[dicece_positive_sampling]
+        is nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+    )
+    assert (
+        resolve_trainer_class(dicece_positive_sampling)
+        is nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+    )
 
 
 # ------------------------------------ gate + positive_sampling 组合 Trainer（RQ1/RQ2 公平匹配）
@@ -880,3 +1006,500 @@ def test_feature_trainer_loss_is_pi_cai_flce_not_dice_ce(trainer, enable_ds):
     assert isinstance(base, PiCAIFocalCrossEntropyLoss)
     assert (base.focal_weight, base.ce_weight, base.gamma) == (0.5, 0.5, 2.0)
     assert not isinstance(base, DC_and_CE_loss)
+
+
+# ===========================================================================
+# 独立强参考基线：DiceCE + PositiveSampling（损失消融；不属于 A→B→C→D 主链）
+# ===========================================================================
+DICECE_POS = nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+_A_POSITIVE_SAMPLING = nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+
+
+def _build_native(cls, synthetic_arch, deep_supervision=False):
+    return cls.build_network_architecture(
+        synthetic_arch["architecture_class_name"],
+        synthetic_arch["arch_init_kwargs"],
+        synthetic_arch["arch_init_kwargs_req_import"],
+        3,
+        2,
+        deep_supervision,
+    )
+
+
+def test_dicece_positive_sampling_exact_mro():
+    """MRO 必须精确等于设计值：采样 mixin 在最前，损失/增强/网络全部沿用既有类。"""
+    assert DICECE_POS.__mro__ == (
+        DICECE_POS,
+        PositiveCaseSamplingMixin,
+        nnUNetTrainerPICAI_DiceCE_NoFFT,
+        NoFFTAugmentationMixin,
+        nnUNetTrainer,
+        object,
+    )
+
+
+def test_dicece_positive_sampling_hook_sources():
+    """每个 hook 的来源必须逐个等于设计值，而不是只验证可 import。"""
+    # 损失：直连原生实现（不经过 FLCE mixin）
+    assert DICECE_POS._build_loss is nnUNetTrainer._build_loss
+    assert DICECE_POS._build_loss is nnUNetTrainerPICAI_DiceCE_NoFFT._build_loss
+    assert DICECE_POS._build_loss is not PICAIFocalCrossEntropyLossMixin._build_loss
+    assert PICAIFocalCrossEntropyLossMixin not in DICECE_POS.__mro__
+    # 训练 loader：采样 mixin；验证 transform / 训练步等仍是原生
+    assert DICECE_POS.get_dataloaders is PositiveCaseSamplingMixin.get_dataloaders
+    assert DICECE_POS.positive_cases_per_batch == 1
+    assert (
+        DICECE_POS.get_validation_transforms is nnUNetTrainer.get_validation_transforms
+    )
+    for native_name in (
+        "configure_optimizers",
+        "train_step",
+        "validation_step",
+        "on_train_epoch_start",
+        "on_validation_epoch_start",
+    ):
+        assert getattr(DICECE_POS, native_name) is getattr(nnUNetTrainer, native_name)
+    # 增强：NoFFT mixin；网络：原生 builder（由 plans 构建 PlainConvUNet）
+    assert (
+        DICECE_POS.get_training_transforms
+        is NoFFTAugmentationMixin.get_training_transforms
+    )
+    assert (
+        DICECE_POS.build_network_architecture
+        is nnUNetTrainer.build_network_architecture
+    )
+
+
+def test_dicece_positive_sampling_vs_a_only_loss_differs():
+    """相对 A（FLCE_PositiveSampling）：采样/增强/网络/优化器/验证完全同源，只有损失不同。"""
+    for shared in (
+        "get_dataloaders",
+        "get_training_transforms",
+        "build_network_architecture",
+        "configure_optimizers",
+        "train_step",
+        "validation_step",
+        "get_validation_transforms",
+    ):
+        assert getattr(DICECE_POS, shared) is getattr(_A_POSITIVE_SAMPLING, shared), (
+            shared
+        )
+    assert DICECE_POS.positive_cases_per_batch == 1
+    # 唯一差异：损失（A 是 PI-CAI FLCE mixin；新类是原生 Dice+CE）
+    assert DICECE_POS._build_loss is not _A_POSITIVE_SAMPLING._build_loss
+    assert DICECE_POS._build_loss is nnUNetTrainer._build_loss
+    assert (
+        _A_POSITIVE_SAMPLING._build_loss is PICAIFocalCrossEntropyLossMixin._build_loss
+    )
+
+
+def test_dicece_positive_sampling_vs_dicece_nofft_only_sampler_differs():
+    """相对 DiceCE_NoFFT：损失/增强/网络/优化器/验证完全同源，只有训练采样不同。"""
+    ref = nnUNetTrainerPICAI_DiceCE_NoFFT
+    assert DICECE_POS._build_loss is ref._build_loss
+    assert DICECE_POS.get_training_transforms is ref.get_training_transforms
+    assert DICECE_POS.build_network_architecture is ref.build_network_architecture
+    for shared in (
+        "configure_optimizers",
+        "train_step",
+        "validation_step",
+        "get_validation_transforms",
+    ):
+        assert getattr(DICECE_POS, shared) is getattr(ref, shared), shared
+    # 唯一差异：dataloader 接线（新类换成 PositiveCaseDataLoader；参考类是原生）
+    assert DICECE_POS.get_dataloaders is PositiveCaseSamplingMixin.get_dataloaders
+    assert ref.get_dataloaders is nnUNetTrainer.get_dataloaders
+
+
+@pytest.mark.parametrize("enable_deep_supervision", [False, True])
+def test_dicece_positive_sampling_build_loss_matches_dicece_nofft(
+    enable_deep_supervision,
+):
+    """损失身份：与 DiceCE_NoFFT 同类、同配置、同 deep-supervision 包装；绝不是 FLCE。"""
+    state = _MinimalLossBuilderState(enable_deep_supervision=enable_deep_supervision)
+    loss = DICECE_POS._build_loss(state)
+    reference = nnUNetTrainerPICAI_DiceCE_NoFFT._build_loss(
+        _MinimalLossBuilderState(enable_deep_supervision=enable_deep_supervision)
+    )
+    assert type(loss) is type(reference)
+    if enable_deep_supervision:
+        assert isinstance(loss, DeepSupervisionWrapper)
+        assert np.allclose(loss.weight_factors, reference.weight_factors)
+
+    base = _native_base_loss(loss)
+    assert isinstance(base, DC_and_CE_loss)
+    assert type(base).__module__.startswith("nnunetv2.")
+    assert isinstance(base.dc, MemoryEfficientSoftDiceLoss)
+    assert isinstance(base.ce, RobustCrossEntropyLoss)
+    assert (base.weight_dice, base.weight_ce) == (1, 1)
+    assert base.dc.do_bg is False  # plans 的 do_bg=False
+    assert base.ignore_label is None
+    # 不含 focal gamma / alpha / 类别权重，也不是项目自写的 FLCE
+    assert not isinstance(base, PiCAIFocalCrossEntropyLoss)
+    for forbidden_attr in ("gamma", "alpha", "focal_weight", "ce_weight"):
+        assert not hasattr(base, forbidden_attr)
+
+
+def test_dicece_positive_sampling_loss_numerically_matches_dicece_nofft():
+    """同一合成 logits/target 下，两条路径必须给出逐值相同的损失，且 backward 梯度有限。"""
+    torch.manual_seed(5)
+    outputs = [
+        torch.randn(2, 2, 6, 8, 8, requires_grad=True),
+        torch.randn(2, 2, 3, 4, 4, requires_grad=True),
+    ]
+    targets = [
+        torch.randint(0, 2, (2, 1, 6, 8, 8)),
+        torch.randint(0, 2, (2, 1, 3, 4, 4)),
+    ]
+    loss_new = DICECE_POS._build_loss(
+        _MinimalLossBuilderState(enable_deep_supervision=True, num_scales=2)
+    )
+    loss_ref = nnUNetTrainerPICAI_DiceCE_NoFFT._build_loss(
+        _MinimalLossBuilderState(enable_deep_supervision=True, num_scales=2)
+    )
+    value_new = loss_new(outputs, targets)
+    value_ref = loss_ref(outputs, targets)
+    assert torch.isfinite(value_new)
+    assert torch.allclose(value_new, value_ref, atol=1e-12, rtol=0.0)
+    value_new.backward()
+    assert outputs[0].grad is not None
+    assert torch.isfinite(outputs[0].grad).all()
+    # 原生 deep supervision 把最低分辨率权重置 0（不监督），因此第二个输出没有梯度；
+    # 这与 DiceCE_NoFFT 的包装语义完全一致，不是本实现的偏差。
+    assert loss_new.weight_factors[1] == 0.0
+    assert outputs[1].grad is None
+
+
+def test_dicece_positive_sampling_network_identical_to_a_and_dicece_nofft(
+    synthetic_arch,
+):
+    """网络必须与 A、DiceCE_NoFFT **逐参数相同**的原生 PlainConvUNet（无 gate/feature 模块）。"""
+    torch.manual_seed(31)
+    net_new = _build_native(DICECE_POS, synthetic_arch)
+    torch.manual_seed(31)
+    net_a = _build_native(_A_POSITIVE_SAMPLING, synthetic_arch)
+    torch.manual_seed(31)
+    net_dicece = _build_native(nnUNetTrainerPICAI_DiceCE_NoFFT, synthetic_arch)
+
+    assert isinstance(net_new, PlainConvUNet)
+    assert net_new.__class__.__module__.startswith("dynamic_network_architectures.")
+    assert not isinstance(net_new, GatedNNUNet)
+    assert not isinstance(net_new, FeatureFusionNNUNet)
+    assert not hasattr(net_new, "gate")
+    assert not hasattr(net_new, "backbone")
+    assert not hasattr(net_new, "stems")
+    assert not hasattr(net_new, "projection")
+
+    state_new = net_new.state_dict()
+    for other in (net_a, net_dicece):
+        state_other = other.state_dict()
+        assert set(state_new) == set(state_other)  # 没有多/少任何一个模块参数
+        for key in state_new:
+            assert torch.equal(state_new[key], state_other[key]), key
+
+    net_new.eval()
+    with torch.no_grad():
+        out = net_new(torch.randn(1, 3, 8, 16, 16))
+    assert isinstance(out, torch.Tensor)
+    assert out.shape[1] == 2  # Dataset605：background + lesion
+
+
+def test_dicece_positive_sampling_cpu_forward_loss_backward(synthetic_arch):
+    """CPU 合成前向 → 原生 DiceCE（DS 包装）→ backward：损失与全部梯度有限。"""
+    net = _build_native(DICECE_POS, synthetic_arch, deep_supervision=True)
+    net.train()
+    torch.manual_seed(7)
+    outputs = net(torch.randn(2, 3, 8, 16, 16))
+    assert isinstance(outputs, list) and len(outputs) == 2
+    targets = [
+        torch.randint(0, 2, output.shape[:1] + output.shape[2:]).unsqueeze(1)
+        for output in outputs
+    ]
+    loss = DICECE_POS._build_loss(
+        _MinimalLossBuilderState(enable_deep_supervision=True, num_scales=2)
+    )
+    value = loss(outputs, targets)
+    assert torch.isfinite(value)
+    value.backward()
+    grads = [p.grad for p in net.parameters() if p.grad is not None]
+    assert grads, "没有任何参数收到梯度"
+    assert all(torch.isfinite(grad).all() for grad in grads)
+
+
+class _AuditProbeNet(nn.Module):
+    """仅用于验证审计日志打印的是 ``self.network`` 的真实运行时类型。"""
+
+    def forward(self, x):  # pragma: no cover - 本测试不调用 forward
+        return x
+
+
+def test_dicece_positive_sampling_initialize_logs_audit_line(monkeypatch):
+    """``initialize`` 必须调用原生实现恰好一次，并打印实际 loss / network / 通道数。"""
+    calls: list[str] = []
+
+    def fake_native_initialize(self):
+        calls.append("native")
+        self.loss = DeepSupervisionWrapper(
+            DC_and_CE_loss(
+                {"batch_dice": False, "smooth": 1e-5, "do_bg": False, "ddp": False},
+                {},
+                weight_ce=1,
+                weight_dice=1,
+                dice_class=MemoryEfficientSoftDiceLoss,
+            ),
+            [1.0, 0.0],
+        )
+        self.network = _AuditProbeNet()
+        self.num_input_channels = 3
+        self.label_manager = SimpleNamespace(num_segmentation_heads=2)
+
+    monkeypatch.setattr(nnUNetTrainer, "initialize", fake_native_initialize)
+
+    class _Host(DICECE_POS):
+        def __init__(self) -> None:
+            self.log_calls: list[str] = []
+
+        def print_to_log_file(self, *args, **kwargs) -> None:
+            self.log_calls.append(" ".join(str(a) for a in args))
+
+    host = _Host()
+    host.initialize()
+    assert calls == ["native"]  # 原生 initialize 恰好被调用一次（super 委托）
+    assert len(host.log_calls) == 1
+    line = host.log_calls[0]
+    assert "trainer=_Host" in line
+    assert "loss=DeepSupervisionWrapper" in line
+    assert "nnunetv2.training.loss.compound_losses.DC_and_CE_loss" in line
+    assert "network=_AuditProbeNet" in line
+    assert "input_channels=3" in line
+    assert "output_channels=2" in line
+
+
+# Stage-one tests never instantiate the native file-writing Trainer constructor.
+def _synthetic_anatomy_document():
+    from zonal_reliability_fusion.nnunet import trainers as t
+    return {'channel_names': {'0000': 'T2W'}, 'labels': t.ANATOMY_LABELS,
+            'regions_class_order': [1, 2, 4], 'numTraining': 2,
+            'anatomy_contract': {'encoding': 'WG+2*PZ+4*TZ', 'wg_source': 'materialized_wg',
+                'zonal_source': 'zonal_yuan', 'explicit_exclusions': ['11050_1001070'],
+                'case_ids': ['1_10', '2_20'], 'train_cases': ['1_10'], 'val_cases': ['2_20']}}
+
+
+def test_anatomy_native_loss_region_targets_heads_and_gradients(synthetic_arch):
+    from zonal_reliability_fusion.nnunet import trainers as t
+    from nnunetv2.utilities.label_handling.label_handling import LabelManager
+    from nnunetv2.training.loss.compound_losses import DC_and_BCE_loss
+    from batchgeneratorsv2.transforms.utils.seg_to_regions import ConvertSegmentationToRegionsTransform
+    cls = nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
+    assert cls.__mro__ == (cls, NoFFTAugmentationMixin, nnUNetTrainer, object)
+    for method in ('_build_loss', 'train_step', 'validation_step', 'get_dataloaders',
+                   'configure_optimizers', 'perform_actual_validation', 'run_training', 'build_network_architecture'):
+        assert getattr(cls, method) is getattr(nnUNetTrainer, method)
+    manager = LabelManager(t.ANATOMY_LABELS, [1, 2, 4])
+    assert manager.num_segmentation_heads == 3
+    code = np.arange(8, dtype=np.uint8).reshape(2, 2, 2)
+    expected = np.stack([(code & bit) != 0 for bit in (1, 2, 4)])
+    targets = ConvertSegmentationToRegionsTransform(manager.foreground_regions)(
+        segmentation=torch.from_numpy(code[None].astype(np.int16)))['segmentation']
+    assert np.array_equal(targets.numpy(), expected)
+    assert np.array_equal(t.anatomy_encode_heads(expected), code)
+    state = _MinimalLossBuilderState(enable_deep_supervision=True)
+    state.label_manager = manager
+    loss = cls._build_loss(state)
+    assert isinstance(loss, DeepSupervisionWrapper) and isinstance(loss.loss, DC_and_BCE_loss)
+    logits = torch.where(targets[None], 8., -8.).requires_grad_()
+    result = loss([logits]*6, [targets[None]]*6)
+    assert result < loss([-logits]*6, [targets[None]]*6)
+    result.backward()
+    assert torch.isfinite(logits.grad).all()
+    net = cls.build_network_architecture(synthetic_arch['architecture_class_name'],
+        synthetic_arch['arch_init_kwargs'], synthetic_arch['arch_init_kwargs_req_import'], 1, 3, True)
+    outputs = net(torch.randn(1, 1, 8, 16, 16))
+    assert all(o.shape[1] == 3 for o in outputs)
+    assert isinstance(net, PlainConvUNet)
+
+
+def test_anatomy_budget_split_guard_and_scheduler(tmp_path, monkeypatch):
+    import json
+    import nnunetv2.paths
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    monkeypatch.setattr(nnunetv2.paths, 'nnUNet_preprocessed', str(tmp_path))
+    doc = _synthetic_anatomy_document()
+    cls = nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
+    def synthetic_parent(self, *args):
+        self.num_epochs = 1000
+        self.network = nn.Linear(1, 3)
+        self.initial_lr, self.weight_decay = .01, 3e-5
+    monkeypatch.setattr(nnUNetTrainer, '__init__', synthetic_parent)
+    with pytest.raises(ValueError, match='split missing'):
+        cls({'dataset_name': t.ANATOMY_DATASET}, '3d_fullres', 0, doc)
+    folder = tmp_path / t.ANATOMY_DATASET
+    folder.mkdir()
+    path = folder / 'splits_final.json'
+    path.write_text(json.dumps([{'train': ['1_10'], 'val': ['2_20']}]))
+    instance = cls({'dataset_name': t.ANATOMY_DATASET}, '3d_fullres', 0, doc)
+    assert instance.num_epochs == 100
+    optimizer, scheduler = instance.configure_optimizers()
+    assert scheduler.max_steps == 100
+    scheduler.step(100)
+    assert optimizer.param_groups[0]['lr'] == 0
+    with pytest.raises(ValueError, match='fold 0'):
+        cls({'dataset_name': t.ANATOMY_DATASET}, '3d_fullres', 'all', doc)
+    path.write_text(json.dumps([{'train': ['1_10'], 'val': ['1_10']}]))
+    with pytest.raises(ValueError):
+        cls({'dataset_name': t.ANATOMY_DATASET}, '3d_fullres', 0, doc)
+
+
+@pytest.mark.parametrize('change', ['channels', 'order', 'dataset', 'configuration'])
+def test_anatomy_contract_fail_closed(change, monkeypatch):
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    import copy
+    doc = copy.deepcopy(_synthetic_anatomy_document())
+    name, config = t.ANATOMY_DATASET, '3d_fullres'
+    if change == 'channels': doc['channel_names']['0001'] = 'ADC'
+    if change == 'order': doc['labels'] = dict(reversed(list(doc['labels'].items())))
+    if change == 'dataset': name = 'Dataset606_PICAI_Zonal'
+    if change == 'configuration': config = '2d'
+    with pytest.raises(ValueError): t.validate_anatomy_dataset(doc, name, config)
+
+
+def test_anatomy_variant_cli_guards_and_checkpoint_resume(tmp_path, monkeypatch):
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    module = _load_train_entry()
+    assert module.resolve_trainer_class('anatomy_joint_100ep') is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
+    for dataset, config, fold in [('606', '3d_fullres', '0'), ('607', '2d', '0'), ('607', '3d_fullres', 'all')]:
+        with pytest.raises(SystemExit, match='Dataset607'):
+            module.main(['anatomy_joint_100ep', dataset, config, fold, '--export-validation-probabilities'])
+    with pytest.raises(SystemExit, match='export-validation-probabilities'):
+        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0'])
+    output = tmp_path / 'run'
+    module.guard_anatomy_checkpoint(output, False, False)
+    output.mkdir()
+    with pytest.raises(SystemExit, match='拒绝从头覆盖'):
+        module.guard_anatomy_checkpoint(output, False, False)
+    with pytest.raises(SystemExit, match='拒绝静默重训'):
+        module.guard_anatomy_checkpoint(output, True, False)
+    path = output / 'checkpoint_latest.pth'
+    path.write_bytes(b'not a checkpoint')
+    with pytest.raises(SystemExit, match='不可用'):
+        module.guard_anatomy_checkpoint(output, True, False)
+    torch.save({'network_weights': {'weight': torch.ones(3, 1)}, 'optimizer_state': torch.optim.SGD(nn.Linear(1, 3).parameters(), lr=.01).state_dict(), 'current_epoch': 2,
+                'trainer_name': module.VARIANT_TO_TRAINER['anatomy_joint_100ep'], 'init_args': {
+                    'dataset_json': _synthetic_anatomy_document(), 'plans': {'dataset_name': t.ANATOMY_DATASET},
+                    'configuration': '3d_fullres', 'fold': 0}}, path)
+    module.guard_anatomy_checkpoint(output, True, False)
+
+
+
+def test_anatomy_entry_missing_explicit_split_never_calls_training(tmp_path, monkeypatch):
+    import json
+    import nnunetv2.paths as paths
+    import nnunetv2.run.run_training as native
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    monkeypatch.setattr(paths, 'nnUNet_preprocessed', str(tmp_path))
+    folder = tmp_path / t.ANATOMY_DATASET
+    folder.mkdir()
+    (folder / 'dataset.json').write_text(json.dumps(_synthetic_anatomy_document()))
+    def forbidden(**kwargs): raise AssertionError('must not start training')
+    monkeypatch.setattr(native, 'run_training', forbidden)
+    with pytest.raises(SystemExit, match='split missing'):
+        _load_train_entry().main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities'])
+
+
+
+def test_anatomy_do_split_checks_patient_scope_and_preprocessed_identifiers(tmp_path, monkeypatch):
+    import json
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    doc = _synthetic_anatomy_document()
+    path = tmp_path / 'splits_final.json'
+    path.write_text(json.dumps([{'train': ['1_10'], 'val': ['2_20']}]))
+    state = object.__new__(nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT)
+    state.preprocessed_dataset_folder_base = str(tmp_path)
+    state.preprocessed_dataset_folder = str(tmp_path)
+    state.dataset_json, state.fold = doc, 0
+    state.dataset_class = SimpleNamespace(get_identifiers=lambda folder: ['1_10'])
+    with pytest.raises(ValueError, match='preprocessed anatomy case set'):
+        state.do_split()
+    state.dataset_class = SimpleNamespace(get_identifiers=lambda folder: ['1_10', '2_20'])
+    assert state.do_split() == (['1_10'], ['2_20'])
+    doc['anatomy_contract']['case_ids'] = ['1_10', '1_20']
+    doc['anatomy_contract']['val_cases'] = ['1_20']
+    path.write_text(json.dumps([{'train': ['1_10'], 'val': ['1_20']}]))
+    with pytest.raises(ValueError, match='patient overlap'):
+        state.do_split()
+
+
+
+def _anatomy_training_output_fixture(tmp_path, monkeypatch, completed):
+    import json
+    import nnunetv2.paths as paths
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    preprocessed, results = tmp_path / 'preprocessed', tmp_path / 'results'
+    monkeypatch.setattr(paths, 'nnUNet_preprocessed', str(preprocessed))
+    monkeypatch.setattr(paths, 'nnUNet_results', str(results))
+    dataset = _synthetic_anatomy_document()
+    folder = preprocessed / t.ANATOMY_DATASET
+    folder.mkdir(parents=True)
+    (folder / 'dataset.json').write_text(json.dumps(dataset))
+    (folder / 'splits_final.json').write_text(json.dumps([{'train': ['1_10'], 'val': ['2_20']}]))
+    module = _load_train_entry()
+    output = results / t.ANATOMY_DATASET / f"{module.VARIANT_TO_TRAINER[module.ANATOMY_VARIANT]}__nnUNetPlans__3d_fullres" / 'fold_0'
+    output.mkdir(parents=True)
+    checkpoint = output / ('checkpoint_final.pth' if completed else 'checkpoint_latest.pth')
+    torch.save({'network_weights': {'weight': torch.ones(3, 1)},
+                'optimizer_state': torch.optim.SGD(nn.Linear(1, 3).parameters(), lr=.01).state_dict(),
+                'current_epoch': 100 if completed else 2,
+                'trainer_name': module.VARIANT_TO_TRAINER[module.ANATOMY_VARIANT],
+                'init_args': {'dataset_json': dataset, 'plans': {'dataset_name': t.ANATOMY_DATASET},
+                              'configuration': '3d_fullres', 'fold': 0}}, checkpoint)
+    return module, output, dataset
+
+
+@pytest.mark.parametrize('operation', ['fresh', 'continue', 'validation'])
+@pytest.mark.parametrize('artifact', ['case.npz', 'summary.json', 'nested/case.nii.gz'])
+def test_anatomy_existing_validation_blocks_native_and_preserves_files(tmp_path, monkeypatch, operation, artifact):
+    import nnunetv2.run.run_training as native
+    module, output, _ = _anatomy_training_output_fixture(tmp_path, monkeypatch, completed=operation == 'validation')
+    existing = output / 'validation' / artifact
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b'preserve existing synthetic validation result')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    calls = []
+    monkeypatch.setattr(native, 'run_training', lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(nnUNetTrainer, '__init__', lambda *args, **kwargs: pytest.fail('Trainer must not be created'))
+    flags = {'fresh': [], 'continue': ['--continue-training'], 'validation': ['--validation-only']}[operation]
+    with pytest.raises(SystemExit, match='validation 已有'):
+        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', *flags])
+    assert calls == []
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+def test_anatomy_completed_training_cannot_reenter_final_save(tmp_path, monkeypatch):
+    import nnunetv2.run.run_training as native
+    module, output, _ = _anatomy_training_output_fixture(tmp_path, monkeypatch, completed=True)
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    calls = []
+    monkeypatch.setattr(native, 'run_training', lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(nnUNetTrainer, '__init__', lambda *args, **kwargs: pytest.fail('Trainer must not be created'))
+    with pytest.raises(SystemExit, match='checkpoint_final 已存在'):
+        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', '--continue-training'])
+    assert calls == []
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('completed', [False, True])
+@pytest.mark.parametrize('empty_validation_directory', [False, True])
+def test_anatomy_unfinished_resume_and_completed_first_validation_remain_allowed(tmp_path, monkeypatch, completed, empty_validation_directory):
+    module, output, dataset = _anatomy_training_output_fixture(tmp_path, monkeypatch, completed)
+    if empty_validation_directory:
+        (output / 'validation').mkdir()
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    module.guard_anatomy_checkpoint(output, continue_training=not completed,
+                                   validation_only=completed, expected_dataset_json=dataset)
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before

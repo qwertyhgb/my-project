@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""统一的 PI-CAI -> nnU-Net 数据准备入口（三个 subcommand）。
+"""统一的 PI-CAI -> nnU-Net 数据准备入口（baseline / zonal / anatomy / splits）。
 
 设计边界：**只做最少量的数据组织**，不重实现 nnU-Net 的 planning/preprocessing。所有派生
 结果写入 nnU-Net 约定目录（``$nnUNet_raw`` / ``$nnUNet_preprocessed``，默认在项目 ``workdir/``），
@@ -11,9 +11,10 @@ subcommand：
     zonal     组织 Dataset606_PICAI_Zonal（5 通道：T2W/ADC/HBV + PZ/TZ）。MRI 与标签沿用符号链接；
               PZ/TZ 由分区标签 zonal_<source>.nii.gz 派生为两个算法生成的 [0,1] 分区隶属通道
               （zonal membership；非校准概率、非几何体素占比；noNorm），与对应病例 T2W 网格严格一致。
+    anatomy   Dataset607：唯一 T2W 输入、独立 WG/PZ/TZ 位组合伪监督；禁止覆盖，显式已知缺失排除。
     splits    把冻结划分 data/splits/picai_train_val_split.json 转换为某数据集的 splits_final.json（单 fold）。
 
-安全：默认不覆盖已有内容；``--resume`` 跳过/补齐，``--overwrite`` 强制重建；派生文件原子写入；
+安全：anatomy 禁止 --overwrite，只允许核对内容的 --resume。旧 baseline/zonal 默认不覆盖已有内容；``--resume`` 跳过/补齐，``--overwrite`` 强制重建；派生文件原子写入；
 每个 subcommand 结束都打印 成功/失败/跳过/耗时/输出目录。所有耗时循环带 tqdm（``--no-progress`` 关闭）。
 
 用法（示例，长任务请由研究者运行）：
@@ -555,6 +556,168 @@ def cmd_zonal(args: argparse.Namespace) -> None:
     )
 
 
+# --------------------------------------------------------------------------- anatomy (strictly separate from lesion preparation)
+def _anatomy_scope(manifest_path, split_path, explicit_exclusion):
+    import hashlib
+    from zonal_reliability_fusion.nnunet.trainers import ANATOMY_KNOWN_MISSING, ANATOMY_COUNTS
+    if not explicit_exclusion:
+        raise ValueError("anatomy requires --exclude-known-missing-wg (11050_1001070 only)")
+    df = pd.read_csv(manifest_path, dtype=str)
+    for key in ("case_id", "study_id", "patient_id"):
+        if key not in df or df[key].isna().any():
+            raise ValueError(f"manifest missing {key}")
+    if not df.case_id.is_unique or not df.study_id.is_unique:
+        raise ValueError("duplicate manifest case/study IDs")
+    if not ((df.patient_id + "_" + df.study_id) == df.case_id).all():
+        raise ValueError("manifest case/patient/study identity mismatch")
+    if any(not all(x.isdigit() for x in cid.split("_")) for cid in df.case_id):
+        raise ValueError("invalid case IDs")
+    if ANATOMY_KNOWN_MISSING not in set(df.case_id):
+        raise ValueError("frozen manifest must explicitly contain known missing WG case")
+    document = json.loads(Path(split_path).read_text())
+    study_sets = []
+    for side in ("train", "validation"):
+        studies = [str(v) for v in document["splits"][side]["studies"]]
+        if len(studies) != len(set(studies)):
+            raise ValueError(f"duplicate {side} studies")
+        study_sets.append(set(studies))
+    tr_studies, va_studies = study_sets
+    if tr_studies & va_studies or tr_studies | va_studies != set(df.study_id):
+        raise ValueError("frozen split study set differs from manifest")
+    tr = df[df.study_id.isin(tr_studies)]
+    va = df[df.study_id.isin(va_studies)]
+    if set(tr.patient_id) & set(va.patient_id):
+        raise ValueError("train/validation patient overlap")
+    ids = sorted(set(df.case_id) - {ANATOMY_KNOWN_MISSING})
+    train = sorted(set(tr.case_id) - {ANATOMY_KNOWN_MISSING})
+    val = sorted(set(va.case_id) - {ANATOMY_KNOWN_MISSING})
+    if (len(ids), len(train), len(val)) != ANATOMY_COUNTS:
+        raise ValueError(f"frozen anatomy study counts mismatch: {(len(ids), len(train), len(val))} vs {ANATOMY_COUNTS}")
+    return {"encoding": "WG+2*PZ+4*TZ", "wg_source": "materialized_wg",
+            "zonal_source": "zonal_yuan", "explicit_exclusions": [ANATOMY_KNOWN_MISSING],
+            "exclusion_reason": "known unavailable materialized WG; never substitute empty or zonal union",
+            "case_ids": ids, "train_cases": train, "val_cases": val,
+            "manifest_sha256": hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest(),
+            "frozen_split_sha256": hashlib.sha256(Path(split_path).read_bytes()).hexdigest()}
+
+
+def _publish_anatomy_bytes(path, payload):
+    """Exclusive publication: unlike legacy commands, anatomy never replaces an existing file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix=".anatomy-", dir=path.parent) as temporary:
+        stage = Path(temporary) / "payload"
+        stage.write_bytes(payload)
+        os.link(stage, path)  # atomic and refuses existing files, including symlinks
+
+
+def cmd_anatomy(args):
+    import hashlib
+    import SimpleITK as sitk
+    import tempfile
+    from zonal_reliability_fusion.nnunet.trainers import (
+        ANATOMY_LABELS, ANATOMY_CLASS_ORDER, ANATOMY_KNOWN_MISSING,
+        anatomy_encode, anatomy_same_grid, anatomy_geometry, anatomy_validate_array, anatomy_read_array)
+    started = time.time()
+    if args.overwrite or args.cases or (args.dataset_id, args.dataset_name) != (607, "PICAI_Anatomy"):
+        raise SystemExit("anatomy forbids overwrite/subset/alternate dataset; requires Dataset607_PICAI_Anatomy")
+    try:
+        contract = _anatomy_scope(args.manifest, args.split_json, args.exclude_known_missing_wg)
+    except (ValueError, KeyError, OSError) as exc:
+        raise SystemExit(f"[anatomy] preflight failed: {exc}") from exc
+    ds = _raw_dataset_dir(args.nnunet_raw_root, 607, "PICAI_Anatomy")
+    _guard_existing(ds, args.resume, False, args.dry_run)
+    document = {"channel_names": {"0000": "T2W"}, "labels": ANATOMY_LABELS,
+                "regions_class_order": ANATOMY_CLASS_ORDER, "numTraining": len(contract["case_ids"]),
+                "file_ending": ".nii.gz", "overwrite_image_reader_writer": "SimpleITKIO",
+                "description": "Algorithm pseudo-supervision membership combinations, not new anatomy classes; single T2W; WG/PZ/TZ independent",
+                "anatomy_contract": contract}
+    old_document = None
+    json_path = ds / "dataset.json"
+    if json_path.exists() or json_path.is_symlink():
+        old_document = json.loads(json_path.read_text())
+        if list(old_document.get("labels", {}).items()) != list(ANATOMY_LABELS.items()):
+            raise SystemExit("[anatomy] existing region insertion order conflict")
+        old_without_hashes = json.loads(json.dumps(old_document))
+        old_without_hashes.get("anatomy_contract", {}).pop("source_sha256", None)
+        if old_without_hashes != document:
+            raise SystemExit("[anatomy] existing dataset configuration/provenance conflict")
+    expected_images = {f"{cid}_0000.nii.gz" for cid in contract["case_ids"]}
+    expected_labels = {f"{cid}.nii.gz" for cid in contract["case_ids"]}
+    for subdir, expected in (("imagesTr", expected_images), ("labelsTr", expected_labels)):
+        extras = {p.name for p in (ds / subdir).iterdir()} - expected if (ds / subdir).is_dir() else set()
+        if extras:
+            raise SystemExit(f"[anatomy] unexpected existing {subdir} entries: {sorted(extras)}")
+    counts = {"ok": 0, "skipped": 0, "failed": 0}
+    failures, source_hashes = [], {}
+    for cid in tqdm(contract["case_ids"], desc="anatomy-raw", unit="study", disable=args.no_progress, file=sys.stdout):
+        try:
+            case = Path(args.materialized_root) / "cases" / cid
+            paths = {name: case / name for name in ("t2w.nii.gz", "wg.nii.gz", "zonal_yuan.nii.gz")}
+            for name, path in paths.items():
+                if not path.is_file():
+                    raise ValueError(f"missing required {name}")
+            t2w, wg, yuan = [sitk.ReadImage(str(path)) for path in paths.values()]
+            anatomy_geometry(t2w)
+            if not np.isfinite(anatomy_read_array(paths["t2w.nii.gz"])).all():
+                raise ValueError("T2W contains non-finite values")
+            for image in (wg, yuan):
+                anatomy_same_grid(t2w, image)
+            encoded = anatomy_encode(anatomy_read_array(paths["wg.nii.gz"]), anatomy_read_array(paths["zonal_yuan.nii.gz"]))
+            hashes = {}
+            for name, path in paths.items():
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+                hashes[name] = digest.hexdigest()
+            source_hashes[cid] = hashes
+            if old_document and old_document["anatomy_contract"].get("source_sha256", {}).get(cid) != hashes:
+                raise ValueError("resume source content hash conflict")
+            image_path = ds / "imagesTr" / f"{cid}_0000.nii.gz"
+            label_path = ds / "labelsTr" / f"{cid}.nii.gz"
+            has_image = image_path.exists() or image_path.is_symlink()
+            has_label = label_path.exists() or label_path.is_symlink()
+            if has_image and not _link_ok(image_path, paths["t2w.nii.gz"]):
+                raise ValueError("existing T2W link conflict")
+            if has_label:
+                existing = sitk.ReadImage(str(label_path))
+                anatomy_same_grid(t2w, existing)
+                existing_array = anatomy_validate_array(anatomy_read_array(label_path), range(8), "existing membership")
+                if not np.array_equal(existing_array, encoded):
+                    raise ValueError("existing derived label content conflict")
+            if not args.dry_run:
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                label_path.parent.mkdir(parents=True, exist_ok=True)
+                if not has_label:
+                    with tempfile.TemporaryDirectory(prefix=".anatomy-", dir=label_path.parent) as temporary:
+                        stage = Path(temporary) / "label.nii.gz"
+                        output_image = sitk.GetImageFromArray(encoded)
+                        output_image.CopyInformation(t2w)
+                        sitk.WriteImage(output_image, str(stage))
+                        os.link(stage, label_path)
+                if not has_image:
+                    os.symlink(os.path.relpath(paths["t2w.nii.gz"].resolve(), image_path.parent), image_path)
+            counts["skipped" if has_image and has_label else "ok"] += 1
+        except Exception as exc:
+            counts["failed"] += 1
+            failures.append({"case_id": cid, "reason": f"{type(exc).__name__}: {exc}"})
+            tqdm.write(f"[anatomy] {cid}: {failures[-1]['reason']}")
+    contract["source_sha256"] = source_hashes
+    _finish_summary("anatomy", started, counts, ds,
+                    {"excluded": [ANATOMY_KNOWN_MISSING], "excluded_count": 1,
+                     "dry_run": args.dry_run, "failures": failures})
+    if counts["failed"]:
+        raise SystemExit(2)
+    if not args.dry_run:
+        if old_document is not None:
+            if old_document != document:
+                raise SystemExit("[anatomy] resume dataset.json conflict")
+        else:
+            _publish_anatomy_bytes(json_path, (json.dumps(document, indent=2) + "\n").encode())
+    print(f"[anatomy] {'checked' if args.dry_run else 'ready'}: studies={len(contract['case_ids'])}; train={len(contract['train_cases'])}; validation={len(contract['val_cases'])}")
+
+
 # --------------------------------------------------------------------------- subcommand: splits
 def cmd_splits(args: argparse.Namespace) -> None:
     t0 = time.time()
@@ -612,6 +775,29 @@ def cmd_splits(args: argparse.Namespace) -> None:
                 f"[splits] 患者 {pid} 的多个 study 跨 train/val 两侧: {sides}"
             )
 
+    if args.dataset_id == 607:
+        from zonal_reliability_fusion.nnunet.trainers import validate_anatomy_dataset
+        if ds_name != "Dataset607_PICAI_Anatomy" or args.overwrite:
+            raise SystemExit("Dataset607 anatomy forbids alternate name/overwrite")
+        try:
+            contract = _anatomy_scope(manifest_path, split_path, args.exclude_known_missing_wg)
+            if raw_dir is None:
+                raise ValueError("anatomy split requires raw dataset provenance")
+            raw_doc = json.loads((raw_dir / "dataset.json").read_text())
+            stored = validate_anatomy_dataset(raw_doc)
+            for key, value in contract.items():
+                if stored.get(key) != value:
+                    raise ValueError(f"anatomy raw provenance mismatch: {key}")
+            image_ids = {p.name[:-12] for p in (raw_dir / "imagesTr").glob("*_0000.nii.gz")}
+            label_ids = {p.name[:-7] for p in (raw_dir / "labelsTr").glob("*.nii.gz")}
+            if image_ids != set(contract["case_ids"]) or label_ids != image_ids:
+                raise ValueError("anatomy raw case set differs from complete supervision scope")
+            if not pre_dir.is_dir():
+                raise ValueError("anatomy explicit split requires preprocessed dataset directory")
+            train_cases, val_cases = contract["train_cases"], contract["val_cases"]
+            print(f"[splits] explicitly excluded={contract['explicit_exclusions']}")
+        except (ValueError, KeyError, OSError) as exc:
+            raise SystemExit(f"[splits] anatomy preflight failed: {exc}") from exc
     splits_obj = [{"train": train_cases, "val": val_cases}]
     payload = (json.dumps(splits_obj, indent=2, ensure_ascii=False) + "\n").encode(
         "utf-8"
@@ -645,6 +831,18 @@ def cmd_splits(args: argparse.Namespace) -> None:
         raise SystemExit("[splits] 没有可写目标（preprocessed/raw 数据集目录均不存在）")
 
     counts = {"ok": 0, "skipped": 0, "failed": 0, "conflict": 0}
+    if args.dataset_id == 607:
+        # Check every destination before publishing either copy of the explicit split.
+        for _, path in targets:
+            if path.exists() or path.is_symlink():
+                try:
+                    identical = json.loads(path.read_text()) == splits_obj
+                except (OSError, ValueError):
+                    identical = False
+                if not identical:
+                    _finish_summary("splits", t0, {"conflict": 1}, pre_dir,
+                                    {"explicit_excluded": ["11050_1001070"], "reason": str(path)})
+                    raise SystemExit(2)
     for label, path in targets:
         if path.exists() and not args.overwrite:
             try:
@@ -658,7 +856,10 @@ def cmd_splits(args: argparse.Namespace) -> None:
             counts["conflict"] += 1
             print(f"[splits] 目标已存在且内容不一致: {path}（加 --overwrite 强制重建）")
             continue
-        _atomic_write_bytes(path, payload)
+        if args.dataset_id == 607:
+            _publish_anatomy_bytes(path, payload)
+        else:
+            _atomic_write_bytes(path, payload)
         counts["ok"] += 1
         print(f"[splits] 写出: {path}")
     _finish_summary(
@@ -716,6 +917,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_zonal.set_defaults(func=cmd_zonal)
 
+    p_anatomy = sub.add_parser("anatomy", help="Single T2W; independent WG/PZ/TZ pseudo-supervision")
+    add_common(p_anatomy)
+    p_anatomy.add_argument("--dataset-id", type=int, default=607)
+    p_anatomy.add_argument("--dataset-name", default="PICAI_Anatomy")
+    p_anatomy.add_argument("--split-json", default=str(DEFAULT_SPLIT_JSON))
+    p_anatomy.add_argument("--exclude-known-missing-wg", action="store_true", help="Explicitly exclude only 11050_1001070")
+    p_anatomy.set_defaults(func=cmd_anatomy)
+
     p_split = sub.add_parser(
         "splits", help="把冻结划分转换为某数据集的 splits_final.json（单 fold）"
     )
@@ -733,6 +942,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_split.add_argument("--no-raw-copy", action="store_true")
     p_split.add_argument("--dry-run", action="store_true")
     p_split.add_argument("--overwrite", action="store_true")
+    p_split.add_argument("--exclude-known-missing-wg", action="store_true", help="Dataset607 only: explicit exclusion of 11050_1001070")
     p_split.set_defaults(func=cmd_splits)
     return parser
 

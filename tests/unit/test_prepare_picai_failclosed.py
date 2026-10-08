@@ -436,3 +436,130 @@ def test_zonal_overwrite_regenerates_for_new_source(tmp_path):
     assert "prior_source=zonal_hevi" in desc
     assert "zonal membership" in desc
     assert "fractional occupancy" not in desc
+
+
+# Anatomy uses only synthetic source files and a scaled frozen metadata fixture.
+def _anatomy_fixture(tmp_path, monkeypatch):
+    import numpy as np
+    from zonal_reliability_fusion.nnunet import trainers
+    monkeypatch.setattr(trainers, "ANATOMY_COUNTS", (2, 1, 1))
+    mod = _load_prepare()
+    mat, raw = tmp_path / "mat", tmp_path / "raw"
+    for cid in ("1_10", "2_20"):
+        case = _make_zonal_case(mat, cid)
+        wg = np.zeros((4, 6, 6), dtype=np.uint8)
+        wg[0, 0, 0] = 1  # PZ inside WG, TZ outside WG; retain disagreement.
+        wg[2, 2, 2] = 1  # WG only
+        _write_nifti(case / "wg.nii.gz", wg)
+    known = trainers.ANATOMY_KNOWN_MISSING
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest(manifest, ["1_10", "2_20", known])
+    frozen = tmp_path / "frozen.json"
+    frozen.write_text(json.dumps({"splits": {"train": {"studies": ["10", "1001070"]}, "validation": {"studies": ["20"]}}}))
+    argv = ["anatomy", "--materialized-root", str(mat), "--manifest", str(manifest),
+            "--split-json", str(frozen), "--nnunet-raw-root", str(raw),
+            "--exclude-known-missing-wg", "--no-progress"]
+    return mod, mat, raw, manifest, frozen, argv
+
+
+def test_anatomy_materialization_contract_and_verified_resume(tmp_path, monkeypatch):
+    import SimpleITK as sitk
+    mod, mat, raw, _, _, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    _run(mod, argv + ["--dry-run"])
+    ds = raw / "Dataset607_PICAI_Anatomy"
+    assert not ds.exists()
+    _run(mod, argv)
+    doc = json.loads((ds / "dataset.json").read_text())
+    assert list(doc['labels']) == ['background', 'WG', 'PZ', 'TZ']
+    assert doc['channel_names'] == {'0000': 'T2W'}
+    assert doc['regions_class_order'] == [1, 2, 4]
+    assert doc['numTraining'] == 2
+    assert doc['anatomy_contract']['explicit_exclusions'] == ['11050_1001070']
+    label = sitk.GetArrayFromImage(sitk.ReadImage(str(ds / 'labelsTr/1_10.nii.gz')))
+    assert (label[0, 0, 0], label[1, 1, 1], label[2, 2, 2]) == (3, 4, 1)
+    before = {p: p.read_bytes() for p in ds.rglob('*') if p.is_file()}
+    _run(mod, argv + ['--resume'])
+    assert all(p.read_bytes() == contents for p, contents in before.items())
+    with pytest.raises(SystemExit):
+        _run(mod, argv)
+    # Dict equality ignores insertion order; region semantics must not.
+    reordered = dict(doc, labels=dict(reversed(list(doc['labels'].items()))))
+    (ds / 'dataset.json').write_text(json.dumps(reordered))
+    with pytest.raises(SystemExit, match='insertion order conflict'):
+        _run(mod, argv + ['--resume'])
+    (ds / 'dataset.json').write_bytes(before[ds / 'dataset.json'])
+    # Changing supervision/source cannot be silently resumed.
+    case = mat / 'cases/1_10'
+    changed = sitk.GetArrayFromImage(sitk.ReadImage(str(case / 'wg.nii.gz')))
+    changed[3, 3, 3] = 1
+    _write_nifti(case / 'wg.nii.gz', changed)
+    with pytest.raises(SystemExit):
+        _run(mod, argv + ['--resume'])
+    assert all(p.read_bytes() == contents for p, contents in before.items() if not p.is_symlink())
+
+
+@pytest.mark.parametrize('name,value', [('wg.nii.gz', .5), ('wg.nii.gz', 2.),
+    ('zonal_yuan.nii.gz', 1.5), ('zonal_yuan.nii.gz', -1.), ('wg.nii.gz', float('nan'))])
+def test_anatomy_illegal_labels_fail_before_cast(tmp_path, monkeypatch, name, value):
+    import numpy as np
+    mod, mat, raw, _, _, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    label = np.zeros((4, 6, 6), dtype=np.float32)
+    label[0, 0, 0] = value
+    _write_nifti(mat / 'cases/1_10' / name, label)
+    with pytest.raises(SystemExit):
+        _run(mod, argv)
+    assert not (raw / 'Dataset607_PICAI_Anatomy/dataset.json').exists()
+
+
+def test_anatomy_additional_missing_and_explicit_exclusion_required(tmp_path, monkeypatch, capsys):
+    mod, mat, raw, _, _, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match='exclude-known-missing'):
+        _run(mod, [a for a in argv if a != '--exclude-known-missing-wg'])
+    (mat / 'cases/2_20/wg.nii.gz').unlink()  # synthetic only
+    with pytest.raises(SystemExit):
+        _run(mod, argv)
+    assert '2_20' in capsys.readouterr().out
+    assert not (raw / 'Dataset607_PICAI_Anatomy/dataset.json').exists()
+
+
+def test_anatomy_same_shape_different_physical_grid_fails(tmp_path, monkeypatch):
+    import SimpleITK as sitk
+    mod, mat, raw, _, _, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    path = mat / 'cases/1_10/wg.nii.gz'
+    image = sitk.ReadImage(str(path))
+    image.SetOrigin((1., 0., 0.))
+    sitk.WriteImage(image, str(path))
+    with pytest.raises(SystemExit):
+        _run(mod, argv)
+    assert not (raw / 'Dataset607_PICAI_Anatomy/dataset.json').exists()
+
+
+def test_anatomy_split_exact_scope_patient_isolation_and_no_overwrite(tmp_path, monkeypatch):
+    mod, _, raw, manifest, frozen, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    _run(mod, argv)
+    pre = tmp_path / 'preprocessed'
+    (pre / 'Dataset607_PICAI_Anatomy').mkdir(parents=True)
+    split_argv = ['splits', '--dataset-id', '607', '--dataset-name', 'PICAI_Anatomy',
+                  '--manifest', str(manifest), '--split-json', str(frozen),
+                  '--preprocessed-root', str(pre), '--nnunet-raw-root', str(raw), '--exclude-known-missing-wg']
+    _run(mod, split_argv)
+    path = pre / 'Dataset607_PICAI_Anatomy/splits_final.json'
+    assert json.loads(path.read_text()) == [{'train': ['1_10'], 'val': ['2_20']}]
+    with pytest.raises(SystemExit):
+        _run(mod, split_argv + ['--overwrite'])
+    original = path.read_bytes()
+    path.write_text('[]')
+    with pytest.raises(SystemExit):
+        _run(mod, split_argv)
+    assert path.read_text() == '[]'
+    path.write_bytes(original)
+    frozen.write_text(json.dumps({'splits': {'train': {'studies': ['10', '10', '1001070']}, 'validation': {'studies': ['20']}}}))
+    with pytest.raises(SystemExit):
+        _run(mod, split_argv)
+
+
+def test_anatomy_manifest_patient_leakage_fails(tmp_path, monkeypatch):
+    mod, _, _, manifest, frozen, argv = _anatomy_fixture(tmp_path, monkeypatch)
+    _write_manifest(manifest, ['1_10', '1_20', '11050_1001070'])
+    with pytest.raises(SystemExit, match='patient overlap'):
+        _run(mod, argv + ['--dry-run'])

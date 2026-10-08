@@ -2,8 +2,72 @@
 
 前列腺癌（csPCa）病灶分割研究项目，采用 **nnU-Net-first** 架构。新的研究主线依次检验
 T2W/ADC/HBV 的序列特异浅层局部表征、特征级自适应融合，以及 PZ/TZ 作为融合条件的增量价值。
-既有输入级门控实验是初步证据；三个特征级 variant 已实现、尚未训练。研究计划见
+既有输入级门控实验是初步证据。原 `feature_no_gate_positive_sampling` 已启动但缺最终验证；
+另外两个原特征门控条件未运行。2026-10-06 新增独立的同区参照融合短预算探索分支，代码就绪、未训练。
+研究计划见
 `docs/Research_Plan.md`，既有结果见 `docs/Findings.md`。
+
+## 同区参照融合：独立短预算探索分支（2026-10-06）
+
+首版复用 **Dataset606_PICAI_Zonal / 3d_fullres** 的现有五通道预处理输入
+`T2W / ADC / HBV / PZ / TZ`，不重新物化或预处理原始影像。PZ/TZ 来自自动分区二值掩膜，
+经既有插值处理形成**分区隶属权重，不是校准概率，也不是实测几何体素占比**。当前只实现融合假设；未实现新的腺体/分区
+预测网络、腺体 ROI 裁剪或完整两阶段端到端系统，不使用 WG。
+
+| variant | Trainer 类名 | 条件 |
+|---|---|---|
+| `feature_no_gate_positive_sampling_100ep` | `nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT` | 相同五通道数据，网络忽略 PZ/TZ，普通三路特征拼接 |
+| `feature_anatomy_gate_positive_sampling_100ep` | `nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT` | 普通分区条件 feature gate |
+| `zonal_reference_positive_sampling_100ep` | `nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT` | 同区参照残差修正，固定有效参照强度 |
+| `zonal_reference_adaptive_positive_sampling_100ep` | `nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT` | 相同修正模块，额外学习修正强度 |
+
+四个条件均保持旧的三个独立 `C_s=8` 浅层 stem、24→3 投影和原生 plans backbone，
+统一使用 FLCE、阳性采样、NoFFT 与分区强度增强保护、原生优化器/验证/滑窗。
+独立 Trainer 在 optimizer 初始化前将 `num_epochs=100`，所以原生 PolyLR 总周期也是 100；
+每 epoch 250 次更新，总计 25,000 次。旧模型和旧预算不变；这不是截断旧 1000-epoch run，
+也不从旧 checkpoint 初始化。暂未加入显式训练 seed 控制，结果只能作为探索性证据。
+
+参照修正在面内降采样 4 倍的特征统计上计算：当前 spacing 下 coarse spacing 约为
+`[3,2,2] mm`，局部核为 `[3,5,5]`，采样足迹约 `9×10×10 mm`。各区域先分别汇聚
+`Z·H / Z·H² / Z`，再计算区域条件中心特征、局部均值和方差，避免区域边界在 pooling 时混合。
+统计使用 float32，方差加 `1e-4`，标准化对比截断到 `[-5,5]`。参照包含中心，可能被病灶/增生
+污染，不能称为正常组织真值；邻域受滑窗边界和 padding 影响，未声称窗口不变性。
+
+局部池化后的权重均值与支持量按算法加权统计解释，不代表实测区域体积。
+仅当局部参照的 coarse 网格权重和 ≥4 时，该区域贡献才有效；该支持量不是实测体素数。
+coarse 修正强度以该位置的有效分区隶属权重均值为上界，自适应条件再乘学习式 sigmoid；
+coarse 统计位置无局部支持时修正归零，仍通过普通 MRI 特征分支分割。
+上采样后再乘原分辨率分区隶属权重，避免修正扩散到
+分区外。参照模型缺通道/非有限分区输入报错；空局部分区不改变病例阳性/阴性身份。
+修正末层零初始化，在共享 stem/投影/backbone 权重时与普通融合逐值相同。
+模型仅额外加入局部池化和小卷积，真实显存、速度与效果尚未测量，不能据参数量推断耗时。
+
+**先运行匹配基线**（工作目录与环境如下；一次只运行一条，选空闲 GPU）：
+
+```bash
+cd /opt/data/private/lm/my-projects
+source /root/anaconda3/etc/profile.d/conda.sh
+conda activate lm
+source scripts/env_nnunet.sh
+nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
+  feature_no_gate_positive_sampling_100ep 606 3d_fullres 0
+```
+
+其余三个条件分别把 variant 替换成上表对应值，其余参数相同。四条件统一使用原生环境选项
+`nnUNet_compile=false`，减少短预算运行的首次编译等待；每步速度仍需实测并记录该设置。首次运行不加
+`--continue-training`；新分支拒绝覆盖已有同名输出目录，也拒绝在缺 checkpoint 时静默重训。
+输出由类名隔离到 `outputs/nnUNet_results/Dataset606_PICAI_Zonal/<Trainer>__nnUNetPlans__3d_fullres/fold_0/`。
+这些目录由用户实际训练时创建；本次未创建模型目录或 checkpoint。
+
+启动日志应显示对应 mode、`epochs=100`、`iterations_per_epoch=250`、五通道输入；
+采样日志应显示 1277 训练例、223 验证例、362 阳性训练例、915 阴性训练例、batch=2、
+每 batch 保证一个病灶前景 patch。观察终端 epoch/loss/耗时与该目录 `progress.png`。
+成功判据：完成 epoch 99、原生 actual validation 完成全部 223 例、生成
+`checkpoint_final.pth` 和 `validation/summary.json`。patch pseudo Dice 不作为整例结果。
+耗时仅能在真实运行后核定；100-epoch 结果不与旧长预算结果直接归因比较。
+
+完成基线和候选后，先使用现有评估工具的 summary 模式核对主终点；full 模式按既有协议补充
+病灶实例与物理体积分层，由用户另行运行。新增模块的有效性和对先验错误的稳健性均待验证。
 
 > **术语说明**：类名/包名中的 `Reliability`（`zonal_reliability_fusion`、
 > `SpatialModalityReliabilityGate`）是**历史内部标识**，保留它是为了 checkpoint、导入路径与
@@ -35,12 +99,13 @@ training loop、checkpoint/resume、validation、sliding-window inference、pred
 `nnUNetDataLoader`、复用预处理 `class_locations`，并且训练采样与验证采样严格分离
 （验证 loader 保持原生）。规则细则见 `AGENTS.md` §5。
 
-### 十个 variant
+### 旧十一个 variant（新增四个短预算条件见首节）
 
 | variant | Trainer 类 | 数据集 | 输入通道 | 网络 / 损失 / 采样 |
 |---|---|---|---|---|
 | `baseline` | `nnUNetTrainerPICAI_FLCE_NoFFT` | Dataset605 | 3（T2W/ADC/HBV） | 原生 `PlainConvUNet` + PI-CAI Focal+CE + 原生采样 |
 | `optimized_baseline` | `nnUNetTrainerPICAI_DiceCE_NoFFT` | Dataset605 | 3（T2W/ADC/HBV） | 原生 `PlainConvUNet` + 原生 Dice+CE + 原生采样 |
+| `dicece_positive_sampling` | `nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT` | Dataset605 | 3（T2W/ADC/HBV） | 原生 `PlainConvUNet` + 原生 Dice+CE + **阳性病例采样**（独立强参考基线，不属于主链） |
 | `image_gate` | `nnUNetTrainerPICAI_ImageGate` | Dataset605 | 3（T2W/ADC/HBV） | gate(3→3 权重) + 原生 backbone（Focal+CE）+ 原生采样 |
 | `anatomy_gate` | `nnUNetTrainerPICAI_AnatomyGate` | Dataset606 | 5（+PZ/TZ） | gate(MRI+PZ/TZ→3 权重) + 原生 backbone（Focal+CE）+ 原生采样 |
 | `positive_sampling` | `nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT` | Dataset605 | 3（T2W/ADC/HBV） | 原生 `PlainConvUNet` + PI-CAI Focal+CE + **每批固定一个阳性病灶 patch** |
@@ -56,7 +121,7 @@ weight/bias 零初始化；`weights = softmax(logits,1)`（W，通道和为 1，
 零初始化时 `scales` 恒为 1，新模型初始行为与原生 baseline **逐值一致**。anatomy_gate 只把加权后的
 前 3 个 MRI 通道送入 backbone，PZ/TZ 不进入分割 backbone（禁止 WG），且进入 gate 前 clamp(0,1)。
 
-十个 Trainer 类名互不相同，nnU-Net 据此生成互不覆盖的 output folder。
+十一个 Trainer 类名互不相同，nnU-Net 据此生成互不覆盖的 output folder。
 
 #### `optimized_baseline`（**用户已停止 / 中止**）
 
@@ -73,6 +138,46 @@ weight/bias 零初始化；`weights = softmax(logits,1)`（W，通道和为 1，
   **不是完成的训练、不是正式模型结果**，其 checkpoint 保留但不得续训、不得引用为结果；
 - Focal+CE 的 gate 分支与 Dice+CE baseline **不能混用**来归因 gate 的收益：若将来要在优化分支下
   比较 gate，image/anatomy gate 也必须改用相同 Dice+CE（本轮不实现这些类）。
+
+#### `dicece_positive_sampling`（**代码就绪 / 尚未训练**；独立强参考基线，**不属于 A→B→C→D 主研究链**）
+
+- Trainer 类名 `nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT`，CLI 别名 `dicece_positive_sampling`；
+- 组成：**nnU-Net v2.6.2 原生 Dice+CE**（`DC_and_CE_loss` + `MemoryEfficientSoftDiceLoss` +
+  原生 `DeepSupervisionWrapper`，项目零自写损失）**＋** 项目现有 PositiveSampling
+  **＋** 项目现有 NoFFT augmentation 修复 **＋** 原生 `PlainConvUNet`（3 个 MRI 通道）；
+- 用途：隔离**损失函数**的影响，回答「在 PositiveSampling 已稳定病灶暴露之后，原生 Dice+CE 是否
+  优于 PI-CAI Focal+CE（`positive_sampling`）」。已中止的 `optimized_baseline` 使用原生采样且未完成
+  训练，不能回答该问题；
+- 单变量边界：相对 `positive_sampling` **只有损失不同**；相对 `optimized_baseline`
+  **只有训练采样不同**。不含 gate、不含 PZ/TZ、不含浅层 feature path，不改 patch/batch size、
+  optimizer、初始学习率、PolyLR、epoch 数、deep supervision 与验证采样；
+- 目标输出目录（由类名自然形成，独立、不覆盖任何既有产物）：
+  `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0`；
+- **当前状态：代码已就绪并经纯合成 CPU 测试验证，尚未训练**（没有 checkpoint、没有 validation、
+  没有任何结果数字）；不写入任何预期结果；
+- 未来训练命令（**本轮未执行**，由研究者本人运行；启动前必须逐条满足下列条件）：
+
+```bash
+cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
+CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
+  dicece_positive_sampling \
+  605 \
+  3d_fullres \
+  0 \
+  --device cuda
+```
+
+  1. 当前 B（`feature_no_gate_positive_sampling`）已完全训练与 validation 结束；
+  2. GPU 已空闲；
+  3. 没有同名训练进程；
+  4. 上述目标输出目录不存在；
+  5. 已执行 `source scripts/env_nnunet.sh`；
+  6. 启动日志必须显示：Dataset605 / fold 0 / `1277 train, 223 validation` / `batch_size=2` /
+     `positive_cases=362` / `negative_cases=915` / `positive_cases_per_batch=1` /
+     `guaranteed_positive_patch_fraction=0.5` / DiceCE loss 路径
+     （`loss=DeepSupervisionWrapper (base=nnunetv2...DC_and_CE_loss)`）/ `network=PlainConvUNet` /
+     `input_channels=3`；
+  7. 任一项不符合时立即停止，不继续训练。
 
 #### `positive_sampling`（**已完成**：2026-09-22 07:16 → 22:31 UTC 训练，22:42 UTC validation）
 
@@ -132,7 +237,7 @@ weight/bias 零初始化；`weights = softmax(logits,1)`（W，通道和为 1，
   改善**（配对均值 delta −0.0053、CI95 含 0；召回略升但 precision 明显下降、漏分与阴性假阳增加），
   **旧输入级解剖条件假设本次未获支持**——但这不证明 PZ/TZ 无效，也不证明两法等效。
 
-#### 特征级融合主线（`feature_*_positive_sampling`，**代码已实现，三个都尚未训练**）
+#### 原特征级融合主线（`feature_*_positive_sampling`，普通融合已启动、缺最终验证；其余未运行）
 
 Research Plan §4–6 的论文主线。三个特征级条件共享
 **完全相同**的浅层编码与投影结构、
@@ -190,8 +295,8 @@ validation 与滑窗推理，构成一组同层级比较：
 
 其他边界：三个条件与输入级 `image_gate` / `anatomy_gate` **属于不同表征层级**，不能混在同一张
 归因表里；feature 版本相对原生 nnU-Net 的全部差异包含"更多参数 + 不同输入分布"，因此不能把全部
-收益归因于解剖条件（Research Plan §5–6）。三个特征级条件是新的**主线**，目前**尚未训练**；
-本节不含任何训练结果。阳性采样是它们共同的训练稳定化条件，并非主要方法贡献。
+收益归因于解剖条件（Research Plan §5–6）。普通融合已启动但缺最终验证，另外两个门控条件未运行；
+本节不含最终验证结果。阳性采样是它们共同的训练稳定化条件，并非主要方法贡献。
 
 #### Dataset605 与 Dataset606 的一致性边界
 
@@ -276,11 +381,14 @@ source scripts/env_nnunet.sh   # 校验 lm 环境 + 固定 nnU-Net 源码，并�
 cd /opt/data/private/lm/my-projects && conda activate lm && source scripts/env_nnunet.sh
 ```
 
-### 十个 variant 的训练
+### 旧十一个 variant 的训练（短预算命令见首节）
 
 ```bash
 python scripts/train/train_nnunet.py baseline 605 3d_fullres 0            # = 已完成的 N0
 python scripts/train/train_nnunet.py optimized_baseline 605 3d_fullres 0  # 原生 Dice+CE（用户已中止，勿续训）
+# dicece_positive_sampling = 独立强参考基线（原生 Dice+CE + 阳性病例采样）；**尚未训练**：
+#   仅当 B 已训练+validation 完成、GPU 空闲、无同名进程、目标输出目录不存在时才运行（启动判据见上节）
+# CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py dicece_positive_sampling 605 3d_fullres 0
 python scripts/train/train_nnunet.py image_gate 605 3d_fullres 0
 python scripts/train/train_nnunet.py anatomy_gate 606 3d_fullres 0        # 需先准备并预处理 Dataset606
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py positive_sampling 605 3d_fullres 0
@@ -289,15 +397,15 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py positive_sampling 60
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py image_gate_positive_sampling 605 3d_fullres 0
 # anatomy_gate_positive_sampling 已完成（2026-09-24；MRI 数组审计已通过，见「一致性边界」）
 # CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py anatomy_gate_positive_sampling 606 3d_fullres 0
-# 特征级融合主线三条件（尚未训练；同一 stem/投影/损失/采样，见上节）
+# 原特征级融合三条件（普通融合已有运行，勿重复从头启动；其余未运行）
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_no_gate_positive_sampling 605 3d_fullres 0
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_image_gate_positive_sampling 605 3d_fullres 0
 CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py feature_anatomy_gate_positive_sampling 606 3d_fullres 0
 ```
 
-> `positive_sampling`、两个 `*_positive_sampling` 组合与三个 `feature_*_positive_sampling`
-> 都是**从零训练**：不加 `--continue-training`，不读取 DiceCE/baseline/gate 的任何 checkpoint，
-> 也不会覆盖任何既有目录。训练开始后日志应出现实际训练病例数、阳性病例数与
+> `positive_sampling`、两个 `*_positive_sampling` 组合、三个 `feature_*_positive_sampling` 与
+> `dicece_positive_sampling` 都是**从零训练**：不加 `--continue-training`，不读取
+> DiceCE/baseline/gate 的任何 checkpoint，也不会覆盖任何既有目录。训练开始后日志应出现实际训练病例数、阳性病例数与
 > `positive_cases_per_batch=1`、`guaranteed_positive_patch_fraction=0.5`；若实际阳性病例数与
 > 预处理不一致，采样器会直接报错而不是静默继续。
 >
@@ -378,7 +486,7 @@ python scripts/evaluate_segmentation.py \
 > `validation/summary.json`**，不是正式模型结果；上面两条命令都必须先删掉
 > `--model optimized_baseline=...` 那一行。`positive_sampling` 的训练与 validation 均已完成
 > （`validation/summary.json` 已存在），可以按同样格式加上 `--model positive_sampling=...`；
-> 三个 `feature_*_positive_sampling` 条件**尚未训练**，没有产物可加。
+> 三个原 `feature_*_positive_sampling` 条件目前没有最终 validation 可加入评测；普通融合已有中间训练产物。
 > `full` 模式是长任务，且只能由研究者在训练**结束之后**运行。
 
 - **长任务由研究者本人运行**；`full` 模式逐例读取 NIfTI，属耗时任务。
@@ -401,6 +509,14 @@ python scripts/evaluate_segmentation.py \
   size / spacing / origin / direction 与 0/1 标签，由掩膜重算六项计数并与 summary **逐项**核对；
   `n_ref=0` 的病例其 reference 必须实际为空；**真阴病例（n_pred=0）不得跳过文件与几何检查**。
   每例只读一次，不重复读盘。
+- **`full` 模式新增病灶实例级指标（`lesion_instance_metrics`，协议预先冻结）**：实例为 3D
+  连通域（6-邻域 / face connectivity）；候选匹配为至少 1 个重叠体素；采用一对一词典序匹配
+  （先最大化匹配数，再最大化总 intersection 体素数，完全平局时按组件 id 升序），**不以 Dice
+  为匹配目标**。报告 `lesion_sensitivity_any_overlap`（命名即口径：any-overlap，不是严格病灶
+  检测指标）、`small_lesion_sensitivity_any_overlap`、`matched_lesion_dice`（只作用于 matched
+  pairs，天然不含 missed lesions）与探索性大小分层 `< 500 / 500–1000 / > 1000 mm³`；每例另存
+  可审计的 reference / prediction lesion records。**不做任何预测后处理**（最小团块过滤、最大
+  团块、形态学、阈值优化）。阴性病例不进 sensitivity 分母，其预测团块仍计入假阳。
 - **逐例异常按病例收集**：一例从读掩膜到计数核对、体积、`surface_metrics`、
   `component_analysis` / `_pred_component_stats`、entry 构造的**全部步骤**都在同一个异常边界内。
   某一例的 MedPy / SciPy / 体积 / 连通域失败只记录 `[model] case: 异常类型: 信息` 并继续处理其余
@@ -521,7 +637,7 @@ python scripts/evaluate_external_segmentation.py \
 - anatomy_gate_positive_sampling（**已完成**：训练 2026-09-24 06:42 → 22:41 UTC，validation 22:52 UTC 完成）：
   `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - feature_no_gate_positive_sampling / feature_image_gate_positive_sampling /
-  feature_anatomy_gate_positive_sampling（代码已实现，**尚未训练**，目录尚未创建）：
+  feature_anatomy_gate_positive_sampling（首个已有运行且缺最终 validation；后两者未运行）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`、
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`、
   `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
@@ -545,9 +661,9 @@ scripts/
   inference/predict_nnunet.py    最小预测入口（官方预测器 + 项目 Trainer 解析）
   evaluate_segmentation.py       统一病灶分割评估（离线读 validation 产物；summary/full）
 src/zonal_reliability_fusion/
-  nnunet/trainers.py     PI-CAI 损失 + NoFFT 修复 + 十个 Trainer + Trainer 注册表
+  nnunet/trainers.py     PI-CAI 损失 + NoFFT 修复 + 十五个 Trainer + Trainer 注册表
   nnunet/sampling.py     阳性病例感知训练采样（继承原生 nnUNetDataLoader；验证 loader 保持原生）
-  nnunet/networks.py     spatial modality gate / 浅层序列 stem 特征融合 与原生 backbone 包装器
+  nnunet/networks.py     modality gate / 浅层序列特征融合 / 同区参照残差 与原生 backbone 包装器
   nnunet/transforms.py   PZ/TZ 增强边界（强度只作用 MRI）
   nnunet/__init__.py     check_fixed_nnunet_runtime（nnU-Net/DNA/PlainConvUNet 运行时校验）
 pytest.ini               只收集 tests/（不扫描 data/workdir/outputs/third_party）
@@ -555,3 +671,129 @@ tests/                   纯合成单元测试
 third_party/nnUNet/      固定 v2.6.2（只读）
 data/ workdir/ outputs/  数据、预处理缓存、训练产物
 ```
+
+
+## 阶段一候选：T2W 联合 WG/PZ/TZ
+
+代码入口已接入，真实准备、planning/preprocessing、split、训练和评价尚未执行。
+唯一 variant=`anatomy_joint_100ep`，Trainer=`nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT`，
+绑定 `Dataset607_PICAI_Anatomy / 3d_fullres / fold 0`。100 epochs 是首次工程试跑预算，
+不是论文最终预算或充分收敛声明。原生网络、region BCE+Dice、deep supervision、采样、
+optimizer、PolyLR、patch validation 和滑窗全部复用；NoFFT 仅关闭已有 blur FFT benchmark。
+
+监督用既有物化 WG 与 `zonal_yuan`：code=WG+2*PZ+4*TZ，保存标注成员组合，
+不构造新的解剖类别，不使用 lesion，不将分区并集替代 WG。labels 按 background/WG/PZ/TZ
+插入，区域为 0 / [1,3,5,7] / [2,3,6,7] / [4,5,6,7]，class order=[1,2,4]。
+Yuan 是工程复用选择，不能据此称其较 Hevi 准确。35 例追查支持物化 WG 内容对应与
+头信息差异，保留这些病例；不证明历史来源，不修改原始标签或 source_resolved。
+
+显式排除唯一已知缺失 `11050_1001070`，完整监督候选为 1499 **study**，当前冻结划分
+train=1276、validation=223（不是患者数）。阶段二仍保留全部 1500；本次不接入部分监督、
+折外批量预测、阶段二融合或 ROI 裁剪。不存在 split、额外缺失、非法值、患者跨划分均失败。
+
+下面每一步由用户单独运行并检查成功后再执行下一步，代理不自动启动。每次打开终端先执行：
+
+```bash
+cd /opt/data/private/lm/my-projects
+source /root/anaconda3/etc/profile.d/conda.sh
+conda activate lm
+source scripts/env_nnunet.sh
+```
+
+1. 准备检查（会读取真实影像，但不写 Dataset607），再物化：
+
+```bash
+python scripts/data/prepare_picai_nnunet.py anatomy --exclude-known-missing-wg --dry-run
+```
+
+成功判据：1499 study，1276/223，failed=0、excluded_count=1；tqdm 与结束摘要可观察。
+检查通过后单独执行：
+
+```bash
+python scripts/data/prepare_picai_nnunet.py anatomy --exclude-known-missing-wg
+```
+
+输出 `workdir/nnUNet_raw/Dataset607_PICAI_Anatomy/`，仅 `imagesTr/*_0000.nii.gz`
+和派生 `labelsTr/*.nii.gz`；成功后发布 `dataset.json`。任一病例失败不发布新 dataset.json。
+禁止覆盖；确需继续未完成准备时使用相同命令加 `--resume`，核对配置、源文件 SHA256、
+物理网格和派生标签内容，冲突失败。默认验证全部 source，不能无条件跳过既有文件。
+
+2. 原生 planning/preprocessing（只对新 Dataset607）：
+
+```bash
+nnUNetv2_plan_and_preprocess -d 607 -c 3d_fullres --verify_dataset_integrity
+```
+
+输出 `workdir/nnUNet_preprocessed/Dataset607_PICAI_Anatomy/`，观察原生校验、fingerprint 与
+preprocessing 进度，不加 `--verbose`（会关闭原生进度条）。成功判据：退出 0、
+`nnUNetPlans.json` 含 3d_fullres，并完成 1499 例预处理；不更改 spacing/patch/batch。
+此命令只用于首次准备的新目录，不用它覆盖已有预处理产物。
+
+3. 显式冻结 split（必须在训练前完成）：
+
+```bash
+python scripts/data/prepare_picai_nnunet.py splits \
+  --dataset-id 607 --dataset-name PICAI_Anatomy --exclude-known-missing-wg
+```
+
+输出 raw/preprocessed 下 `splits_final.json`。终端打印过滤及结束摘要；成功判据：
+fold 0 train=1276、val=223，病例无重复，患者无交集，与完整 raw 病例集合一致。
+冲突拒绝覆盖，缺失 split 时 Trainer 不会随机回退。
+
+4. 首次工程训练并保存原生恢复后的验证概率：
+
+```bash
+python scripts/train/train_nnunet.py anatomy_joint_100ep 607 3d_fullres 0 \
+  --export-validation-probabilities
+```
+
+输出 `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/`。
+观察原生 epoch 日志及验证进度。成功判据：100-epoch 工程预算结束、checkpoint 可用、
+validation 全部 223 例产生 `.npz/.pkl/.nii.gz`，最终 anatomy-probability-check failed=0。
+拒绝从头使用已存在运行目录。`--continue-training` 仅用于未完成训练：必须有可读且匹配
+契约的 checkpoint、没有 `checkpoint_final.pth`，且 validation 目录尚无任何产物。
+已有 `checkpoint_final.pth` 时拒绝续训，避免重新进入训练结束保存流程。
+训练已完成但尚无验证产物时，可单独运行首次验证：
+
+```bash
+python scripts/train/train_nnunet.py anatomy_joint_100ep 607 3d_fullres 0 \
+  --validation-only --export-validation-probabilities
+```
+
+validation 目录已有任何内容（包括部分结果、summary 或嵌套目录）时，拒绝从头训练、
+续训和 validation-only，防止原生验证重写同名产物；空目录可以接受。
+本入口不支持验证重跑或另一个验证输出目录，不删除、清空或移动既有结果。
+不改变每 epoch iterations、patch size 或 batch size。
+
+5. 独立区域评价，写到全新输出目录：
+
+```bash
+python scripts/evaluate_segmentation.py anatomy \
+  --prediction-dir outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/validation \
+  --reference-dir workdir/nnUNet_raw/Dataset607_PICAI_Anatomy/labelsTr \
+  --images-dir workdir/nnUNet_raw/Dataset607_PICAI_Anatomy/imagesTr \
+  --dataset-json workdir/nnUNet_raw/Dataset607_PICAI_Anatomy/dataset.json \
+  --plans workdir/nnUNet_preprocessed/Dataset607_PICAI_Anatomy/nnUNetPlans.json \
+  --split-file workdir/nnUNet_preprocessed/Dataset607_PICAI_Anatomy/splits_final.json \
+  --output-dir outputs/reports/picai_anatomy_joint_100ep_fold0_v1 \
+  --native-ordered-export
+```
+
+观察逐 study tqdm、失败诊断和导出进度；成功判据：223 例完整评估、failed=0，
+新目录中有 `anatomy_regions.json` 与 `independent_threshold_bitcode/`，原生预测和
+`summary.json` 不改变。已有评价目录拒绝覆盖，重评需明确选择另一个新目录。
+
+主口径是三个概率分别 >0.5 的独立掩膜，对原始位编码参考调用原生区域 mask/count 机制。
+不修正包含，不强制 PZ/TZ 互斥。双空 Dice=null，均值排除且报告有效数/双空数；单空 Dice=0。
+同时报告重叠/分区超出 WG 的体素比例及分子分母。评价只表示算法伪标签一致性。
+`native_ordered_export` 是可选独立口径：原生 TZ 覆盖 PZ、PZ 覆盖 WG，不能冒充独立头指标。
+
+预测仍经 `scripts/inference/predict_nnunet.py -m <该模型目录> -i <单T2W目录> -o <全新目录>
+--save_probabilities -f 0` 调用原生 predictor/export。解剖模型强制保存概率并核验产物；
+预测保护通过参数解析统一处理 `-m 路径` / `-m=路径`，`-i/-o` 与受限参数同样处理；
+缺值、空值、重复或歧义在调用原生入口前失败。合法旧病灶参数仍原样委托原生入口。
+本次不批量生成折外预测。`.npz` 的 probabilities 固定 WG/PZ/TZ，形状 `(3,Z,Y,X)`，
+已经复用原生 correct-shape 恢复到原始 T2W 数组网格；`.pkl` 的 sitk_stuff 保存 spacing/
+origin/direction，plans 指定轴变换；`.nii.gz` 是覆盖式整数图，不能反推软通道。
+预处理 crop 外三个概率补零，不能称这些位置接受过网络预测。检查通道、shape、有限值、
+[0,1] 范围以及 pkl、T2W、分割图的几何关系，失败不缩减评价分母。

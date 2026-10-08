@@ -25,12 +25,15 @@ from zonal_reliability_fusion.nnunet.networks import (
     ShallowSequenceStem,
     SpatialModalityReliabilityGate,
     feature_gate_parameter_delta,
+    ZonalReferenceResidualFusion,
+    ZonalReferenceFusionNNUNet,
 )
 from zonal_reliability_fusion.nnunet.trainers import (
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
+    nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
     nnUNetTrainerPICAI_ImageGate,
 )
@@ -801,3 +804,136 @@ def test_feature_module_does_not_copy_unet_and_proxies_backbone(synthetic_arch):
     )
     # 不是输入级 gate 包装器
     assert not isinstance(net, GatedNNUNet)
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_zonal_reference_zero_init_and_empty_reference_fallback(adaptive):
+    module = ZonalReferenceResidualFusion(3, adaptive=adaptive)
+    h = torch.randn(1, 3, 5, 19, 21, requires_grad=True)
+    z = torch.rand(1, 2, 5, 19, 21)
+    assert torch.equal(module(h, z), h)
+    with torch.no_grad():
+        module.correction[-1].weight.normal_(0, .1)
+        module.correction[-1].bias.fill_(.1)
+    # 学习后的修正也不能在没有局部解剖参照时凭空注入；这不改变病灶标签/病例类别。
+    assert torch.equal(module(h, torch.zeros_like(z)), h)
+    assert torch.equal(module(h, torch.full_like(z, .001)), h)
+    out = module(h, z)
+    assert out.shape == h.shape and torch.isfinite(out).all()
+    assert not torch.allclose(out, h)
+    out.square().mean().backward()
+    assert torch.isfinite(h.grad).all()
+    for parameter in module.parameters():
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+
+
+@pytest.mark.parametrize("boundary", [3, 4])
+def test_zonal_reference_does_not_mix_constant_pz_and_tz_tissue(boundary):
+    module = ZonalReferenceResidualFusion(1, adaptive=False)
+    h = torch.full((1, 1, 3, 8, 8), 2.0)
+    h[..., boundary:] = 10.0
+    z = torch.zeros(1, 2, 3, 8, 8)
+    z[:, 0, ..., :boundary] = 1
+    z[:, 1, ..., boundary:] = 1
+    context, active = module.reference_context(h, z)
+    # 各区域内部是常量；参照不能把另一分区的 2/10 差别解释成局部异常。
+    assert torch.allclose(context[:, 1:3], torch.zeros_like(context[:, 1:3]), atol=1e-3)
+    assert torch.count_nonzero(active) > 0
+    h[..., :boundary] += torch.randn_like(h[..., :boundary])
+    changed, _ = module.reference_context(h, z)
+    assert torch.count_nonzero(changed[:, 1:2]) > 0
+    assert torch.allclose(changed[:, 2:3], torch.zeros_like(changed[:, 2:3]), atol=1e-3)
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_zonal_reference_upsampling_does_not_inject_outside_original_zones(adaptive):
+    module = ZonalReferenceResidualFusion(2, adaptive=adaptive)
+    with torch.no_grad():
+        module.correction[-1].bias.fill_(1)
+    h = torch.randn(1, 2, 5, 12, 12)
+    z = torch.zeros(1, 2, 5, 12, 12)
+    z[:, 0, ..., :5] = 1  # 边界切穿 coarse voxel，参照支持量足够。
+    out = module(h, z)
+    assert not torch.equal(out[..., :5], h[..., :5])
+    assert torch.equal(out[..., 5:], h[..., 5:])
+
+
+def test_zonal_reference_second_moments_stay_finite_for_half_precision_features():
+    module = ZonalReferenceResidualFusion(1, adaptive=False)
+    # 300**2 超过 fp16 最大有限值；二阶矩必须在 float32 中计算。
+    h = torch.full((1, 1, 5, 12, 12), 300, dtype=torch.float16)
+    z = torch.ones(1, 2, 5, 12, 12, dtype=torch.float16) * .5
+    context, active = module.reference_context(h, z)
+    assert torch.isfinite(context).all() and torch.isfinite(active).all()
+    assert torch.count_nonzero(context[:, 1:3]) == 0
+
+
+def test_zonal_reference_occupancy_overlap_is_normalized_and_input_is_unchanged():
+    module = ZonalReferenceResidualFusion(2, adaptive=False)
+    h = torch.randn(1, 2, 5, 12, 12)
+    z = torch.ones(1, 2, 5, 12, 12)
+    saved_h, saved_z = h.clone(), z.clone()
+    a, valid_a = module.reference_context(h, z)
+    b, valid_b = module.reference_context(h, z * .5)
+    assert torch.equal(a, b) and torch.equal(valid_a, valid_b)
+    assert torch.equal(h, saved_h) and torch.equal(z, saved_z)
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -float("inf")])
+def test_zonal_reference_rejects_nonfinite_prior_before_clamp(bad_value):
+    module = ZonalReferenceResidualFusion(2, adaptive=False)
+    h = torch.randn(1, 2, 5, 12, 12)
+    z = torch.ones(1, 2, 5, 12, 12)
+    z[0, 0, 0, 0, 0] = bad_value
+    with pytest.raises(ValueError, match="非有限"):
+        module(h, z)
+
+
+def test_zonal_reference_adaptive_strength_and_state_dict_are_separate():
+    fixed = ZonalReferenceResidualFusion(2, adaptive=False)
+    adaptive = ZonalReferenceResidualFusion(2, adaptive=True)
+    with torch.no_grad():
+        fixed.correction[-1].bias.fill_(1)
+    missing = adaptive.load_state_dict(fixed.state_dict(), strict=False)
+    assert set(missing.missing_keys) == {"strength.weight", "strength.bias"}
+    h = torch.randn(1, 2, 5, 12, 12)
+    z = torch.ones(1, 2, 5, 12, 12) * .5
+    assert torch.allclose(adaptive(h, z) - h, .5 * (fixed(h, z) - h), atol=1e-6)
+    with pytest.raises(RuntimeError):
+        fixed.load_state_dict(adaptive.state_dict(), strict=True)
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+@pytest.mark.parametrize("deep_supervision", [False, True])
+def test_zonal_reference_wrapper_identity_deep_supervision_and_checkpoint(synthetic_arch, adaptive, deep_supervision):
+    import io
+    baseline = _build_feature(
+        synthetic_arch,
+        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+        5, deep_supervision,
+    )
+    net = ZonalReferenceFusionNNUNet(baseline.backbone, adaptive=adaptive)
+    missing = net.load_state_dict(baseline.state_dict(), strict=False)
+    assert all(k.startswith("reference_fusion.") for k in missing.missing_keys)
+    assert not missing.unexpected_keys
+    baseline.eval(); net.eval()
+    x = torch.randn(1, 5, 8, 16, 16)
+    x[:, 3:] = torch.rand_like(x[:, 3:])
+    saved = x.clone()
+    with torch.no_grad():
+        expected, actual = baseline(x), net(x)
+    if deep_supervision:
+        assert len(expected) == len(actual) == 2
+        assert all(torch.equal(a, b) for a, b in zip(expected, actual))
+    else:
+        assert torch.equal(expected, actual)
+    assert torch.equal(x, saved)
+    with pytest.raises(ValueError, match="五|5"):
+        net(x[:, :3])
+    invalid = x.clone(); invalid[:, 3, 0, 0, 0] = float("inf")
+    with pytest.raises(ValueError, match="非有限"):
+        net(invalid)
+    stream = io.BytesIO()
+    torch.save(net.state_dict(), stream); stream.seek(0)
+    net.load_state_dict(torch.load(stream, weights_only=True), strict=True)
+    assert net.decoder is net.backbone.decoder

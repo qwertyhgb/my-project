@@ -1511,3 +1511,545 @@ def test_publish_failure_prints_one_summary_and_reraises(tmp_path, monkeypatch, 
     # 异常没有被吞掉（pytest.raises 已确认），且没有落盘任何东西
     assert not out.exists()
     assert list(tmp_path.glob(".*tmp")) == []
+
+
+# --------------------------------------- 病灶实例级评价协议（在看 B 结果前冻结）
+def _box_mask(shape, lo, size, dtype=bool) -> np.ndarray:
+    """以半开区间 ``[lo, lo+size)`` 写一个矩形团块（合成掩膜构造工具）。"""
+    arr = np.zeros(shape, dtype=dtype)
+    arr[lo[0] : lo[0] + size[0], lo[1] : lo[1] + size[1], lo[2] : lo[2] + size[2]] = 1
+    return arr
+
+
+def _lesion_metrics(mod, ref: np.ndarray, pred: np.ndarray, voxel_volume_mm3=1.0):
+    """调用被测入口（pred, ref 顺序与实现一致）。"""
+    return mod.lesion_instance_metrics(pred, ref, voxel_volume_mm3, "case")
+
+
+def test_lesion_single_lesion_perfect_overlap():
+    mod = _load_module()
+    ref = _box_mask((8, 8, 8), (2, 2, 2), (2, 2, 2))  # 8 体素 = 8 mm³
+    out = _lesion_metrics(mod, ref, ref.copy())
+    assert out["reference_lesions"] == 1
+    assert out["matched_reference_lesions"] == 1
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert out["predicted_lesions"] == 1
+    assert out["unmatched_predicted_lesions"] == 0
+    assert out["matched_lesion_dice"]["count"] == 1
+    assert out["matched_lesion_dice"]["mean"] == pytest.approx(1.0)
+    record = out["reference_lesion_records"][0]
+    assert record["matched"] is True
+    assert record["matched_prediction_component_id"] == 1
+    assert record["intersection_voxels"] == 8
+    assert record["matched_dice"] == pytest.approx(1.0)
+    assert record["size_stratum"] == "small_lt_500_mm3"
+    assert out["prediction_lesion_records"][0]["matched"] is True
+    assert out["prediction_lesion_records"][0]["matched_reference_component_id"] == 1
+
+
+def test_lesion_single_lesion_partial_overlap():
+    mod = _load_module()
+    ref = _box_mask((8, 8, 8), (2, 2, 2), (4, 4, 4))  # 64 体素
+    pred = _box_mask((8, 8, 8), (4, 2, 2), (4, 4, 4))  # 64 体素，交集 32 体素
+    out = _lesion_metrics(mod, ref, pred)
+    assert out["matched_reference_lesions"] == 1  # 有重叠即 detected
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert out["matched_lesion_dice"]["count"] == 1
+    assert out["matched_lesion_dice"]["mean"] == pytest.approx(2 * 32 / (64 + 64))
+    assert out["unmatched_predicted_lesions"] == 0
+
+
+def test_lesion_complete_miss_stays_in_denominator():
+    mod = _load_module()
+    ref = _box_mask((8, 8, 8), (2, 2, 2), (2, 2, 2))
+    empty = np.zeros((8, 8, 8), dtype=bool)
+    out = _lesion_metrics(mod, ref, empty)
+    assert out["reference_lesions"] == 1
+    assert out["matched_reference_lesions"] == 0
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(0.0)
+    assert out["matched_lesion_dice"]["count"] == 0
+    assert out["matched_lesion_dice"]["mean"] is None
+    assert out["predicted_lesions"] == 0
+    assert out["unmatched_predicted_lesions"] == 0
+    assert out["reference_lesion_records"][0]["matched"] is False
+    assert out["reference_lesion_records"][0]["matched_dice"] is None
+
+
+def test_lesion_empty_negative_case_contributes_nothing():
+    mod = _load_module()
+    empty = np.zeros((8, 8, 8), dtype=bool)
+    out = _lesion_metrics(mod, empty, empty)
+    assert out["reference_lesions"] == 0
+    assert out["matched_reference_lesions"] == 0
+    assert out["lesion_sensitivity_any_overlap"] is None  # 0/0 -> null，不是 0
+    assert out["predicted_lesions"] == 0
+    assert out["unmatched_predicted_lesions"] == 0
+    assert out["matched_lesion_dice"]["count"] == 0
+    assert out["reference_lesion_records"] == []
+    assert out["prediction_lesion_records"] == []
+
+
+def test_lesion_multi_lesion_perfect():
+    mod = _load_module()
+    ref = (
+        _box_mask((16, 16, 16), (1, 1, 1), (3, 3, 3))
+        | _box_mask((16, 16, 16), (8, 1, 1), (3, 3, 3))
+        | _box_mask((16, 16, 16), (1, 8, 8), (3, 3, 3))
+    )
+    out = _lesion_metrics(mod, ref, ref.copy())
+    assert out["reference_lesions"] == 3
+    assert out["matched_reference_lesions"] == 3
+    assert out["predicted_lesions"] == 3
+    assert out["unmatched_predicted_lesions"] == 0
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert out["matched_lesion_dice"]["count"] == 3
+    assert out["matched_lesion_dice"]["mean"] == pytest.approx(1.0)
+    assert [
+        r["matched_prediction_component_id"] for r in out["reference_lesion_records"]
+    ] == [1, 2, 3]
+
+
+def test_lesion_one_to_many_keeps_extra_prediction_as_unmatched():
+    """1 个 GT 与 2 个 prediction 组件都重叠：一对一匹配只允许 1 对，另一个保留为 unmatched。"""
+    mod = _load_module()
+    ref = _box_mask((16, 16, 16), (2, 2, 2), (9, 8, 8))
+    pred = _box_mask((16, 16, 16), (2, 2, 2), (2, 8, 8)) | _box_mask(
+        (16, 16, 16), (6, 2, 2), (2, 8, 8)
+    )
+    out = _lesion_metrics(mod, ref, pred)
+    assert out["reference_lesions"] == 1
+    assert out["matched_reference_lesions"] == 1
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert out["predicted_lesions"] == 2
+    assert out["matched_predicted_lesions"] == 1
+    assert out["unmatched_predicted_lesions"] == 1
+    # 两个候选交集相同 -> deterministic tie-break 选中 id 较小的 prediction component
+    assert out["reference_lesion_records"][0]["matched_prediction_component_id"] == 1
+    pred_records = out["prediction_lesion_records"]
+    assert [r["matched"] for r in pred_records] == [True, False]
+    assert pred_records[1]["matched_reference_component_id"] is None
+    expected_dice = 2 * 128 / (9 * 8 * 8 + 128)
+    assert out["matched_lesion_dice"]["mean"] == pytest.approx(expected_dice)
+
+
+def test_lesion_many_to_one_matches_only_one_reference():
+    """2 个 GT 与同一个 prediction 组件重叠：一对一匹配只能覆盖 1 个 GT。"""
+    mod = _load_module()
+    ref = _box_mask((16, 16, 16), (2, 2, 2), (3, 3, 3)) | _box_mask(
+        (16, 16, 16), (6, 6, 6), (3, 3, 3)
+    )
+    pred = _box_mask((16, 16, 16), (2, 2, 2), (8, 8, 8))
+    out = _lesion_metrics(mod, ref, pred)
+    assert out["reference_lesions"] == 2
+    assert out["matched_reference_lesions"] == 1
+    assert out["lesion_sensitivity_any_overlap"] == pytest.approx(0.5)
+    assert out["predicted_lesions"] == 1
+    assert out["unmatched_predicted_lesions"] == 0
+    # 两个 GT 的交集相同 -> id 升序 tie-break 选中 reference component 1
+    assert out["reference_lesion_records"][0]["matched"] is True
+    assert out["reference_lesion_records"][1]["matched"] is False
+
+
+def test_lesion_connectivity_is_6_neighborhood():
+    """仅通过角或边接触的体素必须属于不同 lesion；面接触才属于同一 lesion。"""
+    mod = _load_module()
+    empty = np.zeros((6, 6, 6), dtype=bool)
+    for touching in ((2, 2, 2), (2, 2, 1)):  # 角接触 / 边接触
+        ref = np.zeros((6, 6, 6), dtype=bool)
+        ref[1, 1, 1] = True
+        ref[touching] = True
+        out = _lesion_metrics(mod, ref, empty)
+        assert out["reference_lesions"] == 2, touching
+    face = np.zeros((6, 6, 6), dtype=bool)
+    face[1, 1, 1] = True
+    face[1, 1, 2] = True  # 面接触
+    assert _lesion_metrics(mod, face, empty)["reference_lesions"] == 1
+
+
+def test_lesion_matching_cardinality_priority():
+    """最大匹配数为第一目标：2 对小重叠必须优先于 1 对大重叠。"""
+    mod = _load_module()
+    pairs = mod._match_lesion_instances({(1, 1): 1000, (1, 2): 100, (2, 1): 100}, 2, 2)
+    assert [(r, p) for r, p, _w in pairs] == [(1, 2), (2, 1)]
+    total_intersection = sum(w for _r, _p, w in pairs)
+    assert total_intersection == 200  # 被放弃的 1 对方案总交集为 1000
+    assert total_intersection < 1000
+
+
+def test_lesion_matching_secondary_objective_is_total_intersection():
+    """匹配数相同时必须取总 intersection 最大者（不是逐边最大，也不是 Dice）。"""
+    mod = _load_module()
+    pairs = mod._match_lesion_instances(
+        {(1, 1): 5, (1, 2): 3, (2, 1): 3, (2, 2): 2}, 2, 2
+    )
+    assert [(r, p) for r, p, _w in pairs] == [(1, 1), (2, 2)]
+    assert sum(w for _r, _p, w in pairs) == 7  # 另一组同基数为 6
+
+
+def test_lesion_matching_exact_tie_is_deterministic_by_component_id():
+    """匹配数与总 intersection 完全相同：必须按 id 升序给出唯一结果，可重复复现。"""
+    mod = _load_module()
+    edges = [(1, 1, 7), (1, 2, 7), (2, 1, 7), (2, 2, 7)]
+    expected = [(1, 1, 7), (2, 2, 7)]
+    for _ in range(5):
+        assert (
+            mod._match_lesion_instances({(r, p): w for r, p, w in edges}, 2, 2)
+            == expected
+        )
+    # 输入字典的插入顺序不得影响结果
+    reversed_order = {(r, p): w for r, p, w in reversed(edges)}
+    assert mod._match_lesion_instances(reversed_order, 2, 2) == expected
+
+
+def test_lesion_matching_may_reroute_to_reach_maximum_cardinality():
+    """贪心逐 ref 选边时必须能通过可行性判据放弃局部最优、改用可完成最优解的边。"""
+    mod = _load_module()
+    pairs = mod._match_lesion_instances({(1, 1): 10, (1, 2): 9, (2, 1): 9}, 2, 2)
+    assert [(r, p) for r, p, _w in pairs] == [(1, 2), (2, 1)]
+    assert sum(w for _r, _p, w in pairs) == 18
+
+
+def test_lesion_matching_validation_rejects_inconsistency():
+    mod = _load_module()
+    for bad in (
+        [(1, 1, 5), (1, 2, 5)],  # reference component 重复匹配
+        [(1, 1, 5), (2, 1, 5)],  # prediction component 重复匹配
+        [(1, 1, 0)],  # intersection < 1 voxel
+        [(1, 3, 5)],  # component id 越界
+    ):
+        with pytest.raises(mod.EvaluationError, match="matching inconsistency"):
+            mod._validate_lesion_matching(bad, 2, 2)
+    mod._validate_lesion_matching([(1, 2, 3)], 2, 2)  # 合法匹配不抛
+
+
+def test_lesion_size_stratum_boundaries():
+    mod = _load_module()
+    stratum = mod._lesion_size_stratum
+    assert stratum(499.999) == "small_lt_500_mm3"
+    assert stratum(500.0) == "medium_500_to_1000_mm3"
+    assert stratum(1000.0) == "medium_500_to_1000_mm3"
+    assert stratum(1000.001) == "large_gt_1000_mm3"
+
+
+def test_lesion_size_stratum_boundaries_end_to_end():
+    """整层边界也要走真实数组路径：500 / 1000 体素必须落 medium，>1000 落 large。"""
+    mod = _load_module()
+    cases = (
+        ((12, 12, 12), (1, 1, 1), (10, 10, 4), "small_lt_500_mm3"),  # 400 体素
+        ((12, 12, 12), (1, 1, 1), (10, 10, 5), "medium_500_to_1000_mm3"),  # 500 体素
+        ((12, 12, 12), (1, 1, 1), (10, 10, 10), "medium_500_to_1000_mm3"),  # 1000 体素
+        ((16, 16, 16), (1, 1, 1), (11, 11, 9), "large_gt_1000_mm3"),  # 1089 体素
+    )
+    for shape, lo, size, expected in cases:
+        ref = _box_mask(shape, lo, size)
+        out = _lesion_metrics(mod, ref, ref.copy())
+        assert out["reference_lesion_records"][0]["size_stratum"] == expected, size
+
+
+def test_lesion_instance_volume_respects_anisotropic_spacing(tmp_path):
+    """病灶体积必须用逐例真实 spacing（mm³），不得凭数组 shape 猜。"""
+    mod = _load_module()
+    assert mod._voxel_volume_mm3((3.0, 0.5, 0.5)) == pytest.approx(0.75)
+    ref = _box_mask((12, 12, 12), (2, 2, 2), (2, 2, 1))  # 4 体素
+    spacing_xyz = (3.0, 0.5, 0.5)  # SimpleITK 轴序 -> 体素体积 0.75 mm³
+    fold = _write_fold_with_masks(tmp_path, "m", [("a", ref, ref)], spacing=spacing_xyz)
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+
+    row = next(r for r in rep["per_case"] if r["case_id"] == "a")
+    assert row["voxel_volume_mm3"] == pytest.approx(0.75)
+    record = row["lesion_instance_metrics"]["reference_lesion_records"][0]
+    assert record["voxels"] == 4
+    assert record["volume_mm3"] == pytest.approx(3.0)  # 4 * 0.75
+    assert record["size_stratum"] == "small_lt_500_mm3"
+
+
+def test_lesion_size_strata_metrics_and_small_lesion_sensitivity(tmp_path):
+    """small / medium / large 三层各自的计数、敏感度与 matched Dice 必须独立正确。"""
+    mod = _load_module()
+    shapes = (26, 26, 26)
+    ref = (
+        _box_mask(shapes, (1, 1, 1), (1, 2, 2))  # 4 体素 -> small
+        | _box_mask(shapes, (5, 5, 5), (8, 8, 10))  # 640 体素 -> medium
+        | _box_mask(shapes, (14, 14, 14), (11, 11, 9))  # 1089 体素 -> large
+    )
+    pred = ref.copy()
+    for voxel in ((1, 1, 1), (1, 1, 2), (1, 2, 1), (1, 2, 2)):
+        pred[voxel] = False  # 小病灶完全漏分
+    fold = _write_fold_with_masks(
+        tmp_path, "m", [("a", ref, pred)], spacing=(1.0, 1.0, 1.0)
+    )
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+
+    glob = rep["lesion_instance_metrics"]
+    assert glob["reference_lesions"] == 3
+    assert glob["matched_reference_lesions"] == 2
+    assert glob["lesion_sensitivity_any_overlap"] == pytest.approx(2 / 3)
+    small = glob["size_strata"]["small_lt_500_mm3"]
+    medium = glob["size_strata"]["medium_500_to_1000_mm3"]
+    large = glob["size_strata"]["large_gt_1000_mm3"]
+    assert small["reference_lesion_count"] == 1
+    assert small["matched_reference_lesion_count"] == 0
+    assert small["lesion_sensitivity_any_overlap"] == pytest.approx(0.0)
+    assert small["matched_lesion_dice"]["count"] == 0
+    assert medium["reference_lesion_count"] == 1
+    assert medium["matched_reference_lesion_count"] == 1
+    assert medium["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert medium["matched_lesion_dice"]["mean"] == pytest.approx(1.0)
+    assert large["reference_lesion_count"] == 1
+    assert large["matched_reference_lesion_count"] == 1
+    assert large["lesion_sensitivity_any_overlap"] == pytest.approx(1.0)
+    assert glob["small_lesion_sensitivity_any_overlap"] == pytest.approx(0.0)
+    assert glob["matched_lesion_dice"]["count"] == 2
+    assert glob["matching"]["primary_objective"] == "maximum_cardinality"
+
+
+def test_lesion_negative_fp_components_do_not_pollute_sensitivity(tmp_path):
+    """阴性病例的 prediction components 全部是 unmatched 假阳，但不得进入 sensitivity 分母。"""
+    mod = _load_module()
+    shapes = (16, 16, 16)
+    pred = _box_mask(shapes, (1, 1, 1), (2, 2, 2)) | _box_mask(
+        shapes, (9, 9, 9), (2, 2, 2)
+    )
+    out = _lesion_metrics(mod, np.zeros(shapes, dtype=bool), pred)
+    assert out["reference_lesions"] == 0
+    assert out["matched_reference_lesions"] == 0
+    assert out["lesion_sensitivity_any_overlap"] is None  # 0/0 -> null，不是 0
+    assert out["predicted_lesions"] == 2
+    assert out["unmatched_predicted_lesions"] == 2
+
+    fold = _write_fold_with_masks(
+        tmp_path, "m", [("neg", np.zeros(shapes), pred.astype(np.uint8))]
+    )
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+    glob = rep["lesion_instance_metrics"]
+    assert glob["reference_lesions"] == 0
+    assert glob["lesion_sensitivity_any_overlap"] is None
+    assert glob["small_lesion_sensitivity_any_overlap"] is None
+    assert glob["predicted_lesions"] == 2
+    assert glob["unmatched_predicted_lesions"] == 2
+    # 现有阴性病例假阳主指标与 component_analysis 语义保持不变
+    assert rep["negative_false_positive"]["negative_fp_cases"] == 1
+    negative_components = rep["component_analysis"]["negative_case_fp_components"]
+    assert negative_components["fp_component_count_total"] == 2
+
+
+def test_lesion_instance_json_aggregation_consistency(tmp_path):
+    """逐病例实例数之和必须等于 global summary；summary 模式不得出现实例级结果。"""
+    mod = _load_module()
+    shapes = (20, 20, 20)
+    ref_pos = _box_mask(shapes, (2, 2, 2), (3, 3, 3)) | _box_mask(
+        shapes, (10, 10, 10), (3, 3, 3)
+    )
+    pred_pos = _box_mask(shapes, (2, 2, 2), (3, 3, 3)) | _box_mask(
+        shapes, (15, 15, 15), (2, 2, 2)
+    )
+    pred_fpneg = _box_mask(shapes, (1, 1, 1), (2, 2, 2)) | _box_mask(
+        shapes, (12, 12, 12), (2, 2, 2)
+    )
+    empty = np.zeros(shapes, dtype=np.uint8)
+    fold = _write_fold_with_masks(
+        tmp_path,
+        "m",
+        [
+            ("pos", ref_pos, pred_pos),
+            ("fpneg", empty, pred_fpneg.astype(np.uint8)),
+            ("tn", empty, empty),
+        ],
+    )
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+
+    glob = rep["lesion_instance_metrics"]
+    rows = {r["case_id"]: r["lesion_instance_metrics"] for r in rep["per_case"]}
+    assert set(rows) == {"pos", "fpneg", "tn"}
+    assert glob["n_cases"] == 3
+    for key in (
+        "reference_lesions",
+        "matched_reference_lesions",
+        "predicted_lesions",
+        "matched_predicted_lesions",
+        "unmatched_predicted_lesions",
+    ):
+        assert sum(rows[c][key] for c in rows) == glob[key], key
+    assert (glob["reference_lesions"], glob["matched_reference_lesions"]) == (2, 1)
+    assert (glob["predicted_lesions"], glob["unmatched_predicted_lesions"]) == (4, 3)
+    # 阴性病例不进入 sensitivity 分母：2 个 reference lesion 中 1 个 matched
+    assert glob["lesion_sensitivity_any_overlap"] == pytest.approx(0.5)
+    assert glob["matched_reference_fraction"] == pytest.approx(0.5)
+    assert rows["tn"]["lesion_sensitivity_any_overlap"] is None
+
+    # summary 模式不读 NIfTI：不得出现任何实例级结果
+    rep_summary, _ = mod.summarize_model("m", fold, 100, 1)
+    assert rep_summary["lesion_instance_metrics"] is None
+    assert all("lesion_instance_metrics" not in row for row in rep_summary["per_case"])
+
+
+def test_lesion_instance_metrics_are_published_as_standard_json(tmp_path):
+    """full 模式落盘的 JSON 必须包含实例级指标、可审计 records，且不含 NaN/Infinity。"""
+    mod = _load_module()
+    shapes = (20, 20, 20)
+    ref = _box_mask(shapes, (2, 2, 2), (3, 3, 3)) | _box_mask(
+        shapes, (10, 10, 10), (3, 3, 3)
+    )
+    pred = _box_mask(shapes, (2, 2, 2), (3, 3, 3))  # 第二个 lesion 完全漏分
+    fold = _write_fold_with_masks(tmp_path, "m", [("a", ref, pred)])
+    out = tmp_path / "full_metrics.json"
+    assert (
+        mod.main(
+            [
+                "--model",
+                f"m={fold}",
+                "--mode",
+                "full",
+                "--nsd-tolerance-mm",
+                "1.0",
+                "--output",
+                str(out),
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "NaN" not in text and "Infinity" not in text
+    payload = json.loads(text)
+    assert payload["schema_version"] == mod.SCHEMA_VERSION
+    glob = payload["models"]["m"]["lesion_instance_metrics"]
+    assert glob["reference_lesions"] == 2
+    assert glob["matched_reference_lesions"] == 1
+    assert glob["lesion_sensitivity_any_overlap"] == (pytest.approx(0.5))
+    assert glob["matching"]["candidate_rule"] == "intersection_voxels >= 1"
+    row = next(r for r in payload["models"]["m"]["per_case"] if r["case_id"] == "a")
+    records = row["lesion_instance_metrics"]["reference_lesion_records"]
+    assert [r["matched"] for r in records] == [True, False]
+    assert records[1]["matched_prediction_component_id"] is None
+
+
+# Anatomy exports are produced by the native correct-shape function on synthetic logits.
+def _anatomy_export_fixture(tmp_path, monkeypatch):
+    import pickle
+    import torch
+    from types import SimpleNamespace
+    from zonal_reliability_fusion.nnunet import trainers as t
+    from nnunetv2.utilities.label_handling.label_handling import LabelManager
+    from nnunetv2.inference.export_prediction import convert_predicted_logits_to_segmentation_with_correct_shape
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    manager = LabelManager(t.ANATOMY_LABELS, [1, 2, 4])
+    code = np.arange(8, dtype=np.uint8).reshape(2, 2, 2)
+    masks = np.stack([(code & bit) != 0 for bit in (1, 2, 4)])
+    logits = torch.where(torch.from_numpy(masks), 8., -8.)
+    forward, backward = [2, 0, 1], [1, 2, 0]
+    properties = {'spacing': list(reversed(SPACING_XYZ)),
+                  'sitk_stuff': {'spacing': SPACING_XYZ, 'origin': (0., 0., 0.),
+                                'direction': tuple(np.eye(3).flatten())},
+                  'shape_before_cropping': [4, 5, 6],
+                  'shape_after_cropping_and_before_resampling': [2, 2, 2],
+                  'bbox_used_for_cropping': [[1, 3], [2, 4], [3, 5]]}
+    plans = SimpleNamespace(transpose_forward=forward, transpose_backward=backward)
+    config = SimpleNamespace(spacing=[.5, 3., .5], resampling_fn_probabilities=lambda data, *args: data)
+    native, probabilities = convert_predicted_logits_to_segmentation_with_correct_shape(
+        logits, plans, config, manager, properties, return_probabilities=True, num_threads_torch=1)
+    ref = t.anatomy_encode_heads(probabilities > .5)
+    assert probabilities.shape == (3, 5, 6, 4)
+    pred, refs, images = tmp_path / 'prediction', tmp_path / 'reference', tmp_path / 'images'
+    pred.mkdir()
+    for cid in ['1_10', '2_20']:
+        _write_nifti(refs / f'{cid}.nii.gz', ref)
+        _write_nifti(images / f'{cid}_0000.nii.gz', np.zeros(ref.shape))
+    _write_nifti(pred / '2_20.nii.gz', native)
+    np.savez_compressed(pred / '2_20.npz', probabilities=probabilities)
+    with (pred / '2_20.pkl').open('wb') as stream:
+        pickle.dump(properties, stream)
+    doc = {'channel_names': {'0000': 'T2W'}, 'labels': t.ANATOMY_LABELS, 'regions_class_order': [1, 2, 4],
+           'numTraining': 2, 'anatomy_contract': {'encoding': 'WG+2*PZ+4*TZ', 'wg_source': 'materialized_wg',
+            'zonal_source': 'zonal_yuan', 'explicit_exclusions': ['11050_1001070'],
+            'case_ids': ['1_10', '2_20'], 'train_cases': ['1_10'], 'val_cases': ['2_20']}}
+    dataset = tmp_path / 'dataset.json'
+    dataset.write_text(json.dumps(doc))
+    planfile = tmp_path / 'plans.json'
+    planfile.write_text(json.dumps({'dataset_name': t.ANATOMY_DATASET, 'transpose_forward': forward}))
+    split = tmp_path / 'splits.json'
+    split.write_text(json.dumps([{'train': ['1_10'], 'val': ['2_20']}]))
+    output = tmp_path / 'evaluation'
+    argv = ['anatomy', '--prediction-dir', str(pred), '--reference-dir', str(refs),
+            '--images-dir', str(images), '--dataset-json', str(dataset), '--plans', str(planfile),
+            '--split-file', str(split), '--output-dir', str(output), '--no-progress']
+    return argv, pred, refs, output, probabilities
+
+
+def test_anatomy_independent_regions_native_restore_and_separate_ordered_metrics(tmp_path, monkeypatch):
+    argv, pred, refs, output, probabilities = _anatomy_export_fixture(tmp_path, monkeypatch)
+    module = _load_module()
+    native_before = (pred / '2_20.nii.gz').read_bytes()
+    assert module.main(argv + ['--native-ordered-export']) == 0
+    report = json.loads((output / 'anatomy_regions.json').read_text())
+    entry = report['per_case'][0]
+    assert [entry['independent_probability_threshold'][r]['Dice'] for r in ['WG', 'PZ', 'TZ']] == [1., 1., 1.]
+    assert [entry['native_ordered_export'][r]['Dice'] for r in ['WG', 'PZ', 'TZ']] == pytest.approx([.4, 2/3, 1.])
+    assert report['prediction_disagreement']['PZ_TZ_overlap_over_zone_union']['pooled_voxel_ratio'] == pytest.approx(1/3)
+    assert report['summary']['independent_probability_threshold']['WG']['n_valid'] == 1
+    assert report['failed'] == 0
+    assert (pred / '2_20.nii.gz').read_bytes() == native_before
+    assert np.count_nonzero(probabilities[:, 0, :, :]) == 0  # native crop outside padded zero
+    with pytest.raises(module.EvaluationError, match='output exists'):
+        module.main(argv)
+
+
+@pytest.mark.parametrize('failure', ['channels', 'nan', 'range', 'missing_npz', 'missing_prediction', 'missing_pkl',
+                                     'extra_case', 'grid', 'reference_grid', 'properties', 'properties_shape', 'reference_illegal', 'missing_split'])
+def test_anatomy_evaluation_fail_closed_no_reduced_denominator(tmp_path, monkeypatch, failure):
+    import pickle
+    import SimpleITK as sitk
+    argv, pred, refs, output, probabilities = _anatomy_export_fixture(tmp_path, monkeypatch)
+    if failure == 'channels': np.savez(pred / '2_20.npz', probabilities=probabilities[:2])
+    if failure == 'nan':
+        probabilities[0, 0, 0, 0] = np.nan
+        np.savez(pred / '2_20.npz', probabilities=probabilities)
+    if failure == 'range':
+        probabilities[0, 0, 0, 0] = 1.1
+        np.savez(pred / '2_20.npz', probabilities=probabilities)
+    if failure in ('missing_npz', 'missing_prediction', 'missing_pkl'):
+        suffix = {'missing_npz': '.npz', 'missing_prediction': '.nii.gz', 'missing_pkl': '.pkl'}[failure]
+        (pred / ('2_20' + suffix)).unlink()
+    if failure == 'extra_case': np.savez(pred / '3_30.npz', probabilities=probabilities)
+    if failure in ('grid', 'reference_grid'):
+        path = (pred if failure == 'grid' else refs) / '2_20.nii.gz'
+        image = sitk.ReadImage(str(path))
+        image.SetOrigin((1., 0., 0.))
+        sitk.WriteImage(image, str(path))
+    if failure in ('properties', 'properties_shape'):
+        path = pred / '2_20.pkl'
+        with path.open('rb') as stream: properties = pickle.load(stream)
+        if failure == 'properties': properties['sitk_stuff']['origin'] = (0., 1., 0.)
+        else: properties['shape_before_cropping'] = [1, 2, 3]
+        with path.open('wb') as stream: pickle.dump(properties, stream)
+    if failure == 'reference_illegal':
+        image = sitk.ReadImage(str(refs / '2_20.nii.gz'))
+        array = sitk.GetArrayFromImage(image).astype(np.float32)
+        array[0, 0, 0] = .5
+        changed = sitk.GetImageFromArray(array)
+        changed.CopyInformation(image)
+        sitk.WriteImage(changed, str(refs / '2_20.nii.gz'))
+    if failure == 'missing_split': (tmp_path / 'splits.json').unlink()
+    module = _load_module()
+    with pytest.raises(module.EvaluationError): module.main(argv)
+    assert not output.exists()
+
+
+def test_anatomy_empty_metrics_and_contradictory_heads_preserved():
+    from zonal_reliability_fusion.nnunet.trainers import anatomy_encode_heads
+    module = _load_module()
+    empty = np.zeros((2, 2, 2), dtype=np.uint8)
+    masks = np.zeros((3, 2, 2, 2), dtype=bool)
+    masks[1:, 0, 0, 0] = True  # both zones positive, WG negative
+    code = anatomy_encode_heads(masks)
+    assert code[0, 0, 0] == 6
+    metrics = module.anatomy_region_metrics(empty, code)
+    assert metrics['WG']['Dice'] is None
+    assert metrics['PZ']['Dice'] == metrics['TZ']['Dice'] == 0
+    disagreement = module.anatomy_disagreement(masks)
+    assert disagreement['PZ_TZ_overlap_over_zone_union']['ratio'] == 1.
+    assert disagreement['zones_outside_WG_over_zone_union']['ratio'] == 1.

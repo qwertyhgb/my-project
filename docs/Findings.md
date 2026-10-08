@@ -5,11 +5,17 @@
 
 所有数字均取自各实验自己的 `validation/summary.json` 与训练日志，并已独立复算核对。
 
+**2026-10-06 更新**：同区参照残差融合已接入独立短预算分支及匹配参照，尚未训练，
+没有新性能结论。优先取得相同数据与预算下普通融合和候选的整例验证，联合判断阳性宏平均
+Dice、漏分与阴性假阳；若有候选增益，再评估区域参照和自适应强度的归因及分区误差稳健性。
+旧长预算结果不能直接充当短预算机制的匹配参照。计算成本必须实测，不能仅按参数量推断。
+
 **研究定位更新**：下文已完成的输入级门控比较是新 [Research Plan](Research_Plan.md) §3 的
 preliminary evidence。§3.10 / §3.11 保留历史比较方向、数字和原有记录；其中“旧 RQ1 / 旧 RQ2”
 仅指计划重构前的输入级问题。新论文主线的 RQ1–RQ3 是
 `positive_sampling` → `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`
-→ `feature_anatomy_gate_positive_sampling`；后三个条件尚未训练，不能从本文件的历史结果推断
+→ `feature_anatomy_gate_positive_sampling`；其中原 feature_no_gate 已启动但无最终验证，
+其余两条件未运行，不能从本文件的历史结果推断
 新问题已有答案。阳性采样是统一的前景感知训练条件，不是主要方法贡献。
 
 ---
@@ -642,14 +648,14 @@ seed 20260922、`TIE_TOLERANCE = 1e-12`，与 §3.8 / §3.10 同一口径）。
   **旧输入级假设在本次实验中未获支持**；这不回答新的特征级 RQ3。
 - **新主线的浅层特征融合三条件**（`feature_no_gate_positive_sampling` /
   `feature_image_gate_positive_sampling` / `feature_anatomy_gate_positive_sampling`）：
-  **代码已就绪但尚未训练**；
+  **普通融合已启动但缺最终验证，其余两个门控条件未运行**；
 - **run-to-run 方差**：需要固定随机种子的重复运行，才能把上述单次运行的差异与初始化噪声分开。
 
 **新研究主线的下一步判据**（Research Plan §5–10）：在相同阳性采样、损失、split 与验证口径下，
 先比较 `positive_sampling → feature_no_gate_positive_sampling`，判定浅层表征路径的整体价值；
 再比较 `feature_no_gate_positive_sampling` → `feature_image_gate_positive_sampling`，判定
 feature gate 的增量；最后比较 `feature_image_gate_positive_sampling` →
-`feature_anatomy_gate_positive_sampling`，检验 PZ/TZ 条件。后三个实验尚未训练，当前不能写成
+`feature_anatomy_gate_positive_sampling`，检验 PZ/TZ 条件。三者尚无完整配对验证，当前不能写成
 任何特征级 RQ 已获支持。病例级按参考体素数分箱的旧结果不能替代病灶实例和物理体积分层；
 实例级匹配规则须在查看新结果前确定。若有候选改善，只对最终候选及匹配参照做独立种子确认，
 病例 bootstrap 与跨训练 run 方差分别报告。Prostate158 仅在内部选型冻结后用于跨域压力测试，
@@ -717,7 +723,8 @@ AUROC / average precision / FROC / PI-CAI challenge score **不属于**本研究
 - 第 3.2 节的分组是**病例级病灶负荷**，不是病灶实例级分析。
 - 第 3.3 节列出的替代原因在取得**概率图与病灶级标注统计**之前无法进一步区分。
 - 第 3.7 节的结论仅针对指标口径，不涉及模型能力判断。
-- 本文件**不包含** `feature_*_positive_sampling` 的任何结果（三者输出目录尚未创建）。
+- 本文件**不包含**原 `feature_*_positive_sampling` 的最终验证结果；普通融合已有运行目录与中间训练产物，
+  另外两个门控条件未运行。
   `image_gate_positive_sampling`（§3.10）与 `anatomy_gate_positive_sampling`（§3.11）的结论均只按
   预先固定的配对口径给出，不在单实验记录里展开跨 run 数字。
 - §3.10 与 §3.11 的配对结果同样受「单次运行、无随机种子、CI 不含 run-to-run 方差」约束：

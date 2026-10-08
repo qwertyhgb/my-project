@@ -40,6 +40,7 @@ from zonal_reliability_fusion.nnunet.trainers import (
     nnUNetTrainerPICAI_AnatomyGate,
     nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
@@ -523,6 +524,7 @@ def _make_combined_host(trainer_cls, dataset_tr, dataset_val):
     [
         nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
@@ -722,6 +724,7 @@ def test_train_entry_resolves_positive_sampling_variant():
     assert set(module.VARIANT_TO_TRAINER) == {
         "baseline",
         "optimized_baseline",
+        "dicece_positive_sampling",
         "image_gate",
         "anatomy_gate",
         "positive_sampling",
@@ -730,10 +733,18 @@ def test_train_entry_resolves_positive_sampling_variant():
         "feature_no_gate_positive_sampling",
         "feature_image_gate_positive_sampling",
         "feature_anatomy_gate_positive_sampling",
+        "feature_no_gate_positive_sampling_100ep",
+        "feature_anatomy_gate_positive_sampling_100ep",
+        "zonal_reference_positive_sampling_100ep",
+        "zonal_reference_adaptive_positive_sampling_100ep",
     }
     assert (
         module.resolve_trainer_class("positive_sampling")
         is nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT
+    )
+    assert (
+        module.resolve_trainer_class("dicece_positive_sampling")
+        is nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
     )
     assert (
         module.resolve_trainer_class("image_gate_positive_sampling")

@@ -16,8 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PREDICT_SCRIPT = PROJECT_ROOT / "scripts" / "inference" / "predict_nnunet.py"
 
 EXPECTED = {
+    "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
     "nnUNetTrainerPICAI_FLCE_NoFFT": "nnUNetTrainerPICAI_FLCE_NoFFT",
     "nnUNetTrainerPICAI_DiceCE_NoFFT": "nnUNetTrainerPICAI_DiceCE_NoFFT",
+    "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT": (
+        "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT"
+    ),
     "nnUNetTrainerPICAI_ImageGate": "nnUNetTrainerPICAI_ImageGate",
     "nnUNetTrainerPICAI_AnatomyGate": "nnUNetTrainerPICAI_AnatomyGate",
     "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
@@ -38,6 +42,10 @@ EXPECTED = {
     "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
         "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT"
     ),
+    "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT",
+    "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT",
+    "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT",
+    "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT": "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT",
 }
 
 
@@ -52,10 +60,16 @@ def _load_predict_entry():
 
 def _project_classes() -> dict:
     from zonal_reliability_fusion.nnunet.trainers import (
+        nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
         nnUNetTrainerPICAI_AnatomyGate,
         nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_DiceCE_NoFFT,
+        nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT,
+        nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+        nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+        nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+        nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
         nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT,
         nnUNetTrainerPICAI_FLCE_NoFFT,
@@ -65,8 +79,12 @@ def _project_classes() -> dict:
     )
 
     return {
+        "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT": nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
         "nnUNetTrainerPICAI_FLCE_NoFFT": nnUNetTrainerPICAI_FLCE_NoFFT,
         "nnUNetTrainerPICAI_DiceCE_NoFFT": nnUNetTrainerPICAI_DiceCE_NoFFT,
+        "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT": (
+            nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT
+        ),
         "nnUNetTrainerPICAI_ImageGate": nnUNetTrainerPICAI_ImageGate,
         "nnUNetTrainerPICAI_AnatomyGate": nnUNetTrainerPICAI_AnatomyGate,
         "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT": (
@@ -87,6 +105,10 @@ def _project_classes() -> dict:
         "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT": (
             nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT
         ),
+        "nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_100ep_NoFFT,
+        "nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_100ep_NoFFT,
+        "nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_ZonalReference_PositiveSampling_100ep_NoFFT,
+        "nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT": nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
     }
 
 
@@ -145,3 +167,100 @@ def test_predict_entry_help_exits_zero(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         module.main()
     assert exc.value.code == 0
+
+
+
+def _anatomy_prediction_fixture(tmp_path, monkeypatch):
+    import json
+    from zonal_reliability_fusion.nnunet import trainers as t
+    monkeypatch.setattr(t, 'ANATOMY_COUNTS', (2, 1, 1))
+    model = tmp_path / 'nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres'
+    model.mkdir()
+    dataset = {'channel_names': {'0000': 'T2W'}, 'labels': t.ANATOMY_LABELS, 'regions_class_order': [1, 2, 4],
+        'numTraining': 2, 'anatomy_contract': {'encoding': 'WG+2*PZ+4*TZ', 'wg_source': 'materialized_wg',
+        'zonal_source': 'zonal_yuan', 'explicit_exclusions': ['11050_1001070'],
+        'case_ids': ['1_10', '2_20'], 'train_cases': ['1_10'], 'val_cases': ['2_20']}}
+    (model / 'dataset.json').write_text(json.dumps(dataset))
+    (model / 'plans.json').write_text(json.dumps({'dataset_name': t.ANATOMY_DATASET, 'transpose_forward': [0, 1, 2]}))
+    images = tmp_path / 'images'
+    images.mkdir()
+    (images / '1_10_0000.nii.gz').write_bytes(b'synthetic placeholder; preflight reads names only')
+    output = tmp_path / 'prediction'
+    return model, images, output
+
+
+@pytest.mark.parametrize("equals", [False, True])
+def test_anatomy_prediction_requires_probabilities_and_new_output(tmp_path, monkeypatch, equals):
+    model, images, output = _anatomy_prediction_fixture(tmp_path, monkeypatch)
+    module = _load_predict_entry()
+    arguments = ([f'-m={model}', f'-i={images}', f'-o={output}'] if equals else
+                 ['-m', str(model), '-i', str(images), '-o', str(output)])
+    import nnunetv2.inference.predict_from_raw_data as native
+    calls = []
+    monkeypatch.setattr(native, 'predict_entry_point_modelfolder', lambda: calls.append('native'))
+    monkeypatch.setattr(module, 'check_anatomy_prediction_folder', lambda *args: calls.append('checked'))
+    with pytest.raises(ValueError, match='save_probabilities'):
+        module.main(arguments)
+    assert calls == []
+    good = arguments + ['--save_probabilities']
+    state = module._anatomy_prediction_preflight(good)
+    assert state[2] == ['1_10']
+    # Native predictor remains the sole inference implementation.
+    module.main(good)
+    assert calls == ['native', 'checked']
+    output.mkdir()
+    (output / 'existing.npz').write_bytes(b'preserve')
+    calls.clear()
+    with pytest.raises(ValueError, match='refuses overwrite'):
+        module.main(good)
+    assert calls == []
+    assert (output / 'existing.npz').read_bytes() == b'preserve'
+
+
+def test_anatomy_probability_folder_missing_case_fails(tmp_path):
+    module = _load_predict_entry()
+    with pytest.raises(ValueError, match='case set mismatch'):
+        module.check_anatomy_prediction_folder(tmp_path, tmp_path, ['1_10'], [0, 1, 2], no_progress=True)
+
+
+@pytest.mark.parametrize('extra', [
+    ['-m=other'], ['-i=other'], ['-o=other'], ['-m'], ['-m='],
+    ['-i'], ['-o'], ['-prev_stage_predictions'], ['-prev_stage_predictions='],
+    ['-num_parts=2'], ['-part_id=0'], ['-prev_stage_predictions=previous'],
+    ['-num_parts', '2'], ['-part_id', '0'], ['-prev_stage_predictions', 'previous'],
+    ['-prev=previous'], ['--save_probabilities'], ['--c', '--continue_prediction'], ['--disable'],
+])
+def test_prediction_protection_rejects_invalid_ambiguous_or_restricted_arguments_before_native(tmp_path, monkeypatch, extra):
+    model, images, output = _anatomy_prediction_fixture(tmp_path, monkeypatch)
+    module = _load_predict_entry()
+    import nnunetv2.inference.predict_from_raw_data as native
+    calls = []
+    monkeypatch.setattr(native, 'predict_entry_point_modelfolder', lambda: calls.append('native'))
+    arguments = [f'-m={model}', f'-i={images}', f'-o={output}', '--save_probabilities', *extra]
+    with pytest.raises(ValueError):
+        module.main(arguments)
+    assert calls == []
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('equals', [False, True])
+def test_legacy_prediction_argv_delegation_unchanged(tmp_path, monkeypatch, equals):
+    import json
+    import sys
+    import nnunetv2.inference.predict_from_raw_data as native
+    model = tmp_path / 'lesion-model'
+    model.mkdir()
+    (model / 'dataset.json').write_text(json.dumps({'labels': {'background': 0, 'lesion': 1}}))
+    output = tmp_path / 'existing-predictions'
+    output.mkdir()
+    preserved = output / 'case.nii.gz'
+    preserved.write_bytes(b'existing synthetic result')
+    argv = ([f'-m={model}', f'-i={tmp_path}', f'-o={output}'] if equals else
+            ['-m', str(model), '-i', str(tmp_path), '-o', str(output)]) + ['--continue_prediction', '-f', '0', '-device=cpu']
+    calls = []
+    monkeypatch.setattr(native, 'predict_entry_point_modelfolder', lambda: calls.append(list(sys.argv[1:])))
+    module = _load_predict_entry()
+    monkeypatch.setattr(module, 'check_anatomy_prediction_folder', lambda *args: pytest.fail('legacy must not use anatomy checks'))
+    module.main(argv)
+    assert calls == [argv]
+    assert preserved.read_bytes() == b'existing synthetic result'
