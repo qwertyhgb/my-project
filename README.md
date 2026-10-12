@@ -221,7 +221,11 @@ scripts/inference/predict_nnunet.py   native prediction entry + project resolver
 scripts/data/                  只读审计（含 audit_dataset605_608_equivalence.py）与物化入口
 tests/unit/                     synthetic tests and true native constructor checks
 third_party/nnUNet/              fixed v2.6.2, read-only
+third_party/Prostate-Lesion-Segmentation/   Align then Refine作者源码，read-only reference
 ```
+
+第三方来源、commit、许可证与环境隔离说明见[third_party/README.md](third_party/README.md)。
+新增参考源码供机制阅读，尚未接入主模型；第三方源码由独立checkout管理，主仓库只跟踪来源说明。
 
 包名保留 `zonal_reliability_fusion` 以兼容历史产物。
 旧路线只读归档：[archive](docs/archive/README.md)。旧输入级重加权在已测试运行中未显示一致增益，

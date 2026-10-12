@@ -3,6 +3,19 @@
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
+## 2026-10-12 — 新增作者参考源码的来源说明（文档）
+
+用户将`NUBagciLab/Prostate-Lesion-Segmentation`加入本地`third_party/`并要求更新说明。
+本次只读核查其remote、HEAD、工作区、README、LICENSE及相关Trainer入口：
+HEAD=`d6b549286999407ca7458146c7d8da7717bd0e00`，提交日期2026-04-23，工作区干净，
+许可证文件为Apache-2.0；论文为*Align then Refine: Text-Guided 3D Prostate Lesion Segmentation*。
+
+更新`third_party/README.md`的来源表、源码阅读索引、复现状态与环境隔离说明，
+并在主README目录结构添加入口。明确该fork与官方源码共用`nnunetv2`包名及2.6.2版本号，
+当前作为只读参考，不通过作者安装命令替换`lm`中的项目固定源码。
+主仓库仍只跟踪第三方说明，不改变ignore规则，不新增submodule，不复制作者源码到项目模块。
+未完成全文实现审计或复现；未改代码、运行环境、主模型、训练或已有产物。
+
 ## 2026-10-10 — 模型说明统一入口与变更追踪（文档）
 
 用户要求将详细模型图与介绍放在一个文件中，并持续跟踪修改。
