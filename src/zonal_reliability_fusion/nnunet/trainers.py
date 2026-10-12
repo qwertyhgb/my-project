@@ -1,6 +1,6 @@
 """固定 nnU-Net v2.6.2 的受控项目扩展与历史 Trainer 注册表。
 
-ACTIVE：A1 FLCE/A2 native DiceCE + positive sampling，Stage-1 anatomy，
+ACTIVE：native DiceCE/native sampling reference，A1 FLCE/A2 native DiceCE + positive sampling，Stage-1 anatomy，
 以及各自继承 A1/A2 的 B neutral fusion、C lesion-conditioned residual fusion、
 D predicted-anatomy + lesion-conditioned residual fusion。
 B 仅加独立浅层表征；C 加 coarse lesionness 条件分支及辅助监督；D 仅加预测解剖上下文。
@@ -58,6 +58,7 @@ from zonal_reliability_fusion.nnunet.augmentation import (
 )
 from zonal_reliability_fusion.nnunet.bases import (
     nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,
+    nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT,
     nnUNetTrainerPICAI_DiceCE_NoFFT,
     nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_NoFFT,
@@ -625,6 +626,7 @@ SUPPORTING_TRAINERS = (
 
 #: 新主线（ACTIVE）Trainer：默认训练视图只暴露这些
 ACTIVE_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
+    nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT,

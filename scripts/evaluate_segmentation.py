@@ -99,6 +99,7 @@ from zonal_reliability_fusion.evaluation import (
     dice_from_counts as _recompute_dice,
     dist_stats as _dist_stats,
     finite as _finite,
+    geometry_check_rule,
     json_safe as _json_safe,
     lesion_instance_metrics,
     lesion_size_stratum as _lesion_size_stratum,
@@ -319,6 +320,41 @@ def _format_error_report(
         lines.extend(f"  {e}" for e in errors[:cap])
         lines.append(f"  ... 仅显示前 {cap} 条，另有 {len(errors) - cap} 条未显示")
     return "\n".join(lines)
+
+
+def _geometry_summary(geometries: Sequence[dict]) -> dict:
+    """把逐例几何检查记录汇总为**每模型**的 provenance 块（不改任何判定）。
+
+    差异在容差内但非零时，这里如实记录数量与最大差异；几何不一致的病例根本不会进入
+    该列表（它们在逐例阶段已 fail-closed）。
+    """
+    def max_of(key: str, sub: str | None = None):
+        values = [
+            (g["max_abs_diff"][key] if sub is None else g[sub][key])
+            for g in geometries
+        ]
+        values = [v for v in values if v is not None]
+        return max(values) if values else None
+
+    n_nonzero = sum(1 for g in geometries if not g["exact_equal"])
+    return {
+        "rule": geometry_check_rule(),
+        "n_cases_checked": len(geometries),
+        "n_cases_exactly_equal": len(geometries) - n_nonzero,
+        "n_cases_with_tolerated_difference": n_nonzero,
+        "max_abs_diff": {
+            key: max_of(key) for key in ("spacing_mm", "origin_mm", "direction")
+        },
+        "n_cases_with_corner_check": sum(
+            1 for g in geometries if g["physical_corner"]["checked"]
+        ),
+        "max_corner_delta_mm": max_of("max_delta_mm", sub="physical_corner"),
+        "resampling": "none",
+        "note": (
+            "容差内的浮点差异被接受并在此如实记录（含每例明细 models[*].per_case[*].geometry）；"
+            "真实几何不一致仍在逐例阶段 fail-closed，且整体不发布结果"
+        ),
+    }
 
 
 def _strict_non_negative_int(metrics: dict, key: str, model_name: str, cid: str) -> int:
@@ -883,8 +919,14 @@ def _build_full_case_entry(cid: str, case: dict, tolerance_mm: float) -> dict:
 
     函数要么返回**完整构造**的 entry，要么抛出异常。``mask_verified=True`` 只在全部步骤
     成功后写入，因此失败病例绝不会留下伪造的"已验证"结果。
+
+    几何检查由 ``load_mask_pair`` 内部执行（整型 size 严格相等 + 浮点绝对容差 + 物理角点阈值），
+    通过的病例把实际执行的检查记录写进 ``entry["geometry"]``：即使差异非零也在结果里留痕，
+    不依赖终端输出。
     """
-    pred, ref, spacing = load_mask_pair(case["prediction_file"], case["reference_file"])
+    pred, ref, spacing, geometry = load_mask_pair(
+        case["prediction_file"], case["reference_file"]
+    )
 
     # 阴性 reference 必须实际为空
     if case["n_ref"] == 0 and bool(ref.any()):
@@ -909,6 +951,13 @@ def _build_full_case_entry(cid: str, case: dict, tolerance_mm: float) -> dict:
         "reference_volume_mm3": ref_vol,
         "prediction_volume_mm3": pred_vol,
         "mask_verified": True,
+        # 本病例实际执行的几何数值检查（含容差内非零差异的留痕；规则见顶层 geometry_check）
+        "geometry": {
+            "exact_equal": geometry["exact_equal"],
+            "nonzero_fields": geometry["nonzero_fields"],
+            "max_abs_diff": geometry["max_abs_diff"],
+            "physical_corner": geometry["physical_corner"],
+        },
     }
     if case["n_ref"] > 0:
         entry.update(
@@ -1009,6 +1058,11 @@ def run_full_mode(
         def get(cid: str, key: str, table: dict = full) -> Any:
             """本模型内按 case id 取 full 模式结果（避免重复下标链）。"""
             return table[cid][key]
+
+        # 几何数值检查的执行记录（规则 + 容差内差异的每模型汇总）
+        report["geometry_check"] = _geometry_summary(
+            [full[cid]["geometry"] for cid in sorted(full)]
+        )
 
         ref_volumes = [get(c, "reference_volume_mm3") for c in pos_ids]
         hd95s = [full[c]["surface"]["hd95_mm"] for c in pos_ids]
@@ -1189,7 +1243,8 @@ def run_full_mode(
             "all_cases_verified": len(full) == len(cases),
             "per_case_checks": [
                 "prediction 与 reference 文件存在且可读",
-                "size / spacing / origin / direction 与 reference 一致（不重采样）",
+                "size 与 reference 严格相等；spacing / origin / direction 在绝对容差内一致，"
+                "且网格角点物理偏差 <= 阈值（几何数值检查规则见顶层 geometry_check；不重采样）",
                 "标签仅允许 0/1，且不含非有限值",
                 "由掩膜重算 TP/FP/FN/TN/n_pred/n_ref，并与 summary.json 逐项核对",
                 "n_ref=0 的病例其 reference 掩膜必须实际为空",
@@ -1208,6 +1263,8 @@ def run_full_mode(
             row["voxel_volume_mm3"] = entry["voxel_volume_mm3"]
             row["reference_volume_mm3"] = entry["reference_volume_mm3"]
             row["prediction_volume_mm3"] = entry["prediction_volume_mm3"]
+            # 本病例实际执行的几何数值检查记录（含容差内非零差异，不依赖终端输出）
+            row["geometry"] = entry["geometry"]
             if "surface" in entry:
                 row["rve"] = entry["rve"]
                 row["arve"] = entry["arve"]
@@ -1618,6 +1675,14 @@ def _run(args: argparse.Namespace, run: RunStats) -> int:
                 "lesion segmentation only; AUROC / average precision / FROC / "
                 "PI-CAI challenge score are intentionally not computed"
             ),
+            "geometry_check": {
+                "rule": geometry_check_rule(),
+                "applied_in_modes": ["full"],
+                "mode_note": (
+                    "full 模式逐例执行并写入 models[*].geometry_check；summary 模式不读取掩膜，"
+                    "因此不执行几何检查"
+                ),
+            },
             "models": reports,
             "paired_comparisons": comparisons,
         }

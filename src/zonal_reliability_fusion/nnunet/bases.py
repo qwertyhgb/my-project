@@ -14,6 +14,7 @@
 ======================================  ================================================================
 ``nnUNetTrainerPICAI_FLCE_NoFFT``       既有的 PI-CAI Focal+CE 基线（已完成的 N0；保留以支持续训/验证）
 ``nnUNetTrainerPICAI_DiceCE_NoFFT``     原生 Dice+CE 单变量基线（**用户已中止**，见类 docstring）
+``nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT``  原生DiceCE/原生采样独立参考
 ``nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT``    strong baseline 候选 **A1**
 ``nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT``  strong baseline 候选 **A2**
 ``nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT``       Stage-1 解剖先验生成器（WG/PZ/TZ region heads）
@@ -37,6 +38,17 @@ from zonal_reliability_fusion.anatomy.contracts import (
 from zonal_reliability_fusion.nnunet.augmentation import NoFFTAugmentationMixin
 from zonal_reliability_fusion.nnunet.losses import PICAIFocalCrossEntropyLossMixin
 from zonal_reliability_fusion.sampling.positive_sampling import PositiveCaseSamplingMixin
+
+
+class nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT(NoFFTAugmentationMixin, nnUNetTrainer):
+    """Matched native DiceCE/native sampling reference in an independent output directory.
+
+    Loss, network, dataloaders, case selection, foreground oversampling, optimizer,
+    scheduler and training budget inherit nnUNetTrainer unchanged. NoFFT only
+    disables the unstable blur FFT benchmark, preserving augmentation semantics.
+    This class does not inherit the archived, stopped DiceCE baseline or any
+    project sampling mixin; historical outputs remain separate.
+    """
 
 
 class nnUNetTrainerPICAI_FLCE_NoFFT(
@@ -216,6 +228,7 @@ class nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT(NoFFTAugmentationMixin, nnUNet
 __all__ = (
     "ANATOMY_DATASET",
     "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
+    "nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT",
     "nnUNetTrainerPICAI_DiceCE_NoFFT",
     "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT",
     "nnUNetTrainerPICAI_FLCE_NoFFT",

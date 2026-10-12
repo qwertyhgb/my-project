@@ -82,12 +82,87 @@ rate、precision 类）。
 
 ## 3. 病例集合与几何
 
-- **不做重采样**：`load_mask_pair` 要求 prediction 与 reference 的
-  size / spacing / origin / direction **逐值一致**，任何一项不同即 fail-closed；
+- **不做重采样**：prediction 与 reference 必须指向同一物理网格；几何不一致一律 fail-closed，
+  评估**不**重采样、**不**修改掩膜、**不**静默修复几何、**不**静默排除病例；
 - reference 掩膜必须是二值 0/1；含其它取值即报错；
 - summary 声明 `n_ref = 0` 时，reference 掩膜**必须实际为空**，否则报错；
 - 由掩膜重算 TP/FP/FN/TN/`n_pred`/`n_ref` 六项计数，并与 `summary.json` **逐项核对**，不一致
   即 fail-closed（`verify_case_counts`）。
+
+### 3.1 几何数值一致性检查（**2026-10-10 修订**）
+
+**修订原因**：一次 A1/A2 full 评价在**修订前**的「四字段逐值严格相等」规则下整体
+fail-closed（具体运行事实、退出码、计数与日志路径见 `docs/Training_Log.md` 2026-10-10 条目；
+代码与测试侧记录见 `docs/Development_Log.md` 同日条目——运行结果只登记在那里，本节只写规则）。
+
+已展示的失败条目全部是 `direction` 不严格相等，元素绝对差在 `1e-8` 量级，**与 NIfTI 头部
+浮点存储/往返误差（qform/sform 以 float32 存储、方向余弦经四元数往返）的量级相符**；
+**但这只是量级相符，不等于已经证明"没有网格错位"**：其余未展示失败条目的字段与量级尚未核实，
+**是否满足本节新规则必须在对完整队列重跑之后才能判定**。修订前的规则是
+「size / spacing / origin / direction **逐值严格相等**」，**当时没有冻结任何数值容差**——
+本次是**显式的规则修订**，不是"一直如此"；新规则能否让真实队列通过属于**待验证**事项，
+不得预先宣布。
+
+**修订后的判定（`evaluation/case_metrics.py::geometry_check`）**：
+
+1. **整型尺寸**：`size` 必须**严格相等**，**没有**尺寸容差；
+2. **浮点字段**：`spacing`、`origin`、`direction` 有限性通过后，用**绝对**容差比较，
+   `rtol = 0`（不使用 `numpy.allclose` 的默认相对容差）：
+
+   | 字段 | 绝对容差 | 单位 |
+   |---|---|---|
+   | `spacing` | `GEOMETRY_ATOL_MM = 1e-6` | mm |
+   | `origin` | `GEOMETRY_ATOL_MM = 1e-6` | mm |
+   | `direction` | `GEOMETRY_ATOL_DIRECTION = 1e-6` | 无量纲（方向余弦） |
+
+   `spacing` 还必须**全为正**；NaN / Inf 一律拒绝；
+3. **物理角点检查**：direction 的微小差异会随图像范围累积，因此额外比较两侧网格的
+   **体素中心角点**物理坐标（每轴取 `index ∈ {0, size-1}`；`size == 1` 的退化轴只取 0；
+   映射与 ITK `TransformIndexToPhysicalPoint` 一致），要求
+
+   ```text
+   max ‖p_pred − p_ref‖₂  <=  GEOMETRY_CORNER_ATOL_MM = 1e-3  mm
+   ```
+
+   逐元素差异在容差内、但累计角点偏差超限时**仍然拒绝**。
+4. 任一环节不通过即 `ok = False`，`full` 模式**逐例收集失败、整体不发布结果 JSON**；
+   失败文本必须给出字段名、最大绝对差、对应容差与单位（角点条目额外给出 mm）。
+
+**语义边界（必须照此表述）**：以上是**浮点存储/往返精度的数值一致性检查**，用于区分
+"同一网格的舍入差异"与"真实网格不一致"；它**不是**临床容许误差标准、**不是**解剖配准或
+对齐质量的证明，也**不**声称"alignment 已验证"。这些容差是工程数值检查参数，
+**不得**依据"真实病例能否通过"来反复放宽；如需调整，必须由独立证据（例如按字段测得的
+头部存储粒度）驱动并再次记录协议修订。
+
+**为什么能吸舍入、又拦得住真实错位**（设计论证，不是本次队列的结论）：真实错位（轴的交换/
+翻转、错误 origin、不同 spacing/分辨率、配准到别的网格）在元素层面就是 `1e-3`–`1e0` 量级，
+或直接改变整数 `size`，远大于上述容差；而同一 NIfTI 网格两次写盘的头部舍入在 `direction` 上
+只有 `~1e-8` 量级，在 `spacing`/`origin` 上受同量级浮点粒度限制。该论证只说明容差选得开，
+**不**证明本次队列中的差异一定全部是舍入。
+
+**未证实部分（不得当作结论）**：失败日志只展示了前若干条（全部为 `direction`），其余失败
+条目的字段与量级**尚未核实**；因此本次修订不针对单一字段放宽，而是对四个字段统一采用
+"整型严格 + 浮点绝对容差 + 角点累计阈值"。真实队列**尚未**用新规则重跑，
+**重跑前不得声称几何检查问题已解决**。
+
+**角点检查在本队列尺度上的作用边界**（诚实说明）：对 extent ≲ 200 mm 的前列腺 MRI，
+`direction` 元素容差 `1e-6` 通常是**更紧**的约束；角点阈值 `1e-3 mm` 主要约束
+更大范围网格上的角度累积（extent ≳ 1000 mm 时成为绑定约束），并防止整体同向偏移绕过
+逐元素判断。两者同时满足才接受。
+
+### 3.2 结果中的几何 provenance
+
+`full` 模式的输出 JSON 必须记录本次实际采用的几何规则与执行结果（不能只在终端声明）：
+
+- 顶层 `geometry_check`：`rule`（含 `revision`、各字段绝对容差与单位、角点阈值与
+  `<=` 边界、`fail_closed=True`、`resampling="none"`）与 `applied_in_modes`；
+- `models[*].geometry_check`：该模型 `n_cases_checked` / `n_cases_exactly_equal` /
+  `n_cases_with_tolerated_difference`、逐字段 `max_abs_diff` 与 `max_corner_delta_mm`；
+- `models[*].per_case[*].geometry`：该病例的 `exact_equal` / `nonzero_fields` /
+  最大差与角点结果。**容差内的非零差异必须留痕**，不依赖终端日志。
+
+`SCHEMA_VERSION` 因此由 `1.1` 递增为 `1.2`（新增上述字段，且几何判定会改变哪些病例能进入
+结果）。`summary` 模式不读取掩膜，因此**不执行**几何检查（规则仍然写在顶层 provenance 中）。
 
 ---
 
@@ -245,7 +320,9 @@ interpretation                  解释标签（见 §7.3）
   **非零退出，且不发布**输出 JSON（fail-closed）；
 - 结束必须打印结构化汇总（status / mode / phase / unit / ok / failed / skipped / elapsed /
   output）；`skipped` 不可知时渲染为 `not_applicable`，**不伪造成 0**；
-- `SCHEMA_VERSION` 当前为 `1.1`；改动指标集合时必须递增。
+- `SCHEMA_VERSION` 当前为 `1.2`；改动指标集合或输出契约时必须递增
+  （`1.2` = 2026-10-10 几何检查修订：新增顶层 `geometry_check` 与
+  `models[*].geometry_check` / `per_case[*].geometry`，见 §3.1/§3.2）。
 
 ---
 
@@ -260,7 +337,13 @@ interpretation                  解释标签（见 §7.3）
 | `LESION_SIZE_MEDIUM_MAX_MM3` | `1000.0` | 分层人数改变 |
 | `DICE_MATCH_TOLERANCE` | `1e-6` | 只影响 fail-closed 判定的严格度 |
 | `TIE_TOLERANCE` | `1e-12` | `improved/tied/worsened` 计数改变 |
-| `SCHEMA_VERSION` | `1.1` | 输出格式契约 |
+| `SCHEMA_VERSION` | `1.2` | 输出格式契约 |
+| `GEOMETRY_ATOL_MM` | `1e-6` | spacing/origin 绝对容差（mm，rtol=0）；改动会改变哪些病例能进入 full 结果 |
+| `GEOMETRY_ATOL_DIRECTION` | `1e-6` | direction 绝对容差（无量纲，rtol=0）；同上 |
+| `GEOMETRY_CORNER_ATOL_MM` | `1e-3` | 角点物理偏差阈值（mm，`<=` 接受）；同上 |
+
+**注**：最后三个常量是 **2026-10-10 修订新增**（原因见 §3.1），不是此前冻结过的常量；
+它们改动时同样必须记录协议修订，并说明是否需要重跑历史 full 结果。
 
 ---
 
@@ -269,7 +352,7 @@ interpretation                  解释标签（见 §7.3）
 | 模式 | 读取 | 产出 | 代价 |
 |---|---|---|---|
 | `summary`（默认） | 只读 `FOLD_DIR/validation/summary.json` | 体素计数派生的全部指标 | 秒级 |
-| `full` | 追加读取 `summary.json` 中 `metric_per_case` 指向的 prediction / reference NIfTI | 几何验证、物理体积（mm³）、RVE/ARVE、表面指标、病灶体积分层、连通域失败分析、**病灶实例级指标**、解剖区域分解 | 长任务（必须由研究者运行） |
+| `full` | 追加读取 `summary.json` 中 `metric_per_case` 指向的 prediction / reference NIfTI | 几何数值一致性检查（§3.1）、物理体积（mm³）、RVE/ARVE、表面指标、病灶体积分层、连通域失败分析、**病灶实例级指标**、解剖区域分解 | 长任务（必须由研究者运行） |
 
 **评估与模型完全解耦**：两种模式都只读 nnU-Net 的 validation 产物，**绝不**重写 validation /
 inference / prediction，**绝不**训练模型，**绝不**在评估中重采样或修改掩膜。

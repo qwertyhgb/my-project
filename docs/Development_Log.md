@@ -3,6 +3,76 @@
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
+## 2026-10-10 — 模型说明统一入口与变更追踪（文档）
+
+用户要求将详细模型图与介绍放在一个文件中，并持续跟踪修改。
+沿用[Method](Method.md)作为唯一模型机制说明，避免新增重复文档。
+
+- 修改前：已有机制摘要与简化文字图，缺少完整数据/监督图、逐分支接口及统一修改索引。
+- 修改后：补充完整D模型Mermaid图与文字图，说明B/C/D如何增减路径；逐模块记录
+  shallow stems、neutral projection、pre-fusion coarse head、解剖上下文、soft controller、
+  zero-init residual的计算公式与张量尺寸，分开训练监督与推理输入。
+- 补充代码索引与同步约定：模型修改同步图/公式/接口/边界，历史理由与检查记录在本日志，
+  当前运行状态仍只维护Training_Log；Git diff与实际提交用于追溯，不把HEAD作为未提交改动的版本证明。
+- 边界：浅层特征收益、24→3瓶颈与融合系数解释仍需实验验证；E仍为计划，
+  不把文档说明写成已实现模块或性能证据。现有Trainer、checkpoint及运行配置未修改。
+- 核对：逐项对照当前fusion前向、Trainer集成、辅助损失与固定常量；
+  检查本文内部引用的本地路径、代码围栏及文档diff空白。未运行医学数据处理或训练。
+
+## 2026-10-10 — 评价侧几何数值一致性检查（协议修订 + fail-closed 修复）
+
+### 变更
+
+- `evaluation/protocol.py`：新增 `GEOMETRY_ATOL_MM = 1e-6`（spacing/origin，mm）、
+  `GEOMETRY_ATOL_DIRECTION = 1e-6`（方向余弦，无量纲）、`GEOMETRY_CORNER_ATOL_MM = 1e-3`
+  （体素中心角点最大欧氏物理偏差，mm）。这三个常量是**本次修订新增**，不是此前冻结项；
+  `SCHEMA_VERSION` 由 `1.1` 递增为 `1.2`（新增 `geometry_check` 输出契约，且几何判定会改变
+  哪些病例能进入 full 结果）。module docstring 写明它们是浮点数值一致性检查，不是临床容差、
+  不是配准质量判据。
+- `evaluation/case_metrics.py`：新增四个纯函数/记录函数——`image_geometry`（只取元数据，
+  不读体素）、`grid_corner_points`（ITK 约定的体素中心角点物理坐标，纯 numpy、不依赖
+  SimpleITK）、`geometry_check`（size 严格相等 + 浮点绝对容差 `rtol=0` + 角点阈值，
+  返回结构化 violations/max_abs_diff/角点结果）、`geometry_check_rule`（机器可读规则）、
+  `describe_geometry_violations`（错误文本含字段名/最大差/容差/单位）。
+  `load_mask_pair` 改为调用 `geometry_check`，并把返回的几何报告作为**第四个**返回值交给
+  调用方；仍严格保持"唯一掩膜 IO 入口"，不重采样、不修改掩膜、不静默修复。
+- `scripts/evaluate_segmentation.py`：`_build_full_case_entry` 接收并记录逐例几何报告；
+  `run_full_mode` 新增每模型 `geometry_check` 汇总（检查例数、逐值相等例数、容差内非零差异
+  例数、逐字段最大差、角点最大偏差），并把逐例 `geometry` 写回 `per_case`；payload 顶层新增
+  `geometry_check.rule`（含 `revision`、容差、单位、角点 `<=` 边界、`fail_closed`、
+  `resampling="none"`）与 `applied_in_modes=["full"]`；`mask_verification.per_case_checks`
+  文本同步为新的几何规则。未新增 CLI 开关，未引入"忽略几何错误"路径。
+
+### 实际执行的检查
+
+在 conda `lm` 下运行；全部为合成数据与 pytest 临时目录，不读真实影像、不使用 GPU。
+
+- `python -B -m pytest tests/unit/test_evaluate_segmentation.py`：**143 passed**
+  （含本轮新增 32 个几何用例：相同几何通过、1e-8 级 direction 舍入通过、容差内 spacing/origin
+  通过、size/明显 spacing/明显 origin/轴翻转/1° 旋转拒绝、**元素差在容差内但大范围网格累计
+  角点偏差超限仍拒绝**、NaN/Inf 与 spacing 非正拒绝、退化 size==1 轴角点、
+  角点公式与 `TransformIndexToPhysicalPoint` 逐位一致、容差上下侧边界、容差内差异不修改输入
+  且下游仍用 reference spacing、结果 JSON 记录规则与逐模型汇总）。
+- 全仓 `python -B -m pytest -p no:cacheprovider`：**749 passed**。
+- `python -m ruff check --no-cache src scripts tests`：通过。
+- 合成几何自检（内存对象，无文件）：角点公式与 ITK 之差 `0.0`；`direction` 扰动 1e-8 被接受且
+  记录为 nonzero；`spacing` 差 1.5 mm 被拒并给出 `max|Δ|=1.5 mm`、容差 `1e-06`、单位 mm。
+
+### 未验证边界
+
+- **真实队列尚未用新规则重跑**：`docs/Training_Log.md` 2026-10-10 条目记录的
+  `EXIT_CODE=2`（ok=44 / failed=402 / skipped=0，未发布 JSON）是修订前的运行事实，
+  本轮**没有**重跑 full 评价，也没有发布任何结果 JSON。
+- 失败日志只展示前 50 条（全部为 `direction`，最大元素绝对差约 `3.47e-08`）；其余 352 条的
+  字段与量级**未经核实**。该量级与 NIfTI 头部 float32/四元数往返误差**相符**，但本队列中
+  是否已全部落入新容差**未经重跑验证**，不得写成"几何问题已解决"。
+  若重跑后仍失败且差异集中在 `origin`（量级 ~1e-5 mm，即 100 mm 处 float32 的一个 ULP），
+  则需要按"头部存储粒度"证据单独修订 `origin` 容差——**不得**为了通过而反复放宽。
+- 角点阈值 `1e-3 mm` 在前列腺 MRI 的 FOV 尺度（≲200 mm）上通常不是绑定约束；
+  本轮用虚拟大网格（2001³ @1 mm）合成验证它确实能拦住"元素在容差内、累计超限"的情形。
+- 未改动：训练、网络、损失、采样、推理、预测/参考文件、`data/`、`workdir/`、`outputs/`、
+  `third_party/nnUNet`、`legacy/`。
+
 ## 2026-10-08 — 正式实验前最后一次收口（短预算筛选臂 / 608 审计 / 语义清理）
 
 本轮**不新增任何研究模块**，只修复语义、补齐公平比较所需的工具，并冻结 baseline 判据；
@@ -1687,3 +1757,81 @@ AST 语法检查通过；剔除 docstring 并仅归一化获准日志字面量�
 四个 Trainer 的 `__init__` 均解析到 `nnUNetTrainer.__init__`，签名 `(self, plans, configuration, fold,
 dataset_json, device)` 全为具名参数、无 var-args，故反射要取的每个名字都是父类自身局部变量，
 `KeyError` 不再可能发生；文件 lint 无报错。真实训练能否跑完 100 epoch 仍需用户后续命令确认。
+
+## 2026-10-09 — 新增只读 PI-CAI 病例数据链诊断脚本
+
+用户明确授权新增 `scripts/data/diagnose_picai_case_chain.py`，用于定位本次 A1 漏检原因。
+默认检查 `10842_1000858`、`10121_1000121`、`11283_1001306`，并选择本次验证集中
+Dice ≥ 0.5 的最高 Dice 两例作为目视参照；参照为选择性展示，不属于匹配对照或统计估计。
+
+脚本只读原始 MRI/canonical 人工标签、物化数据、Dataset605 raw、已有预处理数据和已有硬预测。
+记录实际几何与强度、物化 uint16 转换一致性、原模态网格对病灶的几何覆盖、各层标签体积/层数/
+连通分量、crop 前景保留、固定 nnU-Net 原生标签重采样与已有标签的一致性、class_locations
+有效性，并生成病灶层叠加图与 T2/ADC、T2/HBV 棋盘格。虚拟重采样仅用于诊断比较，不导出训练数据，
+不执行 preprocessing、推理、配准或修复，不修改原始数据、checkpoint、Trainer、loss 或采样。
+
+输出仅允许写入 `outputs/diagnostics/` 下尚不存在的新目录，各 JSON 采用排他创建；
+失败逐病例显式记录，退出码 2；全部检查完成返回 `DIAGNOSTICS_COMPLETED_REVIEW_REQUIRED`，
+不把子集数值检查称作数据集 PASS 或解剖对齐证明。病例进度默认开启，每例 8 个阶段；
+结束输出成功/失败/跳过/耗时/路径。概率响应、临床可见性与正式病灶实例评价均不在本脚本结论范围内。
+
+验证：AST/CLI 检查、内存合成几何/标签/物理重采样/体积/坐标转置/输出限制测试通过；
+通过 mock 只读输入的合成完整流程检查了原生标签重采样、8 阶段进度、采样坐标错误的
+CHECK_MISMATCH 处理及严格 JSON 序列化；六张合成诊断图在内存中成功渲染。
+现有 channel/label/split 元数据前置检查通过，禁止使用输出根目录的检查在读取医学影像前拒绝执行。
+真实医学图像诊断未运行，运行命令交由用户执行；不新增训练/验证运行事实。
+
+### 同日跟进：修正诊断脚本的历史整数插值参照
+
+用户运行产生 `outputs/diagnostics/picai_case_chain_20261009T070910_695422Z/` 后，
+读取已有 JSON 发现五例仅 ADC/HBV 的历史转换判等失败，最大差值均为 1；
+其余标签、raw/reference、crop、原生标签重采样、采样坐标检查通过。
+核对归档物化代码发现它没有设置 `ResampleImageFilter.SetOutputPixelType`，因此
+uint16 输入在 ITK 插值输出时已经转回整数，随后 NumPy 的 round 不再保留浮点小数。
+初版诊断却用显式 float32 插值后 round 作为历史参照，两种操作次序不同，判等不成立。
+
+新增脚本内部 `historical_mri_conversion`，精确保留历史默认输出类型；浮点虚拟结果继续
+单独记录为描述性比较，不参与历史转换一致性判定。不修改历史物化数据、训练代码或已有报告；
+旧 CHECK_MISMATCH 不能被解读为五例数据处理均失败，修正后的精确判等仍待用户重跑确认。
+增加 .75 体素位移的 uint16 合成 ramp 回归检查，覆盖整数输出为 2、浮点输出为 2.75、
+浮点后 round 为 3 的区别。合成测试、AST 与 diff 检查通过，未重新读取原始医学体素或运行诊断。
+
+### 同日跟进：现有脚本增加只读概率诊断模式
+
+用户完成五例原生概率导出后，在已有 `diagnose_picai_case_chain.py` 增加
+`--probabilities <predictions目录>`。读取原生恢复到 T2 网格的两类概率、pkl 几何、
+GT、新硬预测和原验证硬预测，检查 shape/有限性/范围/两类概率和/物理几何/argmax；
+输出 GT 内与 GT 外概率统计、全局峰值及距 GT 最近体素中心距离、新旧硬预测比较、
+预先列明的 0.01/0.05/0.1/0.2/0.3/0.5 诊断阈值下覆盖率/体素 precision/Dice，
+以及固定 0–1 和病例峰值缩放的热图。阈值均为探索性诊断，不选择最优阈值、
+不改变正式评价协议，GT 外 FP 体素数不等于病灶级或病例级 FPR。
+
+该模式不启动推理、不修改模型/数据/已有概率产物，仍仅创建新的诊断输出目录，
+默认每例三阶段进度。真实概率统计交用户运行；代理仅检查导出文件存在性与数组头，
+没有解压或分析真实概率体素。合成概率阈值测试和 mock 完整流程通过，涵盖
+三阶段进度、恢复几何、argmax、新旧硬预测比较、JSON 及内存热图渲染；AST/diff 检查通过。
+
+### 同日跟进：完整验证集概率汇总与阴性病例支持
+
+用户完成 223 例概率导出后，现有诊断脚本增加 `--all-validation` 与 `--no-plots`。
+全验证模式从既有 split/validation summary 取全体病例，不进行成功病例选择，并核对概率病例集合。
+概率分析统一使用原验证参考 `gt_segmentations`，检查 GT 体素数与原 summary 一致；
+阴性 GT 的覆盖率/峰值距离为 null，空阴性 Dice 保留 null，不能混入阳性宏平均。
+聚合固定诊断阈值下阳性宏平均/pooled Dice、体素召回、零重叠/空预测病例数，
+以及阴性出现任意 FP 的病例率、FP 体素数和按真实 spacing 换算的 FP 体积。
+错误/不一致病例显式列入排除计数，完整队列标记为 false，不静默当阴性或视作完整成功。
+新旧硬预测差异另行列出；任意 GT 重叠不是病灶实例 sensitivity；不选最优阈值，
+不计算未纳入冻结协议的 AP/AUROC/FROC，不替换正式评价结果。
+
+合成阳性/阴性空值语义、固定阈值、部分队列识别测试及无图完整流程通过；
+223 例文件/split 元数据前置检查通过，AST/diff 检查通过。
+没有读取或分析真实概率体素，没有运行全队列统计；实际诊断命令交由用户运行。
+
+
+## 2026-10-10 — 原生DiceCE与原生采样独立参考入口
+
+用户要求准备原生DiceCE+原生采样基线。新增薄类`nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT`，仅继承NoFFTAugmentationMixin与nnUNetTrainer；不继承历史中止类，不含项目采样mixin。ACTIVE注册`native_dicece`，现有seeded类生成与预测解析复用，固定1000epoch与独立目录；历史类名及产物保持原样。
+
+run-config采样说明由PositiveCaseSamplingMixin继承关系派生，原生采样不再误标positive_sampling。README/Experiment_Plan说明该参考与A2的采样对照边界；状态仅维护在Training_Log。
+
+纯合成验证：`python -B -m pytest -p no:cacheprovider tests/unit/test_nnunet_trainers.py -k "native_dicece or variant_mapping or project_trainers_registry or short_budget or seeded" -q`，7项通过；验证native损失/dataloader/network/optimizer/training/validation钩子继承、seeded解析、CLI及配置采样标记。相关Ruff与git diff --check通过，入口--help通过。未实例化真实Trainer、未创建运行配置或模型产物、未启动训练/推理/数据处理。真实运行及显存行为尚未验证。

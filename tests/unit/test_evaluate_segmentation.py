@@ -16,6 +16,25 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from zonal_reliability_fusion.evaluation.case_metrics import (
+    geometry_check as _geometry_check,
+)
+from zonal_reliability_fusion.evaluation.case_metrics import (
+    geometry_check_rule as _geometry_check_rule,
+)
+from zonal_reliability_fusion.evaluation.case_metrics import (
+    grid_corner_points as _grid_corner_points,
+)
+from zonal_reliability_fusion.evaluation.protocol import (
+    GEOMETRY_ATOL_DIRECTION as _ATOL_DIRECTION,
+)
+from zonal_reliability_fusion.evaluation.protocol import (
+    GEOMETRY_ATOL_MM as _ATOL_MM,
+)
+from zonal_reliability_fusion.evaluation.protocol import (
+    GEOMETRY_CORNER_ATOL_MM as _CORNER_ATOL_MM,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / "scripts" / "evaluate_segmentation.py"
 #: SimpleITK 的 spacing 轴序（sx, sy, sz）。注意数组轴序是 (z, y, x)，二者相反：
@@ -103,12 +122,18 @@ def _write_fold(root: Path, name: str, cases: list[dict]) -> Path:
     return fold
 
 
-def _write_nifti(path: Path, arr: np.ndarray, spacing=SPACING_XYZ) -> None:
+def _write_nifti(
+    path: Path, arr: np.ndarray, spacing=SPACING_XYZ, *, origin=None, direction=None
+) -> None:
     import SimpleITK as sitk
 
     path.parent.mkdir(parents=True, exist_ok=True)
     img = sitk.GetImageFromArray(arr.astype(np.uint8))
     img.SetSpacing(tuple(float(s) for s in spacing))
+    if origin is not None:
+        img.SetOrigin(tuple(float(v) for v in origin))
+    if direction is not None:
+        img.SetDirection(tuple(float(v) for v in direction))
     sitk.WriteImage(img, str(path))
 
 
@@ -632,11 +657,375 @@ def test_full_mode_geometry_mismatch_is_fail_closed(tmp_path):
     mod = _load_module()
     ref = _cube((16, 16, 16))
     fold = _write_fold_with_masks(tmp_path, "m", [("a", ref, ref)])
-    # 把 prediction 改成不同 spacing
+    # 把 prediction 改成不同 spacing（1.5 mm 真实差异，远超浮点容差）
     _write_nifti(fold / "validation" / "a.nii.gz", ref, spacing=(2.0, 0.5, 0.5))
     rep, cases = mod.summarize_model("m", fold, 100, 1)
-    with pytest.raises(mod.EvaluationError, match="spacing 不一致"):
+    with pytest.raises(mod.EvaluationError, match=r"spacing.*超过绝对容差"):
         mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+
+
+# --------------------------------------------------------------------------- 几何数值一致性
+# 2026-10-10 修订：几何判定由「四字段逐值严格相等」改为「size 严格相等 + 浮点绝对容差（rtol=0）
+# + 体素中心角点物理偏差阈值」。以下全部为内存几何或 tmp_path 合成 NIfTI，不读真实医学数据。
+
+
+def _geometry(
+    size=(16, 16, 16),
+    spacing=SPACING_XYZ,
+    origin=(0.0, 0.0, 0.0),
+    direction=(1, 0, 0, 0, 1, 0, 0, 0, 1),
+) -> dict:
+    return {
+        "size": tuple(int(v) for v in size),
+        "spacing": tuple(float(v) for v in spacing),
+        "origin": tuple(float(v) for v in origin),
+        "direction": tuple(float(v) for v in direction),
+    }
+
+
+def test_geometry_identical_metadata_passes_exactly():
+    result = _geometry_check(_geometry(), _geometry())
+    assert result["ok"] is True
+    assert result["exact_equal"] is True
+    assert result["violations"] == []
+    assert result["nonzero_fields"] == []
+    assert result["physical_corner"]["checked"] is True
+    assert result["physical_corner"]["max_delta_mm"] == 0.0
+    assert result["max_abs_diff"] == {"spacing_mm": 0.0, "origin_mm": 0.0, "direction": 0.0}
+
+
+@pytest.mark.parametrize("delta", [2.8e-20, 8.7e-11, 2.7e-9, 1.81e-8, 3.47e-8])
+def test_geometry_direction_roundoff_like_the_real_log_passes(delta):
+    """复刻真实失败日志的量级：direction 元素差 1e-8 级（NIfTI 头部浮点往返）必须被接受。"""
+    perturbed = list(_geometry()["direction"])
+    perturbed[1] = perturbed[1] + delta
+    result = _geometry_check(_geometry(direction=perturbed), _geometry())
+    assert result["ok"] is True, delta
+    assert result["exact_equal"] is False
+    assert result["nonzero_fields"] == ["direction"]
+    assert result["max_abs_diff"]["direction"] == pytest.approx(delta, rel=1e-6)
+    assert result["physical_corner"]["max_delta_mm"] <= _CORNER_ATOL_MM
+    assert result["violations"] == []
+
+
+def test_geometry_small_spacing_and_origin_roundoff_passes():
+    reference = _geometry(origin=(0.0, -20.0, 30.0))
+    spacing = (0.5 + 1e-7, 0.5, 3.0 - 1e-7)
+    origin = (1e-7, -20.0 - 1e-7, 30.0 + 1e-7)
+    result = _geometry_check(_geometry(spacing=spacing, origin=origin), reference)
+    assert result["ok"] is True
+    assert result["exact_equal"] is False
+    assert set(result["nonzero_fields"]) == {"spacing", "origin"}
+    assert result["max_abs_diff"]["spacing_mm"] <= _ATOL_MM
+    assert result["max_abs_diff"]["origin_mm"] <= _ATOL_MM
+    assert result["physical_corner"]["max_delta_mm"] < _CORNER_ATOL_MM
+
+
+def test_geometry_size_mismatch_is_rejected_without_tolerance():
+    result = _geometry_check(_geometry(size=(16, 16, 15)), _geometry())
+    assert result["ok"] is False
+    assert [v["kind"] for v in result["violations"]] == ["size_mismatch"]
+    assert result["violations"][0]["abs_tolerance"] is None
+    # 尺寸不一致时角点不可比，不做角点检查（已由 size 直接失败）
+    assert result["physical_corner"]["checked"] is False
+
+
+def test_geometry_clear_spacing_difference_rejected():
+    result = _geometry_check(_geometry(spacing=(2.0, 0.5, 3.0)), _geometry())
+    assert result["ok"] is False
+    kinds = [v["kind"] for v in result["violations"]]
+    assert "spacing_tolerance_exceeded" in kinds
+    item = next(v for v in result["violations"] if v["kind"] == "spacing_tolerance_exceeded")
+    assert item["field"] == "spacing"
+    assert item["max_abs_diff"] == pytest.approx(1.5)
+    assert item["abs_tolerance"] == _ATOL_MM
+    assert item["unit"] == "mm"
+
+
+def test_geometry_clear_origin_shift_rejected():
+    result = _geometry_check(_geometry(origin=(0.0, 1.0, 0.0)), _geometry())
+    assert result["ok"] is False
+    item = next(v for v in result["violations"] if v["field"] == "origin")
+    assert item["kind"] == "origin_tolerance_exceeded"
+    assert item["max_abs_diff"] == pytest.approx(1.0)
+    assert item["unit"] == "mm"
+    # 纯平移在角点检查里也表现为 1.0 mm
+    assert result["physical_corner"]["max_delta_mm"] == pytest.approx(1.0, rel=1e-9)
+
+
+def test_geometry_axis_flip_and_clear_rotation_rejected():
+    # 轴翻转：x/y 轴交换（direction 行主序）
+    flipped = (0, 1, 0, 1, 0, 0, 0, 0, 1)
+    r_flip = _geometry_check(_geometry(direction=flipped), _geometry())
+    assert r_flip["ok"] is False
+    assert "direction_tolerance_exceeded" in [v["kind"] for v in r_flip["violations"]]
+
+    # 明确旋转 1°（≈1.7e-2 rad）：元素差与角点偏差都必须超限
+    c, s = float(np.cos(np.deg2rad(1.0))), float(np.sin(np.deg2rad(1.0)))
+    rotated = (1, 0, 0, 0, c, -s, 0, s, c)
+    r_rot = _geometry_check(_geometry(direction=rotated), _geometry())
+    assert r_rot["ok"] is False
+    assert "direction_tolerance_exceeded" in [v["kind"] for v in r_rot["violations"]]
+    assert r_rot["physical_corner"]["max_delta_mm"] > _CORNER_ATOL_MM
+    assert "physical_corner_tolerance_exceeded" in [
+        v["kind"] for v in r_rot["violations"]
+    ]
+
+
+def test_geometry_element_diff_within_tolerance_but_cumulative_corner_exceeds():
+    """元素差在容差内，但大范围网格的累计角点偏差超限 ⇒ 仍拒绝（本轮核心规则）。"""
+    size, spacing = (2001, 2001, 2001), (1.0, 1.0, 1.0)
+    delta = _ATOL_DIRECTION * 0.999
+    perturbed = list(_geometry()["direction"])
+    perturbed[2] = delta  # z 轴的 x 分量
+    big = _geometry_check(
+        _geometry(size=size, spacing=spacing, direction=perturbed),
+        _geometry(size=size, spacing=spacing),
+    )
+    assert big["max_abs_diff"]["direction"] <= _ATOL_DIRECTION  # 元素层在容差内
+    assert big["physical_corner"]["max_delta_mm"] > _CORNER_ATOL_MM
+    assert big["ok"] is False
+    assert [v["kind"] for v in big["violations"]] == ["physical_corner_tolerance_exceeded"]
+    assert big["violations"][0]["unit"] == "mm"
+
+    # 同一扰动在真实前列腺 FOV 尺度上被接受：说明拒绝来自"累计"而不是元素差本身
+    small = _geometry_check(_geometry(direction=perturbed), _geometry())
+    assert small["ok"] is True
+    assert small["physical_corner"]["max_delta_mm"] < _CORNER_ATOL_MM
+
+
+@pytest.mark.parametrize("field,index", [("spacing", 1), ("origin", 2), ("direction", 4)])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_geometry_non_finite_metadata_rejected(field, index, bad):
+    values = list(_geometry()[field])
+    values[index] = bad
+    result = _geometry_check(dict(_geometry(), **{field: values}), _geometry())
+    assert result["ok"] is False
+    assert [v["kind"] for v in result["violations"]] == ["non_finite_metadata"]
+    assert result["violations"][0]["field"] == field
+    assert result["physical_corner"]["checked"] is False
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.5, -3.0])
+def test_geometry_non_positive_spacing_rejected(bad):
+    result = _geometry_check(_geometry(spacing=(0.5, bad, 3.0)), _geometry())
+    assert result["ok"] is False
+    assert [v["kind"] for v in result["violations"]] == ["non_positive_spacing"]
+    assert result["physical_corner"]["checked"] is False
+
+
+def test_geometry_malformed_direction_length_rejected():
+    short = list(_geometry()["direction"])[:6]
+    result = _geometry_check(dict(_geometry(), direction=short), _geometry())
+    assert result["ok"] is False
+    assert [v["kind"] for v in result["violations"]] == ["malformed_metadata"]
+
+
+def test_geometry_tolerance_boundary_behavior_is_explicit():
+    """容差边界：明显低于容差接受、明显高于容差拒绝。
+
+    不测"恰好等于容差"的浮点相等边界：``0.5 + 1e-6`` 之类无法在 float64 中精确表示，
+    此类断言本身不稳定；这里用清晰的上下两侧（≈0.95× 与 ≈1.05×）锁定行为。
+    """
+    below, above = _ATOL_DIRECTION * 0.95, _ATOL_DIRECTION * 1.05
+    for delta, expected_ok in ((below, True), (above, False)):
+        values = list(_geometry()["direction"])
+        values[3] = delta
+        result = _geometry_check(_geometry(direction=values), _geometry())
+        assert result["ok"] is expected_ok, delta
+    for delta, expected_ok in ((_ATOL_MM * 0.95, True), (_ATOL_MM * 1.05, False)):
+        result = _geometry_check(_geometry(spacing=(0.5, 0.5 + delta, 3.0)), _geometry())
+        assert result["ok"] is expected_ok, delta
+        result = _geometry_check(_geometry(origin=(0.0, delta, 0.0)), _geometry())
+        assert result["ok"] is expected_ok, delta
+
+
+def test_geometry_degenerate_single_slice_axis_corner_points():
+    """size==1 的退化轴只取 index 0；角点公式与 ITK 的 TransformIndexToPhysicalPoint 一致。"""
+    import SimpleITK as sitk
+
+    spacing, origin = (0.7, 0.8, 3.0), (-3.0, 5.0, -2.0)
+    direction = (0, 1, 0, 0, 0, 1, 1, 0, 0)
+    img = sitk.GetImageFromArray(np.zeros((1, 4, 5), np.uint8))  # 数组(z,y,x) → size=(5,4,1)
+    img.SetSpacing(spacing)
+    img.SetOrigin(origin)
+    img.SetDirection(direction)
+    assert img.GetSize() == (5, 4, 1)
+    points = _grid_corner_points(
+        img.GetSize(), img.GetSpacing(), img.GetOrigin(), img.GetDirection()
+    )
+    itk_points = np.array(
+        [
+            img.TransformIndexToPhysicalPoint((i, j, k))
+            for i in (0, 4)
+            for j in (0, 3)
+            for k in (0,)
+        ]
+    )
+    assert points.shape == (4, 3)  # 2 × 2 × 1
+    assert float(np.abs(points - itk_points).max()) < 1e-12
+
+    geometry = _geometry(
+        size=img.GetSize(), spacing=spacing, origin=origin, direction=direction
+    )
+    result = _geometry_check(geometry, geometry)
+    assert result["ok"] is True and result["exact_equal"] is True
+    assert result["physical_corner"]["n_points"] == 4
+    assert result["physical_corner"]["max_delta_mm"] == 0.0
+
+
+def test_geometry_corner_formula_matches_simpleitk_transform():
+    """角点公式必须与 SimpleITK（ITK 约定）逐位一致，包括斜方向余弦。"""
+    import SimpleITK as sitk
+
+    c, s = float(np.cos(0.3)), float(np.sin(0.3))
+    direction = (0, c, -s, 0, s, c, 1, 0, 0)
+    img = sitk.GetImageFromArray(np.zeros((3, 4, 5), np.uint8))
+    img.SetSpacing((0.5, 0.5, 3.0))
+    img.SetOrigin((-10.0, 20.0, -5.0))
+    img.SetDirection(direction)
+    points = _grid_corner_points(
+        img.GetSize(), img.GetSpacing(), img.GetOrigin(), img.GetDirection()
+    )
+    itk_points = np.array(
+        [
+            img.TransformIndexToPhysicalPoint((i, j, k))
+            for i in (0, 4)
+            for j in (0, 3)
+            for k in (0, 2)
+        ]
+    )
+    assert points.shape == itk_points.shape == (8, 3)
+    assert float(np.abs(points - itk_points).max()) < 1e-12
+    assert float(np.abs(points - itk_points).max()) <= _CORNER_ATOL_MM
+
+
+def test_geometry_check_rule_documents_units_and_tolerances():
+    rule = _geometry_check_rule()
+    assert rule["integer_field"]["size"] == "strict equality; no tolerance"
+    assert rule["float_fields"]["spacing"]["unit"] == "mm"
+    assert rule["float_fields"]["origin"]["unit"] == "mm"
+    assert rule["float_fields"]["direction"]["unit"] == "dimensionless"
+    assert rule["float_fields"]["spacing"]["abs_tolerance"] == _ATOL_MM
+    assert rule["float_fields"]["origin"]["abs_tolerance"] == _ATOL_MM
+    assert rule["float_fields"]["direction"]["abs_tolerance"] == _ATOL_DIRECTION
+    assert rule["float_fields"]["spacing"]["rtol"] == 0
+    assert rule["physical_corner_check"]["abs_tolerance_mm"] == _CORNER_ATOL_MM
+    assert rule["physical_corner_check"]["accept_if"].endswith("<= abs_tolerance_mm")
+    assert rule["fail_closed"] is True
+    assert rule["resampling"] == "none"
+    assert "not a registration" in rule["interpretation"]
+
+
+def test_geometry_violation_message_has_field_diff_tolerance_and_unit():
+    """错误文本必须给出字段名、最大绝对差、容差与单位（角点为 mm）。"""
+    from zonal_reliability_fusion.evaluation.case_metrics import (
+        describe_geometry_violations,
+    )
+
+    rotated = (1.0, 0.0, 0.0, 0.0, 0.999, 0.001, 0.0, -0.001, 0.999)
+    message = describe_geometry_violations(_geometry_check(_geometry(direction=rotated), _geometry()))
+    assert "direction" in message
+    assert "超过绝对容差" in message
+    assert "rtol=0" in message
+    message_big = describe_geometry_violations(
+        _geometry_check(_geometry(spacing=(2.0, 0.5, 3.0)), _geometry())
+    )
+    assert "spacing" in message_big
+    assert "max|Δ| = 1.5 mm" in message_big
+    assert "0.001 mm" in message_big and "单位 mm" in message_big
+    assert "不重采样" in message_big
+
+
+def test_geometry_tolerated_difference_is_accepted_without_modifying_inputs(tmp_path):
+    """容差内差异：full 模式接受、输入文件与数组不被修改、下游仍用 reference spacing。"""
+    import SimpleITK as sitk
+
+    mod = _load_module()
+    ref_arr = _cube((16, 16, 16))
+    fold = _write_fold_with_masks(tmp_path, "m", [("a", ref_arr, ref_arr)])
+    pred_path = fold / "validation" / "a.nii.gz"
+    ref_path = fold / "gt_segmentations" / "a.nii.gz"
+    # 5e-7 rad 的小旋转：远高于 NIfTI 头部 float32 粒度、又低于 1e-6 元素容差
+    eps = 5e-7
+    _write_nifti(
+        pred_path,
+        ref_arr,
+        (SPACING_XYZ[0] + 1e-7, SPACING_XYZ[1], SPACING_XYZ[2]),
+        direction=(1.0, 0.0, 0.0, 0.0, 1.0, -eps, 0.0, eps, 1.0),
+    )
+    files_before = {p: p.read_bytes() for p in (pred_path, ref_path)}
+    arrays_before = {
+        p: sitk.GetArrayFromImage(sitk.ReadImage(str(p))) for p in (pred_path, ref_path)
+    }
+
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    # 不抛异常 = 容差内差异被接受（而不是 fail-closed）
+    mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
+
+    assert rep["mask_verification"]["all_cases_verified"] is True
+    summary = rep["geometry_check"]
+    assert summary["n_cases_checked"] == 1
+    assert summary["n_cases_exactly_equal"] == 0
+    assert summary["n_cases_with_tolerated_difference"] == 1
+    assert summary["max_abs_diff"]["spacing_mm"] <= _ATOL_MM
+    assert summary["max_corner_delta_mm"] <= _CORNER_ATOL_MM
+    assert summary["rule"]["float_fields"]["direction"]["abs_tolerance"] == _ATOL_DIRECTION
+
+    row = next(r for r in rep["per_case"] if r["case_id"] == "a")
+    assert row["geometry"]["exact_equal"] is False
+    assert set(row["geometry"]["nonzero_fields"]) == {"spacing", "direction"}
+    # 下游物理量仍以 **reference** spacing 计算（不重采样、不平均几何）：
+    # prediction 的 spacing 被扰动过，若误用 pred 的 spacing，体素体积会差 ~2e-7 mm³
+    assert row["voxel_volume_mm3"] == pytest.approx(np.prod(SPACING_XYZ), abs=1e-12)
+
+    assert {p: p.read_bytes() for p in (pred_path, ref_path)} == files_before
+    for path, before in arrays_before.items():
+        after = sitk.GetArrayFromImage(sitk.ReadImage(str(path)))
+        assert np.array_equal(after, before)
+
+
+def test_full_mode_payload_records_geometry_rule_and_per_model_summary(tmp_path):
+    """结果 JSON 必须记录几何规则与容差，并按模型汇总容差内的非零差异。"""
+    mod = _load_module()
+    ref_arr = _cube((16, 16, 16))
+    fold = _write_fold_with_masks(tmp_path, "m", [("a", ref_arr, ref_arr)])
+    eps = 5e-7
+    _write_nifti(
+        fold / "validation" / "a.nii.gz",
+        ref_arr,
+        SPACING_XYZ,
+        direction=(1.0, 0.0, 0.0, 0.0, 1.0, -eps, 0.0, eps, 1.0),
+    )
+    out = tmp_path / "metrics.json"
+    code = mod.main(
+        [
+            "--model",
+            f"m={fold}",
+            "--mode",
+            "full",
+            "--nsd-tolerance-mm",
+            "2.0",
+            "--bootstrap-resamples",
+            "50",
+            "--output",
+            str(out),
+        ]
+    )
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == mod.SCHEMA_VERSION
+    rule = payload["geometry_check"]["rule"]
+    assert rule["revision"] == "2026-10-10"
+    assert rule["physical_corner_check"]["abs_tolerance_mm"] == _CORNER_ATOL_MM
+    assert payload["geometry_check"]["applied_in_modes"] == ["full"]
+    summary = payload["models"]["m"]["geometry_check"]
+    assert summary["n_cases_checked"] == 1
+    assert summary["n_cases_with_tolerated_difference"] == 1
+    assert summary["max_abs_diff"]["direction"] > 0.0
+    assert summary["max_abs_diff"]["direction"] <= _ATOL_DIRECTION
+    row = next(r for r in payload["models"]["m"]["per_case"] if r["case_id"] == "a")
+    assert row["geometry"]["physical_corner"]["checked"] is True
 
 
 def test_full_mode_rejects_non_binary_labels(tmp_path):
@@ -891,7 +1280,7 @@ def test_negative_case_spacing_mismatch_must_fail(tmp_path):
     fold = _write_fold_with_masks(tmp_path, "m", [("n", _empty(), pred)])
     _write_nifti(fold / "validation" / "n.nii.gz", pred, spacing=(2.0, 0.5, 3.0))
     rep, cases = mod.summarize_model("m", fold, 100, 1)
-    with pytest.raises(mod.EvaluationError, match="spacing 不一致"):
+    with pytest.raises(mod.EvaluationError, match=r"spacing.*超过绝对容差"):
         mod.run_full_mode({"m": rep}, {"m": cases}, 1.0, None, progress=False)
 
 

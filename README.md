@@ -31,6 +31,8 @@ F0 + delta → native PlainConvUNet → fine lesion segmentation
 D anatomy+lesion-conditioned fusion → E optional hard-negative strategy。
 A1/A2 比较 FLCE 与原生 DiceCE，后续使用胜出 loss 家族；判据顺序、failure-mode 层级与
 tie-break 原则已**先于任何结果冻结**在 Experiment Plan §2.1。ROI 为 supporting ablation。
+A1/A2 都包含项目阳性病例采样，不能称为原生采样对照。`native_dicece` 提供原生 DiceCE
+与原生采样参考（同样保留 NoFFT 工程修补）；运行状态见 Training_Log，控制设计见 Experiment Plan §2。
 新融合骨架尚无训练效果证据；详细实现/构造/训练/validation 状态只在 Training_Log 维护。
 
 ## Stage-1 Diagnosis

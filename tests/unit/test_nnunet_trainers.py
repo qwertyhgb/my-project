@@ -420,6 +420,46 @@ def test_trainer_class_names_are_distinct():
 
 
 # --------------------------------------------------------------------------- #16 train_nnunet.py --help
+def test_native_dicece_preserves_native_training_and_seeded_resolution():
+    from zonal_reliability_fusion.nnunet.trainers import (
+        ACTIVE_TRAINERS,
+        nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT,
+        resolve_trainer_class,
+        seeded_trainer_class,
+    )
+
+    base = nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT
+    assert base in ACTIVE_TRAINERS
+    assert not issubclass(base, PositiveCaseSamplingMixin)
+    assert not issubclass(base, nnUNetTrainerPICAI_DiceCE_NoFFT)
+    for name in ("_build_loss", "get_dataloaders", "build_network_architecture",
+                 "configure_optimizers", "run_training", "perform_actual_validation"):
+        assert getattr(base, name) is getattr(nnUNetTrainer, name)
+    assert base.get_training_transforms is NoFFTAugmentationMixin.get_training_transforms
+    seeded = seeded_trainer_class(base, 20261008)
+    assert resolve_trainer_class(seeded.__name__) is seeded
+    assert seeded.get_dataloaders is nnUNetTrainer.get_dataloaders
+
+
+def test_native_dicece_entry_reports_actual_sampling_without_creating_outputs():
+    module = _load_train_entry()
+    args = module.build_parser().parse_args([
+        "native_dicece", "605", "3d_fullres", "0", "--seed", "20261008", "--seeded-output",
+    ])
+    base = module.resolve_trainer_class(args.variant)
+    plans = {"dataset_name": "Dataset605_PICAI", "configurations": {"3d_fullres": {}}}
+    dataset = {"channel_names": {"0": "T2W", "1": "ADC", "2": "HBV"}}
+    payload = module.build_run_config(args, base, plans, dataset)
+    assert payload["epochs"] == 1000
+    assert "native case selection" in payload["sampling"]
+    assert "native Dice+CE" in payload["loss"]
+    assert payload["fusion_condition"] is None
+    positive_args = module.build_parser().parse_args(["dicece_positive_sampling", "605", "3d_fullres", "0"])
+    positive = module.build_run_config(
+        positive_args, module.resolve_trainer_class(positive_args.variant), plans, dataset)
+    assert positive["sampling"].startswith("positive_sampling;")
+
+
 def _load_train_entry():
     spec = importlib.util.spec_from_file_location("train_nnunet_entry", TRAIN_SCRIPT)
     module = importlib.util.module_from_spec(spec)

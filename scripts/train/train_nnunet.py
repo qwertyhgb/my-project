@@ -23,6 +23,7 @@ from pathlib import Path
 #: 前 9 项是 1000 epoch 正式臂；``*_100ep`` 是同一 A/B/C/D 的 100 epoch 方向筛选臂，
 #: 独立类名 → 独立输出目录，只做 sanity 与方向筛选，不与历史 1000 epoch 结果比较优劣。
 ACTIVE_VARIANTS = {
+    "native_dicece": "nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT",
     "anatomy_joint_100ep": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
     "positive_sampling": "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
     "dicece_positive_sampling": "nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT",
@@ -326,6 +327,7 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
         STEM_CHANNELS,
     )
     from zonal_reliability_fusion.nnunet.seeds import describe_seed_limitations
+    from zonal_reliability_fusion.sampling.positive_sampling import PositiveCaseSamplingMixin
 
     configuration = plans.get("configurations", {}).get(args.configuration, {})
     archive = configuration.get("architecture", {})
@@ -352,7 +354,11 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
             if any("FLCE" in base.__name__ for base in trainer_class.__mro__)
             else "nnU-Net native Dice+CE（由继承解析决定，见 Trainer docstring）"
         ),
-        "sampling": "positive_sampling; ROI only for explicit supporting variants",
+        "sampling": (
+            "positive_sampling; ROI only for explicit supporting variants"
+            if issubclass(trainer_class, PositiveCaseSamplingMixin)
+            else "nnU-Net native case selection and foreground oversampling; no project positive-case balancing"
+        ),
         "fusion_condition": getattr(trainer_class, "fusion_condition", None),
         "fusion_constants": {
             "stem_channels": STEM_CHANNELS,

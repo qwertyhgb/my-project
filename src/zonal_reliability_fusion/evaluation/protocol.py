@@ -16,6 +16,19 @@
 
 术语边界：``positive_voxel_precision`` 与 ``all_prediction_voxel_precision`` 分母不同，
 不得都笼统称为 "precision"。
+
+几何数值容差（**2026-10-10 修订新增，不是此前冻结过的常量**）
+------------------------------------------------------------
+以下三个常量在 2026-10-10 的显式协议修订中引入（原因与证据见
+``docs/Evaluation_Protocol.md`` §3 与 ``docs/Development_Log.md`` 同日条目）：
+
+- ``GEOMETRY_ATOL_MM``：spacing / origin 的**绝对**容差（mm，rtol=0）；
+- ``GEOMETRY_ATOL_DIRECTION``：direction 方向余弦的**绝对**容差（无量纲，rtol=0）；
+- ``GEOMETRY_CORNER_ATOL_MM``：网格角点物理坐标最大欧氏偏差（mm，``<=`` 为接受）。
+
+它们是**浮点存储/往返精度的工程数值容差**（NIfTI 头部 qform/sform 以 float32 存储，
+方向余弦经四元数往返后元素误差可达 ~1e-7 量级），**不是**临床容许误差、**不是**配准质量
+判据、**不得**被描述为"解剖对齐已验证"。整型 ``size`` 仍要求**严格相等**，没有尺寸容差。
 """
 
 from __future__ import annotations
@@ -26,8 +39,11 @@ from typing import Any
 
 import numpy as np
 
-#: 输出 schema 版本；改动指标集合时必须递增
-SCHEMA_VERSION = "1.1"
+#: 输出 schema 版本；改动指标集合时必须递增。
+#: 1.2（2026-10-10）：新增顶层 ``geometry_check`` 规则块与 ``models[*].geometry_check``
+#: 逐例/逐模型执行汇总；同时几何判定由「四字段逐值严格相等」改为
+#: 「size 严格相等 + 浮点绝对容差 + 物理角点阈值」，这会改变哪些病例能进入 full 模式结果。
+SCHEMA_VERSION = "1.2"
 DEFAULT_BOOTSTRAP_RESAMPLES = 10000
 DEFAULT_SEED = 20260922
 #: 判定「病例间 Dice 变化是否为平局」的容差（仅用于 improved/tied/worsened 计数）
@@ -45,6 +61,17 @@ LESION_SIZE_STRATUM_KEYS = (
 )
 #: summary 中的 Dice 与由 TP/FP/FN 重算值的最大允许偏差（两者应逐位一致）
 DICE_MATCH_TOLERANCE = 1e-6
+
+# --------------------------------------------------------------------------- 几何数值容差
+# 2026-10-10 修订新增（见模块 docstring 与 docs/Evaluation_Protocol.md §3）：仅用于吸收
+# NIfTI 头部 float32 存储 / 四元数往返造成的数值舍入，**不是**临床容许误差或配准判据。
+#: spacing / origin 的绝对容差（mm）；rtol=0
+GEOMETRY_ATOL_MM = 1e-6
+#: direction 方向余弦的绝对容差（无量纲）；rtol=0
+GEOMETRY_ATOL_DIRECTION = 1e-6
+#: 网格角点物理坐标最大欧氏偏差（mm）；``<=`` 为接受
+GEOMETRY_CORNER_ATOL_MM = 1e-3
+
 #: 错误明细的显示上限；超过时汇总文本会明确写出「仅显示前 N 条，另有 M 条」
 ERROR_DISPLAY_CAP = 50
 

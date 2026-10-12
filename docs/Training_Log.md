@@ -194,6 +194,11 @@
 
 | variant | 数据集/配置/fold | 状态 | 输出目录 |
 |---|---|---|---|
+| native_dicece（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成；Native/A2 full配对评价完成**；详情见`experiments/native_dicece_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| dicece_positive_sampling_100ep（A-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成**；仅短预算筛选参照 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| neutral_fusion_dicece_100ep（B-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A-short/B-short full配对评价完成**；配置budget文字误标formal，但epochs/debug/日志均为100 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| lesion_fusion_dicece_100ep（C-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A/B/C full配对评价完成** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| anatomy_lesion_fusion_dicece_100ep（D-short，seed=20261008） | Dataset608 / 3d_fullres / 0 | **运行中**；2026-10-12日志快照完成epoch0–41，进入epoch42；608完整MRI/标签一致性审计PASS | `outputs/nnUNet_results/Dataset608_PICAI_PredictedAnatomy/nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
 | baseline | Dataset605 / 3d_fullres / 0 | 已完成（见上） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | optimized_baseline | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中止（见下）** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | image_gate | Dataset605 / 3d_fullres / 0 | 已完成 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/` |
@@ -204,7 +209,8 @@
 | feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已启动，缺最终 validation**（2026-10-06 产物核对见首节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中断于 epoch 81**（见 2026-10-08 节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
 | feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| dicece_positive_sampling | Dataset605 / 3d_fullres / 0 | 未训练；原生DiceCE+阳性采样对照 | 独立原类名目录，尚未创建 |
+| positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation完成**；一次中断续训；详情见 `experiments/positive_sampling_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| dicece_positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成**；详情见 `experiments/dicece_positive_sampling_seed20261008.md`；未加seed的原类名运行未启动 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
 | anatomy_joint_100ep | Dataset607 / 3d_fullres / 0 | 100ep+validation完成；soft heads诊断完成，见末节 | 既有Stage-1目录保留 |
 | neutral_fusion_flce / neutral_fusion_dicece（新B） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
 | lesion_fusion_flce / lesion_fusion_dicece（新C） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
@@ -445,3 +451,223 @@ python -B -m zonal_reliability_fusion.anatomy.validation outputs/nnUNet_results/
 - `A1 vs A2` 的 baseline selection rule 已冻结在 `docs/Experiment_Plan.md` §2.1（先于任何结果）。
 
 NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
+
+---
+
+## 2026-10-10 — A1/A2 matched-seed full 评价失败（未发布结果）
+
+- 命令：`python scripts/evaluate_segmentation.py --model A1_final=<A1 fold_0> --model A2_final=<A2 fold_0>
+  --mode full --nsd-tolerance-mm 2.0 --bootstrap-resamples 10000 --seed 20260922
+  --output outputs/metrics/A1_A2_final_full_exploratory_NSD2mm_20261010T031106Z.json`
+- 日志：`outputs/logs/A1_A2_full_20261010T031106Z.log`（64 行，stdout+stderr 合并）
+- 日志结束汇总（原文）：`status=failed`、`mode=full`、`phase=full_cases`、`unit=model-case`、
+  `ok=44`、`failed=402`、`skipped=0`、`elapsed=164.28 s`
+- 退出码 **EXIT_CODE=2**；日志 `output` 行指向的结果 JSON **未发布**（无产物落盘）
+- 失败形态：日志展示的前 50 条全部为 prediction 与 reference 的 `direction` 不严格相等，
+  最大元素绝对差约 `3.47e-08`；日志明确写明「仅显示前 50 条，另有 352 条未显示」，
+  因此其余 352 条的字段与量级**未经核实**
+- 代码/协议侧处理：本轮为评价侧几何数值检查的**显式协议修订**
+  （`docs/Development_Log.md` 同日条目；`docs/Evaluation_Protocol.md` §3.1），**不是**这次运行的替代
+- **真实队列尚未用新规则重跑**：修复后的 full 评价**没有完成**，不得记为成功
+- 边界：本次未启动任何新的训练/推理/预处理；未修改任何 prediction、reference 或 data/workdir 产物
+
+
+## 2026-10-09 — A1 positive_sampling，seed=20261008 完成
+
+- 运行：Dataset605_PICAI / 3d_fullres / fold0；Trainer=`nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT_Seed20261008`。
+- 用户首次启动，断网中断后以`--continue-training`恢复；日志从epoch41继续至999。
+- 时间（北京时间）：2026-10-08 17:30:06首轮开始；2026-10-09 11:01:55训练完成；11:13:43 validation完成。
+- checkpoint_final.current_epoch=1000；validation共223例，病例集合与固定val一致。
+- nnU-Net foreground_mean.Dice=0.2137595923；positive-case macro Dice=0.2951918179。
+- 完全无重叠阳性25/63；阴性FP病例24/160。本条只登记运行事实，不作跨run结论。
+- 配置、两段命令、训练动态、summary-level分析与产物：`docs/experiments/positive_sampling_seed20261008.md`。
+- 本次报告工作只读既有产物；未重跑训练、validation、推理或full评估。
+
+## 2026-10-10 — A2 dicece_positive_sampling，seed=20261008 完成
+
+- 运行：Dataset605_PICAI / 3d_fullres / fold0；Trainer=`nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT_Seed20261008`。
+- 启动入口：`scripts/train/train_nnunet.py dicece_positive_sampling 605 3d_fullres 0 --seed 20261008 --seeded-output --export-validation-probabilities --run-config outputs/run_configs/A2_dicece_positive_sampling_fold0_seed20261008.json`；完整环境与命令见实验报告。
+- 时间（北京时间）：2026-10-09 16:51:50 epoch0开始；2026-10-10 08:42:28训练完成；08:54:18 validation完成。
+- epoch0–999各记录一次；`checkpoint_final.current_epoch=1000`。现有日志未显示中断续训。
+- final 整例 validation 共223例，与固定val病例集合一致；`.nii.gz`、`.npz`、`.pkl`各223份。
+- nnU-Net foreground_mean.Dice=0.1624880607（194例有限值）；阳性63例 macro Dice=0.5003600600。
+- 阳性零重叠6/63，阳性空预测0/63；阴性有前景预测131/160。本条只登记运行事实，不作跨run结论。
+- `checkpoint_best.current_epoch=968`，记录的最佳patch pseudo-Dice EMA=0.53213817；本次确认的是final整例验证，未确认best整例性能。
+- 详细配置、训练动态、病例级结果、产物及证据边界：`docs/experiments/dicece_positive_sampling_seed20261008.md`。
+- 本次报告工作只读既有日志、checkpoint logger、JSON及文件清单；未启动训练、推理、validation或医学体素评测。
+
+### 2026-10-10 — A2 final 全验证集概率诊断
+
+- 用户运行 `scripts/data/diagnose_picai_case_chain.py`，使用A2 `fold_0`与其`validation`概率目录，参数`--all-validation --no-plots`。
+- 开始时间（北京时间）09:38:59；耗时309.475 s；successful=223 / failed=0 / skipped=0，完整队列阳性63、阴性160。
+- 产物：`outputs/diagnostics/picai_probability_diagnostics_20261010T013859_953463Z/summary.json`。
+- 概率恢复几何、概率argmax与硬分割、GT计数检查均通过；硬分割与原validation一致。
+- p>0.5复现阳性macro Dice=0.500360060、零重叠6/63、阴性有FP131/160；p>0.01零重叠仍6/63、阴性有FP153/160。
+- 本次代理仅读取既有JSON并补充上述实验报告，未自行启动数据处理或推理。
+
+### 2026-10-10 — A2 best 概率导出及诊断
+
+- 用户完成checkpoint_best.pth独立预测；产物`outputs/predictions/A2_best_fold0_seed20261008_20261010T015819Z/`，原final validation保留。
+- 用户运行全验证集概率诊断，产物`outputs/diagnostics/picai_probability_diagnostics_20261010T021025_787594Z/summary.json`。
+- 诊断开始（北京时间）10:10:25；耗时300.054 s；successful=223 / failed=0 / skipped=0；全部checks通过。
+- p>0.5：阳性macro Dice=0.503831146，pooled recall=0.568709546，零重叠6/63，阴性有FP149/160、阴性FP体素322425。
+- 详细记录及同run checkpoint比较见现有A2实验报告第10节。代理只读JSON并更新文档，未启动长任务。
+
+### 2026-10-10 — A2 零重叠病例数据链诊断
+
+- 用户运行既有case-chain脚本，对final/best零重叠并集7例加2例高Dice对照生成JSON与图像。
+- 产物：`outputs/diagnostics/picai_case_chain_20261010T024730_612404Z/summary.json`。
+- 开始（北京时间）10:47:30；耗时121.157 s；successful=9 / failed=0 / skipped=0；全部13项checks通过。
+- 逐病例结果与检查范围见现有A2实验报告第11节；不能据9例检查声明全数据集处理正确。
+- 代理仅读取既有JSON与两张既有PNG，未启动数据处理、训练或推理。
+
+### 2026-10-10 — A1/A2 matched-seed final 统一summary评价
+
+- 用户运行`python scripts/evaluate_segmentation.py --model A1_final=<A1_seed_fold0> --model A2_final=<A2_seed_fold0> --mode summary --bootstrap-resamples 10000 --seed 20260922 --output <新JSON>`。
+- 产物：`outputs/metrics/A1_A2_final_fold0_seed20261008_20261010T025355Z.json`。
+- succeeded；ok=2 models / failed=0；耗时0.10 s；每模型223例、阳性63、阴性160。
+- A2-minus-A1配对Dice差=0.205168242，95% CI=[0.146075075,0.266933854]；improved/tied/worsened=51/6/6。
+- newOverlap=19 / lostOverlap=0；missDelta=-19；negative_fp_case_delta=+107。
+- 按Experiment_Plan §2.1冻结的primary-first规则，选A2 DiceCE家族作为后续B/C/D的loss参考；两家族产物保留。此选型不声明整体FP改善或多seed稳定性。
+- 尚未执行统一full评价或启动B/C/D训练。summary不含病灶实例、物理FP体积或表面指标。
+
+
+### 2026-10-10 — A1/A2 final full评价成功
+
+- 用户在修订后的几何规则下完成full评价；NSD=2mm为探索性，seed=20260922、bootstrap=10000。
+- 产物：`outputs/metrics/A1_A2_final_full_exploratory_NSD2mm_20261010T035655212238528Z.json`；日志`outputs/logs/A1_A2_full_20261010T035655212238528Z.log`。
+- EVAL_EXIT=0、TEE_EXIT=0；ok=446 / failed=0 / skipped=0；耗时621.57s；两模型各223例计数核验通过。
+- 实例any-overlap匹配A1=39/75、A2=60/75；未匹配预测团块A1=37、A2=226。
+- A-short/B-short尚未运行；本次代理只读结果JSON并更新文档，未启动任何训练或真实数据评价。
+
+
+### 2026-10-10 — A-short DiceCE+阳性采样完成
+
+- 用户运行`dicece_positive_sampling_100ep 605 3d_fullres 0 --seed 20261008 --seeded-output --export-validation-probabilities --run-config outputs/run_configs/A_short_dicece_positive_sampling_fold0_seed20261008.json`。
+- Trainer=`nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT_Seed20261008`；日志`training_log_2026_10_10_05_36_25.txt`；输出目录见唯一状态表。
+- 时间（北京时间）：13:36:35 epoch0开始；15:12:12 Training done；15:24:05 Validation complete。
+- 日志epoch0–99共100条；final checkpoint存在；validation病例与固定split一致，nii.gz/npz/pkl各223份。
+- summary：阳性macro Dice=0.442427279；阳性零重叠7/63、空预测0/63；阴性有前景160/160；native foreground mean Dice=0.124990666。
+- 本条仅记录运行事实，不与1000epoch结果比较；未完成本run的概率诊断/full实例评价。原生采样1000epoch参考尚未启动（本次只读路径检查）。
+- 代理只读现有日志/JSON/文件清单并更新记录，未启动训练或数据处理。
+
+### 2026-10-11 — 核查B-short完成及原生采样参考运行
+
+- B-short用户已完成；日志`training_log_2026_10_10_08_02_37.txt`有完整epoch0–99，
+  `checkpoint_final.pth`存在，debug中num_epochs=100、batch=2、LR=0.01、每epoch训练/验证迭代250/50。
+- 北京时间2026-10-10 16:02:41 epoch0开始，18:00:58 Training done，18:15:58 Validation complete；
+  日志epoch耗时均值69.1609秒（不含epoch之间及最终validation开销）。
+- validation内nii.gz/npz/pkl各223份；summary中病例集合与Dataset605固定fold0验证split完全一致，
+  63阳性、160阴性。这里只核对文件清单与JSON，不表示已解码核查概率或掩膜几何。
+- B-short阳性macro Dice=0.429203366、中位数=0.478187663、micro Dice=0.555531055，
+  阳性体素recall=0.560651541、precision=0.550503254、全队列prediction precision=0.255436577；
+  阳性零重叠7/63、空预测0/63，阴性有前景159/160，阴性FP体素681950（voxel-based）。
+- A-short/B-short病例身份与n_ref逐例相同；阳性Dice配对均值变化=-0.013223913，
+  improved/tied/worsened=27/7/29，新增/丢失重叠均0。尚未运行配对bootstrap或full实例/表面评价。
+- B-short run_config的epochs=100，但budget文字仍为formal；A-short也有相同文字误标。
+  本轮保留原始配置，预算以Trainer/debug及完整epoch日志核实，不覆盖outputs。
+- 原生采样参考进程存在；命令为`python -u scripts/train/train_nnunet.py native_dicece 605 3d_fullres 0 --seed 20261008 --seeded-output --export-validation-probabilities --run-config outputs/run_configs/native_dicece_fold0_seed20261008.json`。
+  日志`training_log_2026_10_10_15_01_47.txt`，debug/run_config均为1000epoch、原生DiceCE、原生采样；
+  最近读取到北京时间2026-10-11 10:09:02进入epoch701，epoch700完成，pseudo Dice=0.376。
+  best/latest存在、final及最终验证summary尚未产生。Pseudo Dice不是完整病例分割终点。
+- 核查仅只读日志、配置、JSON及进程清单；代理未启动训练、推理或真实医学数据评价。
+
+### 2026-10-11 — A-short/B-short full配对评价完成
+
+- 用户运行完成；产物`outputs/metrics/Ashort_Bshort_final_full_exploratory_NSD2mm_20261011T021156038922776Z.json`，
+  日志`outputs/logs/Ashort_Bshort_full_20261011T021156038922776Z.log`。
+  创建时间北京时间10:27:38；mode=full、schema=1.2、seed=20260922、bootstrap=10000、探索性NSD容差2 mm。
+- 结束汇总status=succeeded、ok=446、failed=0、skipped=0、elapsed=942.86秒。
+  每模型223例完整掩膜核验；spacing/origin差异0，direction最大差3.9913e-8，
+  角点最大物理偏差1.4795e-5 mm，均在数值一致性规则内。没有重采样。
+- A-short→B-short阳性macro Dice变化=-0.013223913，配对95% CI=[-0.035964361,+0.009019042]，
+  improved/tied/worsened=27/7/29；完整零重叠7→7，新增/丢失病例重叠均0。
+- 75个参考实例匹配62→60，any-overlap sensitivity=82.67%→80.00%；
+  小/中/大实例分别16/25→15/25、10/14→9/14、36/36→36/36。
+  全队列预测团块1007→905，未匹配预测团块945→845；阴性FP体素530992→681950。
+- 阳性表面均值：HD95=29.890981→34.497012 mm，ASSD=10.528927→12.354478 mm，
+  NSD@2mm=0.516179→0.506299。没有这些终点的配对CI，不声明显著变化。
+- 代理只读产物并核对汇总计数/日志，未重跑真实评价；几何规则通过不是原始MRI模态配准质量证明。
+  原生采样训练另一次日志快照已进入epoch724，未产生final；C-short目录/run_config尚不存在，未启动。
+
+### 2026-10-11 — 原生DiceCE＋原生采样正式参考完成
+
+- 用户报告完成，本轮核查日志`training_log_2026_10_10_15_01_47.txt`完整epoch0–999；
+  final checkpoint current_epoch=1000，logger八个序列各1000项；best current_epoch=949。
+  Trainer/debug确认原生nnUNetDataLoader、DC_and_CE_loss与PlainConvUNet，含NoFFT修补、无项目阳性病例平衡。
+- 北京时间2026-10-10 23:01:51 epoch0开始，2026-10-11 14:53:15 Training done，15:05:05 Validation complete。
+  训练wall time约15:51:24，最终验证约11:50；epoch日志计算时长均值55.541秒。
+- 验证病例与固定fold0 split相同，223study/220patient，63阳性/160阴性；NIfTI/npz/pkl各223份且病例集合一致。
+  split按patient ID前缀核对无train/val交集；summary逐例计数与Dice公式一致，未读取真实影像进行full核验。
+- 阳性macro Dice=0.469091115，median=0.502262443，micro Dice=0.565079982；
+  阳性voxel recall=0.531612705、precision=0.603044173、全队列prediction precision=0.384914008。
+  阳性TP/FP/FN=308161/202848/271511；完全零重叠7/63、阳性空预测0；
+  阴性有前景151/160，阴性FP体素289588（voxel-based）。原生foreground mean Dice=0.138096917。
+- 本轮按用户授权创建独立报告[原生采样正式实验](experiments/native_dicece_seed20261008.md)，
+  记录配置、运行、训练动态、验证分布、漏分病例、复现边界与待补终点，不包含跨实验比较。
+- 尚未计算本run CI、实例匹配、物理体积/表面或概率诊断；best没有整例验证证据。
+  本轮仅秒级只读日志/JSON/checkpoint元数据及logger，未启动任何训练或真实医学数据评测。
+
+### 2026-10-11 — Native/A2 final完整配对评价完成
+
+- 用户返回运行日志及EVAL_EXIT=0、TEE_EXIT=0；结果
+  `outputs/metrics/native_A2_final_full_exploratory_NSD2mm_20261011T071549214283765Z.json`，
+  日志`outputs/logs/native_A2_full_20261011T071549214283765Z.log`。
+  status=succeeded、ok=446、failed=0、skipped=0、elapsed=761.73秒；
+  schema=1.2、seed=20260922、bootstrap=10000、探索性NSD@2mm。
+- 每模型223例掩膜计数与summary一致，几何规则均通过且未重采样；direction最大差3.9913e-8、
+  角点最大物理偏差1.4795e-5 mm，spacing/origin差为0。
+- Native→A2阳性macro Dice=0.469091115→0.500360060，配对变化=+0.031268945，
+  95% CI=[+0.002529913,+0.063516397]；31改善/5持平/27下降。
+  新增病例重叠`10519_1000529`、`10550_1000562`，丢失重叠`11284_1001307`；零重叠7→6。
+- Any-overlap实例匹配57/75→60/75；小13/25→16/25、中8/14→9/14、大36/36→35/36。
+  阴性FP病例151→131、阴性FP体素289588→230628，全队列未匹配预测团块287→226。
+  阳性pooled recall=0.531613→0.518630，precision=0.603044→0.658966。
+- Native自身bootstrap/实例/表面终点补入其独立实验报告；跨run解释写Findings。
+  本轮代理仅只读已有JSON并更新文档，未启动训练或真实医学数据评价。C-short尚未发现产物目录。
+
+### 2026-10-12 — C-short完成、Dataset608准备通过及D-short运行
+
+- C日志`training_log_2026_10_11_07_33_34.txt`完整epoch0–99，无已发现错误/NaN。
+  北京时间2026-10-11 15:33:37开始epoch0，19:50:37 Training done，20:06:42 Validation complete；
+  epoch计算时长均值152.3876秒，final/best存在。
+- C的223例summary及nii.gz/npz/pkl各223份，病例集合与605固定fold0验证split一致，
+  63阳性/160阴性；逐例计数恒等式通过。本轮仅核对JSON/文件清单，未读真实医学数组。
+  macro Dice=0.434474361、median=0.497877474、micro Dice=0.529358330；
+  阳性recall=0.505159815、precision=0.555991836、全队列prediction precision=0.266435013；
+  完全零重叠11/63、阳性空预测0、阴性FP病例159/160、FP体素572381。
+- C−A阳性Dice配对均值=-0.007952918，29改善/7持平/27下降；
+  C−B均值=+0.005270995，30改善/7持平/26下降；尚无配对bootstrap CI或full实例评价。
+  两项对照新增重叠均0，丢失重叠均为`10433_1000441`、`10550_1000562`、`11284_1001307`、`11296_1001319`。
+- Dataset608已物化并预处理；审计产物
+  `outputs/reports/dataset605_608_equivalence_20261011T151439284226933Z.json`：
+  `DATASET605_608_EQUIVALENCE_PASS`、prior契约VALID；raw/preprocessed各1500例通过，
+  三路MRI逐值完全相同，MRI/标签mismatch均0，病例集合/顺序、split及metadata一致。
+  C/D plans的architecture、patch、batch、spacing、batch_dice逐项相同。
+- prior契约总计1276个IN_SAMPLE_PRED及224个HELD_OUT_PRED，其中全部223验证病例为HELD_OUT_PRED；
+  另一个held-out病例来自训练split的Stage-1排除病例。不宣称OOF或人工解剖准确度。
+- D日志`training_log_2026_10_11_22_26_11.txt`，debug为100epoch、6输入通道、batch2、LR0.01、
+  ConditionedMultimodalNNUNet与LesionnessAuxiliaryLoss。北京时间2026-10-12 08:32:17进入epoch42；
+  epoch41 pseudo Dice=0.3443，当前最高EMA约0.3910，无已发现错误/NaN，进程存在；未有final/整例summary。
+  run_config为`outputs/run_configs/D_short_anatomy_lesion_fusion_dicece_fold0_seed20261008_20261011T151439284226933Z.json`，
+  epochs=100但budget文字误标formal，保留原始产物，实际预算依据类名/debug/epochs。
+- 本轮代理只读既有日志、配置、审计和summary并更新文档，未运行任何训练、推理或真实医学数据评价。
+
+### 2026-10-12 — A/B/C-short完整配对评价完成
+
+- 用户执行full评价及tee均exit0；产物
+  `outputs/metrics/ABC_short_final_full_exploratory_NSD2mm_20261012T003738020176149Z.json`，
+  日志`outputs/logs/ABC_short_full_20261012T003738020176149Z.log`；北京时间09:03:08生成。
+  schema1.2、seed20260922、bootstrap10000、探索性NSD2mm；成功669、失败0、跳过0、耗时1530.75秒。
+- 三模型各223例掩膜计数及数值几何核验通过；最大角点差1.4795e-5 mm，无重采样。
+- C−A配对Dice=-0.007952918，CI95=[-0.033456685,+0.016312791]；
+  C−B=+0.005270995，CI95=[-0.015854520,+0.026121346]，两项均跨0。
+- A/B/C参考实例匹配62/60/55（分母75），小实例16/15/11（分母25），
+  中实例10/9/9（分母14），大实例36/36/35（分母36）；未匹配预测团块945/845/735。
+  Matched-lesion Dice均值0.541092/0.543292/0.588551，只覆盖各自匹配子集。
+- A/B/C阳性HD95均值29.890981/34.497012/38.685617 mm，ASSD均值10.528927/12.354478/14.183726 mm；
+  探索性NSD2mm均值0.516179/0.506299/0.508732，未计算这些终点的配对CI。
+- C相对A/B丢失的四例重叠中，三例病例GT总体积240.408/164.250/127.332 mm³，
+  另一例11284_1001307为2783.831 mm³；这是病例总体积，不直接作为单病灶大小。
+  四例C预测均非空，不能把它们描述为全部预测背景。
+- 最新D日志快照进入epoch51，final/整例summary尚无；代理只读评价JSON并更新记录，没有重跑评价。

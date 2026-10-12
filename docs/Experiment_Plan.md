@@ -24,6 +24,13 @@ A1=`positive_sampling`（FLCE+阳性采样），A2=`dicece_positive_sampling`（
 LR schedule、epoch、DS、checkpoint、validation/inference、显式 seed。
 正式选择优先 matched-seed；历史无 seed A1 只作历史参照，不能称为 matched-seed。
 
+2026-10-10 新增采样对照：`native_dicece` 使用原生 DiceCE、原生病例选择与前景过采样，
+不含项目阳性病例平衡；以Dataset605/3d_fullres/fold0、seed20261008、1000epoch匹配A2。
+与A2仅改变病例/patch采样实现；两者均保留NoFFT工程修补，不修改增强概率或sigma。
+独立Trainer=`nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT`，使用`--seeded-output`隔离。
+这不是A1/A2损失对照的替代，也不修改§2.1已冻结的损失选择规则。
+原生采样参考完成匹配评价前，不将A2的假阳性归因于阳性采样；B/C/D的采样条件需与其参照一致。
+
 历史 A1 目录已存在，禁止原命令从头覆盖。入口新增 `--seeded-output` 时从基类派生固定
 `_Seed<seed>` 类名，独立目录并可由 checkpoint trainer_name 解析；只给不同 JSON 名不隔离模型。
 A1/A2 同 seed 各自运行，按 primary + failure-mode endpoints 综合判断，不能只选单个 Dice。
