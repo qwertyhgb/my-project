@@ -1,3 +1,6 @@
+> VERSION=V1 — 冻结历史实验文档；原始事实保留。共享 Stage-1 按其 V1 运行来源记录。
+> 当前状态见 [Training Log](../Training_Log.md)，V2 不复用该实验身份。
+
 # `anatomy_joint_100ep`（Stage 1：解剖先验生成器）
 
 > 单实验文档。**只记录本实验自身**，不写跨实验对比、不引用其它实验文档（规则见 `AGENTS.md` §6）。

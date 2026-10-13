@@ -1,3 +1,6 @@
+> VERSION=V1 — 冻结历史实验文档；原始事实保留。共享 Stage-1 按其 V1 运行来源记录。
+> 当前状态见 [Training Log](../Training_Log.md)，V2 不复用该实验身份。
+
 # 实验记录：`positive_sampling`
 
 > 本文档只记录 `positive_sampling` 实验本身：配置、运行事实、训练动态、验证结果与产物。

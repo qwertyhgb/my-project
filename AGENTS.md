@@ -22,6 +22,9 @@
 - 原始医学数据保持**只读**。
 - 不删除、不覆盖 `data/`、`workdir/`、`outputs/` 及任何既有 checkpoint（含 N0 baseline 与 legacy M0 产物）。
 - 不静默删除、覆盖或排除病例；派生数据写入项目约定目录。
+- V2新增运行产物统一写入 `outputs/v2/`（模型、配置、预测、指标、报告、日志等）。
+  既有平铺输出为历史V1/LEGACY与共享Stage-1，保持原路径，不靠移动或更名伪造版本隔离。
+  V2训练/预测/评价入口检查路径；共享prior/checkpoint/audit继续引用原位置。
 
 ## 3. 长任务由用户运行
 
@@ -65,16 +68,20 @@
   不可归因的修改（如同时改采样、损失、patch size 与优化器）。
 - 仍禁止复制 nnU-Net 的完整训练器、U-Net encoder/decoder、验证器和推理器。
 - 所有训练从 `scripts/train/train_nnunet.py` 进入。
-- **当前研究主线**（2026-10-08 本轮明确更新）：预测解剖与粗病灶定位共同条件化局部多模态融合。
-  活跃扩展只包含 Stage-1 先验生成器、轻量独立 shallow stems + neutral projection、
-  pre-fusion coarse lesionness、soft anatomy/lesion-conditioned residual fusion。
-  禁 hard gating；neutral path 必须保留，residual末层零初始化。ROI与原logits refinement保留为
-  SUPPORTING ablation；hard negatives待best(C,D)冻结后加入。旧gate/fusion不得恢复为主线。
-  新融合实现不依赖legacy；不同loss家族使用明确Trainer类名，所有既有类名继续可解析。
-  predicted-prior Dataset608与历史Dataset606隔离，记录IN_SAMPLE/OOF/HELD_OUT/EXTERNAL模式、
-  checkpoint、split与geometry。不得把in-sample写成OOF或把hard export的WG失败当soft head失败。
-  一次只改一个明确机制，边界见 docs/Method.md §7。
-  `src/zonal_reliability_fusion/legacy/`仍只读，不扩张、不改变其实现。
+- **当前唯一研究主线（2026-10-12）**：VERSION=V2 — Anatomy-Guided Lesion-Aware
+  Coarse-to-Fine Multimodal Prostate Cancer Segmentation。任何新研究代码默认属于 V2，
+  多尺度独立 modality encoders → predicted anatomy-conditioned fusion → native shared decoder
+  → bottleneck coarse lesion evidence → local late residual refinement。
+  禁 hard gating；refiner末层零初始化。一次只改变一个明确机制，边界见 docs/v2/Method.md。
+  V1 — Shallow Anatomy/Lesion-Conditioned Fusion 完整冻结，不增加模块、不扩张问题；
+  只允许 bug fix / reproducibility / compatibility，且不改变既有实验语义，
+  否则必须创建独立 variant。更早 legacy gate 不属于 V1，legacy/ 实现继续逐字只读。
+  旧类名/import/checkpoint 保留；新 variant 必须 v1_/v2_ 前缀，新主线 Trainer 必含 V2。
+  包名 zonal_reliability_fusion 不改。Stage-1、evaluation、sampling 共用，不复制。
+  third_party/nnUNet 与 third_party/Prostate-Lesion-Segmentation 均只读；后者仅参考，
+  禁 editable install、PYTHONPATH、runtime import 或 Trainer 注册，不声称已复现。
+  Dataset608 与606隔离、沿用现有产物，不重生/覆盖。IN_SAMPLE/OOF/HELD_OUT/EXTERNAL
+  provenance、checkpoint/split/geometry 保留，IN_SAMPLE 不写成 OOF，硬 WG export 不替代soft诊断。
 - anatomy 相关操作的硬约束：anatomy model 不读 lesion GT；validation / test 的解剖先验必须来自
   该病例自身 MRI 的预测；**禁止**把 GT WG/PZ/TZ 作为 lesion model 的推理输入（GT 仅允许用于
   显式标记 `ORACLE_GT` 的上界分析）。split 泄漏由 `scripts/data/check_split_integrity.py`
@@ -82,22 +89,22 @@
 
 ## 6. 文档纪律
 
-- **治理文档八份**（2026-10-08 起）：`README.md`、`docs/Research_Plan.md`、`docs/Method.md`、
-  `docs/Experiment_Plan.md`、`docs/Evaluation_Protocol.md`、`docs/Training_Log.md`、
-  `docs/Findings.md`（横向汇总）、`docs/Development_Log.md`。各文件**单一职责**，禁止互相抄写：
+- **治理文档八份**（2026-10-08 起）：`README.md`、`docs/v2/Research_Plan.md`、`docs/v2/Method.md`、
+  `docs/v2/Experiment_Plan.md`、`docs/Evaluation_Protocol.md`、`docs/Training_Log.md`、
+  `docs/v2/Findings.md`（V2横向汇总）、`docs/Development_Log.md`。各文件**单一职责**，禁止互相抄写：
 
   | 文档 | 只记录什么 | 不记录什么 |
   |---|---|---|
   | `README.md` | 当前项目状态与快速入口（唯一主线、pipeline、状态表、命令、目录结构） | 旧研究线介绍（最多一段 + 链接 archive） |
-  | `docs/Research_Plan.md` | 研究问题、科学假设、方法机制、研究边界、预期贡献、限制、预先定义的报告指标分级 | 具体实验流程 / 数据划分 / 训练参数 / 运行命令 / 已发生的结果 |
-  | `docs/Method.md` | 方法机制与实现边界（含每个模块的 fail-closed 清单） | 结果、指标定义、实验矩阵 |
-  | `docs/Experiment_Plan.md` | 实验矩阵、预算、命令模板、stop rules 的运行判据 | 科学假设的论证、指标定义、已发生的结果 |
+  | `docs/v2/Research_Plan.md` | 研究问题、科学假设、方法机制、研究边界、预期贡献、限制、预先定义的报告指标分级 | 具体实验流程 / 数据划分 / 训练参数 / 运行命令 / 已发生的结果 |
+  | `docs/v2/Method.md` | 方法机制与实现边界（含每个模块的 fail-closed 清单） | 结果、指标定义、实验矩阵 |
+  | `docs/v2/Experiment_Plan.md` | 实验矩阵、预算、命令模板、stop rules 的运行判据 | 科学假设的论证、指标定义、已发生的结果 |
   | `docs/Evaluation_Protocol.md` | 指标定义、空值语义、匹配协议、统计口径、冻结常量（**唯一来源**） | 实验结果、方法论证 |
   | `docs/Training_Log.md` | 只记录**真实发生**的训练/验证（命令、时间、状态、结果、产物路径） | 协议叙述、跨 run 结论 |
-  | `docs/Findings.md` | 只记录**已有证据支持**的结论 + 证据边界（Preliminary Findings / Mainline Findings 分开） | 单实验详情、尚未验证的推断 |
+  | `docs/v2/Findings.md` | 只记录**已有证据支持**的结论 + 证据边界（Preliminary Findings / Mainline Findings 分开） | 单实验详情、尚未验证的推断 |
   | `docs/Development_Log.md` | 实质性代码/架构变更 | 训练事实 |
 
-- **实验详情文档**位于 `docs/experiments/`，**每个实验一份**，文件名即 variant 名
+- **实验详情文档**：历史V1位于 `docs/experiments/`（原路径冻结），新V2位于 `docs/v2/experiments/`，**每个实验一份**，文件名即 variant 名
   （如 `positive_sampling.md`、`lesion_roi.md`）。每份只记录该实验自身：标识、一次性配置、
   运行事实、训练动态、验证结果、产物、观察与限制、待办、后续记录模板。
   - 各实验文档**互相独立**：不写跨实验对比、不互相引用；要对比由读者自行并列阅读。
@@ -109,15 +116,20 @@
   兼容与历史复现。
 - 不再建立阶段门（G0/G1/G2/SAP/P2A/P2B 等）或步骤/runbook/readiness/gate 文档，也不为每个模型
   维护大 YAML；网络差异由 Trainer 类名与少量代码常量表达，结构参数继续来自 `nnUNetPlans.json`。
-- **Trainer 状态分层**：`nnunet/trainers.py` 的 `ACTIVE_TRAINERS` / `SUPPORTING_TRAINERS` / `LEGACY_TRAINERS` 是
-  Trainer 分层的唯一真源；训练入口默认只显示 ACTIVE，supporting条件需`--supporting`，归档条件需 `--legacy`。
+- **Trainer 状态分层**：`nnunet/trainers.py` 的 `ACTIVE_V2_TRAINERS`（= ACTIVE_TRAINERS） /
+  `FROZEN_V1_TRAINERS` / `SUPPORTING_TRAINERS` / `LEGACY_TRAINERS` 是唯一真源。
+  默认CLI只显示V2，历史V1需 `--v1` 或显式 `v1_`，supporting需 `--supporting`，legacy需 `--legacy`。
   `PROJECT_TRAINERS` 必须包含**全部历史类名**（输出目录由类名决定，缺一个即让历史产物失联）。
 - **单一状态真源**：variant 状态只在 `docs/Training_Log.md` 的「各 variant 状态」表维护；README 与
   Findings 引用它，不另立清单。
 - **新模块进入主模型的门槛**：必须能回答"是否减少漏检 / 是否改善覆盖 / 是否减少假阳"三者之一
-  （见 `docs/Research_Plan.md` §15 与 `docs/Experiment_Plan.md` §9 的 stop rules）。
+  （见 `docs/v2/Research_Plan.md` §15 与 `docs/v2/Experiment_Plan.md` §9 的 stop rules）。
 - **表述纪律**：CI 跨 0 **不得**被写成"无差异/等效"，也**不得**写成"证明无效"；单次运行不得声明
   run-to-run 方差；`ORACLE_GT` 结果不得作为正式性能；predicted anatomy 与 GT anatomy 不得混淆。
+- V1 文档冻结在 `docs/v1/`，旧顶层Research/Method/Experiment/Findings只作版本入口；
+  V1/V2 Findings分离，任何结果/运行条目显式注明VERSION=V1/V2或LEGACY。
+  V1 negative evidence 不得转写成V2结果；V2未训练时明确 NO V2 TRAINING RESULTS YET。
+  共享Evaluation_Protocol不复制；Architecture/Reproducibility仅结构与来源说明，不另建状态表。
 - 代码/架构变更记入 `docs/Development_Log.md`；训练与验证的运行事实记入 `docs/Training_Log.md`。
 
 ## 7. 文件创建权限

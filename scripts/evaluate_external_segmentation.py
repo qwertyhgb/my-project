@@ -7,6 +7,7 @@
   本入口读取 prepare 脚本生成的 ``external_input_manifest.json``（病例清单、原始参考标签路径、
   输入准备版本）与独立预测目录中的 ``<case_id>.nii.gz``。
 - 指标口径与内部评估器**完全一致**（通过 importlib 复用其纯函数，不复制实现、不改其 CLI 行为）：
+  主表新增全病例Dice_all（空空=1），独立字段/配对统计；原生/阳性Dice语义保留；
   阳性宏平均 Dice（完全漏分记 0）、median/micro Dice、体素召回、仅阳性 precision、
   含阴性假阳的 overall precision、完全漏分、阴性假阳病例数与假阳体积。
 - **只评估病灶分割**：不计算 AUROC / average precision / FROC / PI-CAI challenge score。
@@ -38,7 +39,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 DEFAULT_BOOTSTRAP_RESAMPLES = 10000
 DEFAULT_SEED = 20260923
 DIRECTION_ORTHONORMAL_TOL = 1e-5
@@ -378,6 +379,7 @@ def summarize_model(
             "case_ids_positive": [e["case_id"] for e in pos],
             "case_ids_negative": [e["case_id"] for e in neg],
         },
+        "all_case_segmentation": _INTERNAL.summarize_all_case_dice_empty1(by_id),
         "reader": reader,
         "reader_scope": (
             "full_queue"
@@ -465,6 +467,7 @@ def summarize_model(
                     "FN": e["FN"],
                     "TN": e["TN"],
                     "dice": e["dice"],
+                    "dice_empty1": _INTERNAL.dice_empty1_from_counts(e["TP"], e["FP"], e["FN"]),
                     "evaluation_alignment": e["alignment"]["evaluation_alignment"],
                 }
             )
@@ -559,6 +562,9 @@ def paired_comparison(
             "model_a": a_name,
             "model_b": b_name,
             "delta_definition": "model_b - model_a",
+            "all_case_dice_empty1": _INTERNAL.paired_all_case_dice_empty1(
+                a_cases, b_cases, bootstrap_resamples, seed
+            ),
             "mean_paired_dice_delta": float(np.mean(deltas)) if deltas else None,
             "median_paired_dice_delta": float(np.median(deltas)) if deltas else None,
             "paired_bootstrap_ci95": ci,
@@ -594,8 +600,25 @@ def print_table(reports: dict) -> None:
 
     print()
     print("=== Prostate158 外测病灶分割评估 ===")
+    paper_header = (
+        f"{'model':<22}{'Dice_all ↑':>12}{'Precision ↑':>14}{'Recall ↑':>12}"
+        f"{'HD95 (mm) ↓':>15}{'NSD ↑':>12}"
+    )
+    print(paper_header)
+    print("-" * len(paper_header))
+    for name, rep in reports.items():
+        print(
+            f"{name:<22}"
+            f"{fmt(rep['all_case_segmentation']['all_case_macro_dice_empty1']):>12}"
+            f"{fmt(rep['voxel_metrics']['positive_voxel_precision']):>14}"
+            f"{fmt(rep['voxel_metrics']['positive_voxel_recall']):>12}"
+            f"{'n/a':>15}{'n/a':>12}"
+        )
+    print("Dice_all：本队列/读者固定病例集合宏平均，空空=1；Precision/Recall仍为阳性体素汇总。")
+    print("外测入口未计算HD95/NSD，n/a不表示0；不宣称复现参考论文表格统计口径。")
+    print("诊断表（阳性Dice、病例数量、漏检与阴性假阳性）")
     header = (
-        f"{'model':<22}{'n':>5}{'pos':>5}{'neg':>5}{'macroD':>9}{'medD':>8}"
+        f"{'model':<22}{'n':>5}{'pos':>5}{'neg':>5}{'Dice_pos':>9}{'medD':>8}"
         f"{'microD':>9}{'recall':>8}{'posPrec':>9}{'allPrec':>9}{'missed':>8}{'negFP':>7}"
     )
     print(header)
@@ -740,12 +763,19 @@ def main(argv: list[str] | None = None) -> int:
             ci = cmp_["paired_bootstrap_ci95"]
             ci_txt = "n/a" if ci is None else f"[{ci[0]:+.4f}, {ci[1]:+.4f}]"
             print(
-                f"配对 {cmp_['model_a']} -> {cmp_['model_b']}: "
+                f"阳性Dice配对 {cmp_['model_a']} -> {cmp_['model_b']}: "
                 f"meanDelta={cmp_['mean_paired_dice_delta']:.4f} CI95={ci_txt} "
                 f"improved/tied/worsened={cmp_['improved_cases']}/{cmp_['tied_cases']}/"
                 f"{cmp_['worsened_cases']} newOverlap={cmp_['new_overlap_cases']} "
                 f"lostOverlap={cmp_['lost_overlap_cases']} negFPCaseDelta="
                 f"{cmp_['negative_fp_case_delta']:+d}"
+            )
+            all_pair = cmp_["all_case_dice_empty1"]
+            all_ci = all_pair["paired_bootstrap_ci95"]
+            all_ci_txt = "n/a" if all_ci is None else f"[{all_ci[0]:+.4f}, {all_ci[1]:+.4f}]"
+            print(
+                f"  Dice_all（全部{all_pair['n_cases']}例，空空=1）: "
+                f"meanDelta={all_pair['mean_paired_delta']:.4f} CI95={all_ci_txt}"
             )
         print("\n=== 外测评估结束汇总 ===")
         print("  status  : completed")

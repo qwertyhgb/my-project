@@ -1,232 +1,156 @@
-# Anatomy-Guided Lesion-Aware Multimodal Coarse-to-Fine Fusion for Prostate Cancer Segmentation
+# V2 — Anatomy-Guided Lesion-Aware Coarse-to-Fine Multimodal Prostate Cancer Segmentation
 
-**工作标题；方法与实验验证后再确定最终名称。**
+**ACTIVE MAINLINE: VERSION=V2**。工作标题，不提前冻结 acronym。
+研究预测 WG/PZ/TZ 是否能指导 T2W/ADC/HBV 的层次化融合，
+减少漏检、改善覆盖，同时控制假阳性。当前先完成融合问题的四组核心对照；
+粗病灶监督与局部细化保留为候选扩展，暂不排期。
 
-本项目研究：预测前列腺解剖与粗病灶定位能否共同指导 T2W/ADC/HBV 的局部特征融合，
-减少小型/困难病灶完全漏检、改善病灶覆盖，同时控制假阳性。
+V1 — Shallow Anatomy/Lesion-Conditioned Fusion 已冻结，见 [docs/v1](docs/v1/README.md)。
+更早 gate 实验为 [LEGACY](docs/archive/README.md)，与 V1 分开保留。
+包名 `zonal_reliability_fusion` 和全部历史 Trainer/import/checkpoint 身份不变。
 
-## Research and Pipeline
+## V2 pipeline and documentation
 
 ```text
-T2W → frozen Stage-1 anatomy model → soft WG/PZ/TZ → anatomy context A
-T2W/ADC/HBV → three shallow stems → neutral projection F0
-F0 → coarse lesionness L
-shallow features + L (+ A) → local softmax fusion → zero-init residual delta
-F0 + delta → native PlainConvUNet → fine lesion segmentation
+T2W / ADC / HBV -> three full native modality encoders -> hierarchical MRI features
+predicted soft WG/PZ/TZ -> anatomy pyramid -> selected deep adaptive fusion policy
+all-scale concat / conv / norm / activation -> fused skips -> native shared decoder -> base lesion prediction
+fused bottleneck -> coarse lesion evidence -> soft local candidate
+local MRI features + anatomy + base + candidate -> zero-init residual refiner -> final logits
 ```
 
-三个 failure modes 保持不变。融合服务于病灶定位与分割，不恢复独立的通道加权研究。
+上图为完整候选框架；当前核心研究只启用融合与native shared decoder部分。
+Anatomy tells HOW to fuse；lesion evidence tells WHERE to refine。
+V2复用共享early-fusion强基线，逐组验证concat卷积融合、image-adaptive调节、anatomy-conditioned调节。
+当前命令为`v2_concat_fusion / v2_concat_adaptive_fusion / v2_concat_anatomy_fusion`；
+三者共享所有尺度的concat卷积投影，旧均值变体保留原义但不排期。机制只见V2 Method。
+**尚无已完成的V2正式性能结果**；实际运行进展只见Training Log，合成检查不证明分割性能。
+variant 当前状态唯一来源：[Training Log「各 variant 状态」](docs/Training_Log.md#各-variant-状态)。
 
-| 文档 | 职责 |
+| 文档 | 单一职责 |
 |---|---|
-| [Research Plan](docs/Research_Plan.md) | 科学问题、假设、边界、待验证贡献 |
-| [Method](docs/Method.md) | 数据流、实现、安全契约与限制 |
-| [Experiment Plan](docs/Experiment_Plan.md) | 单变量实验树、预算、stop rules |
-| [Evaluation Protocol](docs/Evaluation_Protocol.md) | 指标定义与统计唯一来源 |
-| [Training Log](docs/Training_Log.md) | 真实运行与唯一 variant 状态表 |
-| [Findings](docs/Findings.md) | 有证据支持的结论与边界 |
-| [Development Log](docs/Development_Log.md) | 代码/架构变更与实际检查 |
+| [V2 Research Plan](docs/v2/Research_Plan.md) | RQ、假设、候选贡献、科学边界 |
+| [V2 Method](docs/v2/Method.md) | 实现、fail-closed契约、schedule |
+| [V2 Experiment Plan](docs/v2/Experiment_Plan.md) | 控制矩阵、预算、用户运行命令、stop rules |
+| [V2 Architecture](docs/v2/Architecture.md) | 图、tensor shapes、V1/V2与作者参考差异 |
+| [V2 Reproducibility](docs/v2/Reproducibility.md) | 来源、checkpoint、环境与复现边界 |
+| [Shared Evaluation Protocol](docs/Evaluation_Protocol.md) | 指标定义/空值/匹配/统计唯一来源 |
+| [Shared Training Log](docs/Training_Log.md) | 真实运行事实与唯一状态表，版本显式 |
+| [Versioned Findings](docs/Findings.md) | V1/V2证据入口，避免结果混淆 |
+| [Development Log](docs/Development_Log.md) | 代码/架构变更与实际工程检查 |
 
-主实验树：A strong baseline → B neutral fusion → C lesion-conditioned fusion →
-D anatomy+lesion-conditioned fusion → E optional hard-negative strategy。
-A1/A2 比较 FLCE 与原生 DiceCE，后续使用胜出 loss 家族；判据顺序、failure-mode 层级与
-tie-break 原则已**先于任何结果冻结**在 Experiment Plan §2.1。ROI 为 supporting ablation。
-A1/A2 都包含项目阳性病例采样，不能称为原生采样对照。`native_dicece` 提供原生 DiceCE
-与原生采样参考（同样保留 NoFFT 工程修补）；运行状态见 Training_Log，控制设计见 Experiment Plan §2。
-新融合骨架尚无训练效果证据；详细实现/构造/训练/validation 状态只在 Training_Log 维护。
-
-## Stage-1 Diagnosis
-
-2026-10-08 对既有 223 例验证输出做独立 soft-head 只读诊断。
-**硬导出低 WG Dice 不能证明 soft WG 失败**；真实结果与完整口径见
-[Stage-1 实验文档](docs/experiments/anatomy_joint_100ep.md)。当前没有据此重训 Stage 1。
-region 硬导出按顺序覆盖重叠区域，不能把它当位编码 head reconstruction。
-
-## Data and Prior Sources
-
-| 数据集 | 角色 |
-|---|---|
-| Dataset605_PICAI | 3 MRI，1500 studies，train 1277 / val 223；baseline、B/C |
-| Dataset606_PICAI_Zonal | 历史自动 zonal membership 通道；保留，不作为新 D 的 Stage-1 soft prior |
-| Dataset607_PICAI_Anatomy | 单 T2W，1499 studies，train 1276 / val 223；算法解剖伪监督；显式排除已知缺失 WG 病例 |
-| Dataset608_PICAI_PredictedAnatomy | 新 D 的独立 6 通道输入契约；**尚未真实物化或预处理** |
-| Prostate158 | architecture 冻结后的 distribution-shift stress test |
-
-正式 lesion 输入只允许 predicted anatomy；GT anatomy 仅显式 ORACLE_GT 上界分析。
-先验记录 IN_SAMPLE_PRED/OOF_PRED/HELD_OUT_PRED/EXTERNAL_PRED 与 checkpoint、split、geometry。
-当前未生成完整训练集先验，未实现 OOF 模型训练；不能把 metadata 支持写成 OOF 已完成。
-
-## Environment and Safety
-
-工作目录 `/opt/data/private/lm/my-projects`，只用 conda **lm**，nnU-Net 固定 v2.6.2，第三方源码只读。
-所有下列命令先执行：
+## Environment and safety
 
 ```bash
 cd /opt/data/private/lm/my-projects
 source /root/anaconda3/etc/profile.d/conda.sh
 conda activate lm
 source scripts/env_nnunet.sh
-export PYTHONPATH="$PWD/src:$PYTHONPATH"
+export PYTHONDONTWRITEBYTECODE=1
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 ```
 
-长任务由研究者本人运行，一次一条；不自动训练、推理、物化或预处理。
-已有 data/workdir/outputs、checkpoint、validation、reports 不删除、不覆盖。
-新建路径也必须经当前任务明确授权。完整规则见 [AGENTS.md](AGENTS.md)。
+只用 conda lm / official nnUNet v2.6.2源码；third_party只读。
+现有DNA=0.3.1与上游声明范围冲突，本轮未改依赖，验证限PlainConvUNet路径（Method §9）。
+training/validation/inference/preprocessing/materialization/evaluation 长任务由用户运行，代理不启动。
+原始医学数据只读，data/workdir/outputs/checkpoint 不删除不覆盖，规则见 [AGENTS](AGENTS.md)。
 
-## Commands: Read-only Diagnosis and Tests
+## Data and prior inputs
 
-soft anatomy 全验证集只读诊断（约数分钟；逐例 tqdm；结果 stdout，不改产物）：
+Dataset605：三MRI lesion；Dataset606：历史zonal输入，保留；Dataset607：共享单T2W Stage-1；
+Dataset608：既有六通道 predicted anatomy lesion 输入，已物化/预处理及equivalence audit通过，
+本轮复用，不重生。具体证据与实际状态以 Training Log 为准；不维护第二份 variant 清单。
+Prostate158 只在架构冻结后做外部 stress test。
 
-```bash
-python -B -m zonal_reliability_fusion.anatomy.validation \
-  outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres/fold_0/validation
-```
+正式 lesion anatomy 输入只允许患者自身 MRI 的 predicted soft WG/PZ/TZ。
+保留 IN_SAMPLE_PRED / OOF_PRED / HELD_OUT_PRED / EXTERNAL_PRED、checkpoint、split与geometry；
+GT anatomy只用于明确ORACLE_GT上界，不能作为正式推理输入。
+Stage-1不读lesion GT；hard WG export与soft head质量必须分开解释。
 
-成功判据：223 success、0 failed/skip；报告独立 heads 与硬导出重建差异。它是诊断，不做阈值选型。
-
-纯合成测试（真实 Trainer 构造输出只在 pytest 临时目录，不读真实影像）：
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-  python -B -m pytest -p no:cacheprovider
-python -m ruff check --no-cache src scripts tests
-```
-
-真实 plans smoke 使用较小的合法 synthetic patch，不表示 full-size patch 显存或真实 dataloader 已验证。
-
-## Commands: Training Templates (User-run Only)
+## Read-only help and synthetic checks
 
 ```bash
 python scripts/train/train_nnunet.py --help
+python scripts/train/train_nnunet.py --help --v1
 python scripts/train/train_nnunet.py --help --supporting
 python scripts/train/train_nnunet.py --help --legacy
+python -B -m pytest -p no:cacheprovider
+python -m ruff check --no-cache src scripts tests
 ```
 
-A1 matched-seed 独立运行模板（保留历史 A1；默认 full 1000ep，**本轮未运行**）：
+默认只显示 `v2_` 条件；旧V1命令增加 `--v1` 或明确 `v1_` 前缀，历史Trainer类名/输出不改。
+V2正式入口要求 `--seed --seeded-output --run-config`，配置含 research_version/architecture/fusion/
+anatomy/coarse/refiner/phase；已有路径拒绝覆盖。
 
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  positive_sampling 605 3d_fullres 0 --seed 20261008 --seeded-output \
-  --run-config outputs/run_configs/A1_positive_sampling_fold0_seed20261008.json
-```
+当前研究收敛为预测解剖先验对多模态融合的作用，四组核心对照逐组推进；粗监督、细化和阶段训练暂不排期。
+early-fusion对照复用已完成的V1 A2（同方法配置，保留旧版本来源与路径），不为V2类名重复训练。
+下一步由用户运行V2-B资源检查，检查后再进行三encoder与后续matched-budget对照。
+完整可复制命令、预期输出、进度与成功判据见
+[Experiment Plan §4–5](docs/v2/Experiment_Plan.md)。
+全尺寸显存未通过前不直接启动三encoder长训练。
+预测仍经 `scripts/inference/predict_nnunet.py` 的原生滑窗与项目resolver；
+评价仍经既有脚本和共享 Evaluation_Protocol，不移植参考fork的评价或后处理。
+评价主表为 `Dice_all / Precision / Recall / HD95 / NSD`：Dice_all纳入全部固定病例、空空=1；
+其余四列仍为阳性病例口径，诊断表保留Dice_pos、漏检与阴性假阳。
+独立新字段/配对统计及历史兼容说明见 [Evaluation Protocol](docs/Evaluation_Protocol.md)。
+新增字段不回写既有报告，也不宣称已确认参考论文Table I的统计口径。
 
-A2 必须另一次运行，使用相同 seed/settings：
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  dicece_positive_sampling 605 3d_fullres 0 --seed 20261008 --seeded-output \
-  --run-config outputs/run_configs/A2_dicece_positive_sampling_fold0_seed20261008.json
-```
-
-输出由实际 Trainer 类名自然分离，例如 `...PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/`。
-run-config 已存在拒绝覆盖，已有模型目录拒绝从头重训；`--continue-training` 只用于未完成运行。
-终端显示原生 epoch 进度；成功需 epoch 1000、final checkpoint 与 validation summary。
-
-B/C/D variant 与 loss 家族映射见 Experiment_Plan。正式比较须先完成 baseline 选型。
-短预算（100 epoch）筛选臂是**独立 Trainer 类 + 独立输出目录**，只用于 sanity 与同预算方向筛选，
-不与历史 1000 epoch 结果比较优劣（边界与实现约束见 Experiment Plan §7）：
-
-```bash
-nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 python scripts/train/train_nnunet.py \
-  neutral_fusion_flce_100ep 605 3d_fullres 0 --seed 20261008 --seeded-output
-```
-
-筛选必须同时跑**同预算 baseline 臂**（按选型使用 `positive_sampling_100ep` 或
-`dicece_positive_sampling_100ep`）作为参照；只跑 B/C/D 短臂没有公平参照。
-`--seeded-output` 同样适用于 active fusion 类与短预算类；不要只改 run-config 文件名后覆盖模型目录。
-E 在 best(C,D) 冻结后单独建立；旧 supporting E 不能充当新 E。
-
-## Commands: Independent Predicted-Prior Dataset (Not Run)
-
-先验须覆盖完整 lesion split，包括已知 Stage-1 监督排除病例；验证只能来自 held-out 预测。
-**以下模板不是当前下一步实验；完整先验尚未生成。**
-
-1. 只在全新 Dataset608 路径物化，不改 Dataset605/606：
-
-```bash
-python -m zonal_reliability_fusion.anatomy.dataset \
-  --source-raw workdir/nnUNet_raw/Dataset605_PICAI \
-  --prior-dir <冻结Stage1对全部病例的soft导出目录> \
-  --model-folder outputs/nnUNet_results/Dataset607_PICAI_Anatomy/nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT__nnUNetPlans__3d_fullres \
-  --output-raw workdir/nnUNet_raw/Dataset608_PICAI_PredictedAnatomy \
-  --split-file workdir/nnUNet_preprocessed/Dataset605_PICAI/splits_final.json
-```
-
-2. 准备独立 frozen plans（保留 605 architecture/patch/batch/spacing）：
-
-```bash
-python -m zonal_reliability_fusion.nnunet.prior_preprocessor prepare \
-  --source-preprocessed workdir/nnUNet_preprocessed/Dataset605_PICAI \
-  --predicted-raw workdir/nnUNet_raw/Dataset608_PICAI_PredictedAnatomy \
-  --target-preprocessed workdir/nnUNet_preprocessed/Dataset608_PICAI_PredictedAnatomy
-```
-
-3. 用户运行原生预处理包装（逐例进度；目标目录已有即拒绝）：
-
-```bash
-python -m zonal_reliability_fusion.nnunet.prior_preprocessor preprocess --processes 2
-```
-
-成功需完整病例数、零失败/跳过，独立 raw/preprocessed 路径、完整 provenance 与 split。
-MRI 继续走原生 preprocessing；prior 按相同几何链线性插值，不改变 MRI crop。
-失败保留 INCOMPLETE 目录，不能将部分病例结果作为完成；不提供自动删除/覆盖。
-
-4. 真实一致性审计（**C vs D 单变量解释的前置条件**；只读、fail-closed）：
-
-```bash
-python scripts/data/audit_dataset605_608_equivalence.py \
-  --output outputs/reports/dataset605_608_equivalence_audit.json
-```
-
-判据：退出码 0、`status=DATASET605_608_EQUIVALENCE_PASS`、`n_cases_mri_mismatch=0`、
-`n_cases_label_mismatch=0`、`case_set_equal` / `split_equal` / `metadata_ok` 为 true、
-`prior_contract_status=VALID`；仅有 raw 层通过（`RAW_ONLY_PASS`）不足以支撑该解释。
-差异（含 `max |delta|`、affected voxels 与逐例来源）如实写入报告，不默认为相同。
-它只回答 MRI/lesion/split 是否保持不变，**不**评价解剖先验质量（后者见 Stage-1 诊断）。
-**本工具尚未在真实 Dataset608 上运行**（608 未物化/未预处理）。
-
-## Evaluation and Prediction
-
-分割评价不改原协议，primary 为 positive-case macro Dice，漏检纳入分母；
-lesion sensitivity 与 matched-lesion Dice 同时报告，必须报告 FP 代价。
-具体定义见 Evaluation_Protocol。
-
-```bash
-python scripts/evaluate_segmentation.py \
-  --model A1=<完成validation的fold_0目录> \
-  --model A2=<完成validation的fold_0目录> \
-  --mode summary --output <全新报告JSON路径>
-```
-
-full 模式读取真实 NIfTI，是长任务：额外使用 `--mode full`、显式 `--nsd-tolerance-mm` 与
-`--volume-thresholds-mm3`；事先冻结参数，不事后挑阈值。不重采样或后处理预测。
-
-预测继续使用 `scripts/inference/predict_nnunet.py` 原生滑窗入口。
-Stage-1 必须 `--save_probabilities`。D 使用六通道同网格输入与项目 preprocessor；
-不声称现有 patch-weight hook 能输出全体积权重。
-
-## Repository Structure
+## Repository structure
 
 ```text
 src/zonal_reliability_fusion/
-  anatomy/       contracts, soft-head diagnosis, predicted dataset provenance/materializer
-  multimodal/    new independent neutral/conditioned fusion, patch weights, parameter counts
-  lesion/        frozen lesionness targets, supporting ROI/logits-refinement assets
-  sampling/      positive sampling and supporting hard negatives
-  evaluation/    frozen segmentation metrics
-  nnunet/        native Trainer integration, prior preprocessing wrapper, registry
-  legacy/        unchanged historical implementations
-scripts/train/train_nnunet.py    only training entry（含 100ep 短预算筛选变体）
-scripts/inference/predict_nnunet.py   native prediction entry + project resolvers
-scripts/data/                  只读审计（含 audit_dataset605_608_equivalence.py）与物化入口
-tests/unit/                     synthetic tests and true native constructor checks
-third_party/nnUNet/              fixed v2.6.2, read-only
-third_party/Prostate-Lesion-Segmentation/   Align then Refine作者源码，read-only reference
+  v1/                     explicit frozen namespace; implementation identity retained
+  multimodal/             frozen V1 shallow implementation at historical import path
+  lesion/                 V1 supporting assets / shared prior channel contract
+  v2/
+    encoders/             compose three plans-native encoders
+    fusion/               concat卷积投影 / soft policy；保留mean控制
+    anatomy/              predicted context pyramid
+    lesion/               bottleneck evidence / local zero-init refiner
+    models/               native-decoder composition
+    losses/               coarse Dice+BCE wrapper
+    utils/                tensor contracts / optional synthetic resource helper
+  nnunet/v2/              independent V2 Trainers / phase hooks
+  nnunet/                 registry, native bases, preprocessing/runtime/compatibility
+  anatomy/ evaluation/ sampling/   shared infrastructure
+  legacy/                 unchanged historical gate implementations
+docs/v1/                  frozen V1 plans/method/findings; experiment original paths retained
+docs/v2/                  active V2 plans/method/architecture/reproducibility/findings
+docs/experiments/         frozen per-run V1 / shared Stage-1 historical details
+docs/archive/             earlier LEGACY material, read-only
+scripts/train/train_nnunet.py     sole version-aware training entry
+scripts/inference/ scripts/data/  common native prediction / prior pipeline / audits
+tests/unit/v2/            pure synthetic V2 tests; existing compatibility tests retained
+third_party/nnUNet/       official runtime v2.6.2, read-only
+third_party/Prostate-Lesion-Segmentation/  Align then Refine, read-only reference
 ```
 
-第三方来源、commit、许可证与环境隔离说明见[third_party/README.md](third_party/README.md)。
-新增参考源码供机制阅读，尚未接入主模型；第三方源码由独立checkout管理，主仓库只跟踪来源说明。
+参考设计阅读范围和差异见 V2 Architecture §12；论文与源码仅提供机制参考，
+未复现作者实验，也不把论文指标作为本项目baseline。
+[third_party/README](third_party/README.md)保留原有只读provenance；主repo只跟踪该说明，第三方源码不vendoring。
 
-包名保留 `zonal_reliability_fusion` 以兼容历史产物。
-旧路线只读归档：[archive](docs/archive/README.md)。旧输入级重加权在已测试运行中未显示一致增益，
-不等于 gate 被证明无效；新条件化融合必须通过自身受控实验验证。
+
+## Output isolation
+
+V2新产物统一写入 `outputs/v2/`，历史V1/LEGACY与共享Stage-1路径不迁移，不改变provenance。
+
+```text
+outputs/
+  v2/
+    nnUNet_results/     V2训练checkpoint、validation与原生日志
+    run_configs/        V2_运行配置
+    predictions/        V2独立预测，每次全新run目录
+    metrics/ reports/   V2评价与分析报告
+    logs/ diagnostics/ figures/ external/ ablations/ inference_inputs/
+  nnUNet_results/       既有V1/LEGACY；Dataset607为共享Stage-1
+  predictions/          既有V1预测；D_stage1_final_soft_*为共享先验
+  reports/              既有历史报告与共享608/解剖审计
+  run_configs/ metrics/ diagnostics/ logs/ checkpoints/   历史产物保留
+```
+
+训练入口在构造V2 Trainer之前切换原生results globals至 `outputs/v2/nnUNet_results`，
+不改变raw/preprocessed路径；V1/LEGACY入口沿用原路径。V2 run-config必须位于
+`outputs/v2/run_configs/`。V2预测入口拒绝写入历史区及既有预测目录；
+包含V2模型的评价必须显式版本标签，落盘只允许 `outputs/v2/metrics/` 或 `reports/`。
+路径检查拒绝 `..` 与symlink越界，历史文件名前缀不会被误认为V2输出授权。
+`outputs/v2/`整体gitignore；新运行产物由用户执行命令生成，状态只见Training Log。

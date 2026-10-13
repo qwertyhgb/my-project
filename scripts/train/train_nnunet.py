@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
-"""统一训练入口：variant -> 项目 Trainer -> 原生 nnU-Net run_training。
+"""Versioned training entry. V2 active; V1 frozen; legacy historical.
 
-默认 ACTIVE：A1/A2 strong baseline、B neutral stems、C lesion-conditioned fusion、
-D predicted-anatomy + lesion-conditioned fusion、Stage-1 anatomy generator。
-每个 B/C/D 都有 FLCE 与 DiceCE 两套类，基线损失选择后固定一套。
-同一 A/B/C/D 另有 100 epoch 短预算筛选臂（``*_100ep`` 变体，独立类名/输出目录）：
-只用于启动期 sanity 与**同预算**方向筛选，不与 1000 epoch 正式臂比较优劣。
---supporting 显示旧 ROI/refinement/HN 扩展，--legacy 显示只读归档条件。
---seeded-output --seed X 使用独立 Trainer 类名/输出路径，保留历史 checkpoint。
-不重实现训练循环、optimizer、scheduler、验证或滑窗推理。
-
-长任务由研究者本人运行。命令和限制见 README.md / docs/Experiment_Plan.md。
+Only native nnU-Net run_training is invoked. All long tasks are user-run.
 """
-
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
-#: ACTIVE（研究主线）：默认 `--help` 只显示这些。
+#: FROZEN V1 historical aliases; displayed only with --v1.
 #: 前 9 项是 1000 epoch 正式臂；``*_100ep`` 是同一 A/B/C/D 的 100 epoch 方向筛选臂，
 #: 独立类名 → 独立输出目录，只做 sanity 与方向筛选，不与历史 1000 epoch 结果比较优劣。
-ACTIVE_VARIANTS = {
+FROZEN_V1_VARIANTS = {
     "native_dicece": "nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT",
     "anatomy_joint_100ep": "nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT",
     "positive_sampling": "nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT",
@@ -89,7 +79,21 @@ SUPPORTING_VARIANTS = {
     "lesion_hard_negative": "nnUNetTrainerPICAI_LesionHardNegative_NoFFT",
 }
 
-VARIANT_TO_TRAINER = {**ACTIVE_VARIANTS, **SUPPORTING_VARIANTS, **LEGACY_VARIANTS}
+ACTIVE_VARIANTS = {
+    "v2_early_fusion": "nnUNetTrainerPICAI_V2_EarlyFusion_DiceCE_NoFFT",
+    "v2_multi_encoder_simple": "nnUNetTrainerPICAI_V2_MultiEncoder_DiceCE_NoFFT",
+    "v2_adaptive_fusion": "nnUNetTrainerPICAI_V2_AdaptiveFusion_DiceCE_NoFFT",
+    "v2_anatomy_fusion": "nnUNetTrainerPICAI_V2_AnatomyFusion_DiceCE_NoFFT",
+    "v2_coarse": "nnUNetTrainerPICAI_V2_Coarse_DiceCE_NoFFT",
+    "v2_refine": "nnUNetTrainerPICAI_V2_Refine_DiceCE_NoFFT",
+    "v2_full_sched": "nnUNetTrainerPICAI_V2_FullScheduled_DiceCE_NoFFT",
+    "v2_concat_fusion": "nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT",
+    "v2_concat_adaptive_fusion": "nnUNetTrainerPICAI_V2_ConcatAdaptiveFusion_DiceCE_NoFFT",
+    "v2_concat_anatomy_fusion": "nnUNetTrainerPICAI_V2_ConcatAnatomyFusion_DiceCE_NoFFT",
+}
+V1_EXPLICIT_VARIANTS = {f"v1_{k}": v for k, v in {**FROZEN_V1_VARIANTS, **SUPPORTING_VARIANTS}.items()}
+VARIANT_TO_TRAINER = {**ACTIVE_VARIANTS, **FROZEN_V1_VARIANTS, **V1_EXPLICIT_VARIANTS,
+                      **SUPPORTING_VARIANTS, **LEGACY_VARIANTS}
 
 #: nnU-Net 原生正式预算（Trainer 不声明短预算时使用）
 DEFAULT_EPOCH_LIMIT = 1000
@@ -209,41 +213,22 @@ def guard_anatomy_checkpoint(
         raise SystemExit(f"不可用 checkpoint {checkpoint}: {exc}") from exc
 
 
-def build_parser(include_legacy: bool = False, include_supporting: bool = False) -> argparse.ArgumentParser:
-    variants = {**ACTIVE_VARIANTS, **(SUPPORTING_VARIANTS if include_supporting else {}),
+def build_parser(include_legacy: bool = False, include_supporting: bool = False,
+                 include_v1: bool = False) -> argparse.ArgumentParser:
+    variants = {**ACTIVE_VARIANTS,
+                **(FROZEN_V1_VARIANTS if include_v1 else {}),
+                **(V1_EXPLICIT_VARIANTS if include_v1 else {}),
+                **(SUPPORTING_VARIANTS if include_supporting else {}),
                 **(LEGACY_VARIANTS if include_legacy else {})}
     parser = argparse.ArgumentParser(
-        description=(
-            "统一 nnU-Net-first 训练入口（新主线：Anatomy-Guided Lesion-Aware "
-            "Coarse-to-Fine）。仅把 variant 映射到 Trainer 类并调用 nnU-Net 官方 "
-            "run_training；输出目录由 Trainer 类名自动隔离，绝不复用/覆盖任何既有目录。"
-            "当前视图：ACTIVE"
-            + (" + SUPPORTING" if include_supporting else "")
-            + (" + LEGACY" if include_legacy else "")
-        ),
-        epilog=(
-            "变体分层：ACTIVE = "
-            + ", ".join(sorted(ACTIVE_VARIANTS))
-            + ("；SUPPORTING = " + ", ".join(sorted(SUPPORTING_VARIANTS)) if include_supporting else "")
-            + ("；LEGACY = " + ", ".join(sorted(LEGACY_VARIANTS)) if include_legacy else "")
-            + "。ACTIVE 的 *_100ep 变体是 100 epoch 方向筛选臂（独立类名/输出目录），"
-            "只做 sanity 与同预算互比，不与历史 1000 epoch 结果比较优劣。"
-        ),
+        description="VERSION=V2 ACTIVE MAINLINE: native multi-encoder anatomy-guided coarse-to-fine. "
+                    "--v1 exposes frozen V1 aliases; --supporting exposes frozen V1 ablations; "
+                    "--legacy exposes historical gate experiments.",
+        epilog="All outputs remain isolated by Trainer class name. Long tasks are user-run only.",
     )
-    parser.add_argument(
-        "variant",
-        choices=sorted(variants),
-        help=(
-            "[ACTIVE] positive_sampling / dicece_positive_sampling = strong baseline A1 / A2"
-            "（唯一差异是损失）；neutral_fusion_* = B；lesion_fusion_* = C；"
-            "anatomy_lesion_fusion_* = D (Dataset608, predicted soft anatomy)；"
-            "带 _100ep 后缀的同名条件是 100 epoch 方向筛选臂（不与 1000 epoch 正式臂混用）；"
-            "ROI/logits-refinement variants are supporting ablations；"
-            "new E remains planned until best(C,D) is selected；"
-            "anatomy_joint_100ep = Stage 1 解剖先验生成器。"
-            + (" [LEGACY] 其余为归档的旧门控 / 融合条件。" if include_legacy else "")
-        ),
-    )
+    parser.add_argument("variant", choices=sorted(variants),
+                        help="Explicit versioned V2 variants; historical names need a version flag")
+    parser.add_argument("--v1", action="store_true", help="Expose frozen V1 variants / old command aliases")
     parser.add_argument("dataset", help="数据集 ID 或名称，例如 605 / 607 / 608")
     parser.add_argument("configuration", help="nnU-Net 配置，例如 3d_fullres")
     parser.add_argument("fold", help="fold 编号（0-4）或 'all'")
@@ -286,12 +271,12 @@ def build_parser(include_legacy: bool = False, include_supporting: bool = False)
     parser.add_argument(
         "--roi-set",
         default=None,
-        help="Anatomy-Guided ROI 集合 JSON（仅 supporting ROI/refinement 条件；新 B/C/D 不使用）",
+        help="Anatomy-Guided ROI 集合 JSON（仅冻结 V1 supporting ROI/refinement 条件；V2 不使用）",
     )
     parser.add_argument(
         "--hard-negative-set",
         default=None,
-        help="困难负样本集合 JSON（仅历史 supporting HN 条件；新 E 尚未绑定）",
+        help="困难负样本集合 JSON（仅冻结 V1 supporting HN 条件；V2 不使用）",
     )
     parser.add_argument(
         "--run-config",
@@ -322,6 +307,50 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
     ``fusion_constants``/``epochs`` 全部**从代码读取**，不在此手写第二份常量：常量一旦
     与实现漂移，run_config 就会变成误导性的 provenance。
     """
+    if getattr(trainer_class, "research_version", None) == "V2":
+        from zonal_reliability_fusion.nnunet.runtime import v2_output_root
+        from zonal_reliability_fusion.nnunet.seeds import describe_seed_limitations
+        from zonal_reliability_fusion.v2.fusion.simple_fusion import (
+            CONCAT_KERNEL_SIZE,
+            POLICY_FEATURE_SCALE,
+        )
+        from zonal_reliability_fusion.v2.losses.coarse_loss import COARSE_LOSS_WEIGHT
+
+        configuration = plans["configurations"][args.configuration]
+        return {
+            "research_version": "V2", "architecture_family": trainer_class.architecture_family,
+            "variant": args.variant, "trainer": trainer_class.__name__,
+            "fusion_type": trainer_class.fusion_type,
+            "concat_fusion": getattr(trainer_class, "concat_fusion", False),
+            "fusion_projection_kernel": (list(CONCAT_KERNEL_SIZE)
+                                         if getattr(trainer_class, "concat_fusion", False) else None),
+            "fusion_projection_scales": (list(range(configuration["architecture"]["arch_kwargs"]["n_stages"]))
+                                         if getattr(trainer_class, "concat_fusion", False) else []),
+            "policy_feature_scale": (POLICY_FEATURE_SCALE
+                                     if trainer_class.fusion_type in ("concat_adaptive", "concat_anatomy") else None),
+            "policy_zero_initialized": trainer_class.fusion_type in ("concat_adaptive", "concat_anatomy"),
+            "anatomy_conditioned": trainer_class.anatomy_conditioned,
+            "coarse_head": trainer_class.coarse_head, "refiner": trainer_class.refiner,
+            "training_phase": (trainer_class.phase_for_epoch(0)
+                               if hasattr(trainer_class, "phase_for_epoch") else "V2-EARLY"),
+            "phase_scheduled": trainer_class.phase_scheduled,
+            "phase_schedule": (list(trainer_class.phase_boundaries) if trainer_class.phase_scheduled else None),
+            "coarse_loss_weight": COARSE_LOSS_WEIGHT if trainer_class.coarse_head else 0,
+            "dataset": plans["dataset_name"], "configuration": args.configuration, "fold": args.fold,
+            "seed": args.seed, "seed_note": describe_seed_limitations(),
+            "epochs": expected_epoch_limit(trainer_class),
+            "results_root": str(v2_output_root("nnUNet_results")),
+            "architecture": configuration["architecture"],
+            "selected_fusion_scales": (list(range(max(1, configuration["architecture"]["arch_kwargs"]["n_stages"] - 3),
+                                                    configuration["architecture"]["arch_kwargs"]["n_stages"]))
+                                       if trainer_class.fusion_type in ("adaptive", "anatomy", "concat_adaptive", "concat_anatomy") else []),
+            "patch_size": configuration["patch_size"], "batch_size": configuration["batch_size"],
+            "spacing": configuration["spacing"], "input_channels": dataset_json["channel_names"],
+            "loss": "native DiceCE + native deep supervision; coarse Dice+BCE only when enabled",
+            "sampling": "project positive-case sampling; validation native",
+            "optimizer": "native SGD / PolyLR; no freeze or LR groups in first version",
+            "anatomy_contract": dataset_json.get("predicted_anatomy_contract"),
+        }
     from zonal_reliability_fusion.multimodal.conditioned_fusion import (
         SOFTMAX_TEMPERATURE,
         STEM_CHANNELS,
@@ -339,6 +368,7 @@ def build_run_config(args, trainer_class, plans: dict, dataset_json: dict) -> di
             "sampling_probability": trainer_class.roi_sampling_probability,
         }
     return {
+        "research_version": "LEGACY" if args.variant in LEGACY_VARIANTS else "V1",
         "dataset": plans.get("dataset_name"),
         "configuration": args.configuration,
         "fold": args.fold,
@@ -431,8 +461,33 @@ def main(argv=None) -> None:
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--legacy", action="store_true")
     pre.add_argument("--supporting", action="store_true")
+    pre.add_argument("--v1", action="store_true")
     known, _rest = pre.parse_known_args(argv)
-    args = build_parser(include_legacy=known.legacy, include_supporting=known.supporting).parse_args(argv)
+    import sys
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    explicit_v1 = any(arg in V1_EXPLICIT_VARIANTS for arg in arguments)
+    args = build_parser(include_legacy=known.legacy, include_supporting=known.supporting,
+                        include_v1=known.v1 or explicit_v1).parse_args(arguments)
+    if args.variant.startswith("v1_"):
+        args.variant = args.variant[3:]  # historical guards/semantics stay unchanged
+    if args.variant in ACTIVE_VARIANTS:
+        if args.seed is None or not args.seeded_output or not args.run_config:
+            raise SystemExit("V2 requires --seed / --seeded-output / --run-config for isolated provenance")
+        if not Path(args.run_config).stem.startswith("V2_"):
+            raise SystemExit("V2 run-config filename must start with V2_")
+        if args.roi_set or args.hard_negative_set:
+            raise SystemExit("V2 first version does not mix ROI or hard-negative strategies")
+        if args.configuration != "3d_fullres" or args.fold != "0":
+            raise SystemExit("V2 first version requires 3d_fullres / fold 0")
+        required_dataset = "608" if "anatomy" in args.variant or args.variant in ("v2_coarse", "v2_refine", "v2_full_sched") else "605"
+        required_name = "Dataset608_PICAI_PredictedAnatomy" if required_dataset == "608" else "Dataset605_PICAI"
+        if args.dataset not in (required_dataset, required_name):
+            raise SystemExit(f"{args.variant} requires {required_name}")
+        from zonal_reliability_fusion.nnunet.runtime import require_v2_output_path
+        try:
+            require_v2_output_path(args.run_config, "run_configs")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
 
     if args.continue_training and args.validation_only:
         raise SystemExit("--continue-training 与 --validation-only 不能同时使用")
@@ -470,6 +525,11 @@ def main(argv=None) -> None:
 
     # 明确校验实际使用的 nnU-Net / DNA / PlainConvUNet 运行时（不升级、不覆盖任何包）
     check_fixed_nnunet_runtime()
+
+    if args.variant in ACTIVE_VARIANTS:
+        from zonal_reliability_fusion.nnunet.runtime import configure_v2_training_outputs
+        nnUNet_results = str(configure_v2_training_outputs())
+        print(f"[VERSION=V2] dedicated model root: {nnUNet_results}")
 
     trainer_class = resolve_trainer_class(args.variant)
     if args.seeded_output:
@@ -544,7 +604,7 @@ def main(argv=None) -> None:
     )
     plans = load_json(str(dataset_folder / "nnUNetPlans.json"))
     dataset_json = load_json(str(dataset_folder / "dataset.json"))
-    if args.variant in ACTIVE_VARIANTS and args.variant != "anatomy_joint_100ep":
+    if args.variant in {**ACTIVE_VARIANTS, **FROZEN_V1_VARIANTS} and args.variant != "anatomy_joint_100ep":
         output_folder = (Path(nnUNet_results) / plans["dataset_name"]
                          / f"{trainer_class.__name__}__nnUNetPlans__{args.configuration}"
                          / f"fold_{args.fold}")
@@ -555,7 +615,7 @@ def main(argv=None) -> None:
             expected_epoch_limit=expected_epoch_limit(trainer_class), expected_init_args={
                 "plans": plans, "configuration": args.configuration,
                 "fold": int(args.fold) if args.fold != "all" else "all", "dataset_json": dataset_json})
-        if getattr(trainer_class, "fusion_condition", None) == "anatomy":
+        if getattr(trainer_class, "anatomy_conditioned", False) or getattr(trainer_class, "fusion_condition", None) == "anatomy":
             from zonal_reliability_fusion.anatomy.dataset import validate_predicted_prior_dataset
             validate_predicted_prior_dataset(dataset_json, plans["dataset_name"])
         elif plans["dataset_name"] != "Dataset605_PICAI":
@@ -593,18 +653,32 @@ def main(argv=None) -> None:
         )
 
     nnunet_run_training.get_trainer_from_args = trainer_factory
-    nnunet_run_training.run_training(
-        dataset_name_or_id=args.dataset,
-        configuration=args.configuration,
-        fold=args.fold,
-        trainer_class_name=trainer_class.__name__,
-        plans_identifier="nnUNetPlans",
-        num_gpus=1,
-        export_validation_probabilities=args.export_validation_probabilities,
-        continue_training=args.continue_training,
-        only_run_validation=args.validation_only,
-        device=device,
-    )
+    import time
+    started = time.perf_counter()
+    try:
+        nnunet_run_training.run_training(
+            dataset_name_or_id=args.dataset,
+            configuration=args.configuration,
+            fold=args.fold,
+            trainer_class_name=trainer_class.__name__,
+            plans_identifier="nnUNetPlans",
+            num_gpus=1,
+            export_validation_probabilities=args.export_validation_probabilities,
+            continue_training=args.continue_training,
+            only_run_validation=args.validation_only,
+            device=device,
+        )
+    except Exception:
+        if args.variant in ACTIVE_VARIANTS:
+            print(json.dumps({"research_version": "V2", "success_runs": 0, "failed_runs": 1,
+                              "skipped_runs": 0, "elapsed_seconds": time.perf_counter() - started,
+                              "output_path": str(output_folder)}, ensure_ascii=False))
+        raise
+    if args.variant in ACTIVE_VARIANTS:
+        print(json.dumps({"research_version": "V2", "success_runs": 1, "failed_runs": 0,
+                          "skipped_runs": 0, "elapsed_seconds": time.perf_counter() - started,
+                          "output_path": str(output_folder)}, ensure_ascii=False))
+
 
     if args.variant == ANATOMY_VARIANT:
         # Native validation already restored probabilities; only validate its artifacts here.

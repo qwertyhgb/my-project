@@ -710,6 +710,8 @@ def test_evaluate_metrics_perfect_partial_missed_wrong_location_and_negative_fp(
     assert m["positive_segmentation"]["positive_macro_dice_mean"] == pytest.approx(1.0)
     assert m["negative_false_positive"]["negative_fp_cases"] == 0
     assert m["voxel_metrics"]["all_prediction_voxel_precision"] == pytest.approx(1.0)
+    assert m["all_case_segmentation"]["all_case_macro_dice_empty1"] == 1.0
+    assert m["all_case_segmentation"]["n_true_negative_cases"] == 1
 
     for kind, check in (
         (
@@ -743,6 +745,7 @@ def test_evaluate_metrics_perfect_partial_missed_wrong_location_and_negative_fp(
     assert _eval(manifest, f"negfp={pdir}", opath) == 0
     mm = json.loads(opath.read_text())["models"]["negfp"]
     assert mm["negative_false_positive"]["negative_fp_cases"] == 1
+    assert mm["all_case_segmentation"]["all_case_macro_dice_empty1"] == 0.5
     assert mm["negative_false_positive"]["negative_fp_voxels_total"] > 0
     assert 0 < mm["voxel_metrics"]["all_prediction_voxel_precision"] < 1
 
@@ -902,6 +905,9 @@ def test_multi_model_comparability_and_paired(tmp_path):
     cmp_ = doc["paired_comparisons"][0]
     assert cmp_["model_a"] == "good" and cmp_["model_b"] == "bad"
     assert cmp_["mean_paired_dice_delta"] < 0
+    assert cmp_["all_case_dice_empty1"]["mean_paired_delta"] == pytest.approx(
+        cmp_["mean_paired_dice_delta"] / 2
+    )
 
     # 从 good 目录移走一个病例 -> 病例集合不一致 -> 拒绝比较、不发布
     p_inc = tmp_path / "pred_inc"

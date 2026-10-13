@@ -30,6 +30,47 @@ PLAIN_CONV_UNET_DOTTED_PATH = (
 )
 
 
+def v2_output_root(category: str) -> Path:
+    """Canonical V2 destination; historical/shared paths remain unchanged."""
+    allowed = {"nnUNet_results", "run_configs", "predictions", "metrics", "reports",
+               "logs", "diagnostics", "figures", "external", "ablations", "inference_inputs"}
+    if category not in allowed:
+        raise ValueError(f"unknown V2 output category: {category}")
+    return (PROJECT_ROOT / "outputs").resolve() / "v2" / category
+
+
+def require_v2_output_path(path, category: str) -> Path:
+    """Reject historical destinations, traversal and symlinks escaping the V2 category."""
+    target = Path(path).resolve()
+    expected = v2_output_root(category)
+    if target == expected or not target.is_relative_to(expected):
+        raise ValueError(f"V2 {category} output must be a child of {expected}; received {path}")
+    return target
+
+
+def model_is_v2(path) -> bool:
+    """Identify native V2 Trainer directories and the dedicated V2 model tree."""
+    resolved = Path(path).resolve()
+    return resolved.is_relative_to(v2_output_root("nnUNet_results")) or any(
+        part.startswith("nnUNetTrainerPICAI_V2_") for part in resolved.parts)
+
+
+def configure_v2_training_outputs() -> Path:
+    """Set native process-local results globals before Trainer construction; no writes."""
+    import importlib
+    import os
+
+    import nnunetv2.paths as paths
+
+    root = v2_output_root("nnUNet_results")
+    if root.resolve() != root:
+        raise ValueError(f"V2 results root must not be redirected by symlinks: {root}")
+    native = importlib.import_module("nnunetv2.training.nnUNetTrainer.nnUNetTrainer")
+    paths.nnUNet_results = native.nnUNet_results = str(root)
+    os.environ["nnUNet_results"] = str(root)  # noqa: SIM112 -- official nnU-Net spelling
+    return root
+
+
 def _parse_version(text: str) -> tuple[int, ...]:
     parts: list[int] = []
     for chunk in text.split(".")[:3]:

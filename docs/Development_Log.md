@@ -1,9 +1,225 @@
+> 历史记录版本范围：2026-10-12 V1→V2之前的 shallow line 为 VERSION=V1，
+> 更早 gate/feature-gate 历史为 VERSION=LEGACY；共享Stage-1/评价修复沿用其原研究来源。
+> 新代码与架构变更须显式VERSION，真实训练事实仅在Training_Log。
+
 # Development Log
 
 简洁的代码/架构变更日志。只记录实质性结构变化，不保留旧阶段门（G0/G1/G2/SAP/P2A/P2B）历史。
 训练与验证的运行事实见 `docs/Training_Log.md`。
 
-## 2026-10-12 — 新增作者参考源码的来源说明（文档）
+## 2026-10-12 — 用户完成B-concat合成GPU资源检查 [VERSION=V2；非真实训练]
+
+用户返回stdout日志，实际运行起止时间未提供；代理未自行运行GPU命令。执行：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -B -m zonal_reliability_fusion.v2.utils.smoke \
+  --plans workdir/nnUNet_preprocessed/Dataset605_PICAI/nnUNetPlans.json \
+  --trainer nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT \
+  --device cuda --full-patch --iterations 1
+```
+
+完整plans patch[16,320,320]、batch2、cuda autocast，115369196参数；
+ok=1、failed=0、skipped=0，forward/backward完成，无OOM/非有限loss报错。
+elapsed=1.155917365秒，peak_cuda_allocated_bytes=10416285184（约9.701GiB）。
+仅stdout、纯合成MRI tensor，不读真实医学图像；不产生模型checkpoint、预测或训练结果。
+这不是每epoch耗时或训练吞吐测量；不覆盖原生DS训练损失、真实增强pipeline与optimizer momentum。
+DNA0.3.1官方依赖约束警告仍存在，沿用PlainConvUNet已测路径，不升级或修改第三方包。
+可交付B正式训练命令；真实训练状态仍NOT TRAINED，待用户启动及返回日志后登记。
+
+## 2026-10-12 — 可学习concat融合核心对照 [VERSION=V2]
+
+按用户授权新增三个独立concat家族Trainer/CLI：v2_concat_fusion、v2_concat_adaptive_fusion、
+v2_concat_anatomy_fusion。全部沿用三原生plans encoder与共享native decoder；每尺度
+concat→3×3×3卷积(3C→C)→plans norm/activation。C/D仅在共同深层位置增加soft policy，
+D再增加predicted anatomy context；3*alpha调节后再进入同一投影，不替换为直接加权求和。
+policy末层零初始化，先构造全部共同参数再构造可选分支；相同seed的共同参数与等权起点合成测试通过。
+
+既有均值/直接加权与coarse/refine/schedule类保留语义；新三组不加aux/coarse/refiner或阶段训练。
+复用旧先验契约、强度增强保护、采样、损失、optimizer/PolyLR、原生checkpoint和滑窗；
+registry/seeded resolver/运行配置同步独立新类，helper默认及实验命令改为ConcatFusion。
+全部改动在既有文件中，不修改third_party/legacy，不新建实验文档，不生成真实数据或训练产物。
+Method/Architecture/Research Plan/Experiment Plan/Reproducibility/README与唯一Training Log状态表同步；
+不向Findings添加性能结论。真实plans构造计数（DS enabled）：B 115369196、C 115415477、D 115415957参数。
+这不是显存测量；full-patch GPU、optimizer momentum与真实增强资源仍待用户检查。
+
+检查：V2机制与原Trainer兼容两个合成测试模块195 passed（7项第三方弃用warnings，61.06秒），
+包括native Trainer/loss/SGD、checkpoint重建、滑窗、独立encoder梯度、共同参数、等权起点可学习性、
+非法先验/输入fail-closed、CLI/registry/seeded兼容和运行配置。未启动真实训练/validation/评测。
+
+## 2026-10-12 — 共享early-fusion基线复用更正 [VERSION=V2；对照来源为V1]
+
+用户指出V2-A对应基线已在V1训练。核查V1 A2 run-config、保存plans/dataset/debug元数据与
+final checkpoint/validation summary存在性：同seed=20261008、fold0、1000epoch、
+原生PlainConvUNet/DiceCE/阳性采样；保存plans与dataset JSON和当前605文件完全相同，
+验证223例ID集合与当前split一致。V2-A继承同一基类，仅增加版本身份、契约检查与epoch日志，
+没有新增方法机制；之前交付同seed重训A命令造成不必要重复，应改为复用共享A2。
+
+Experiment Plan/README改为先用户运行B资源检查，A对照引用既有V1 A2，
+v2_early_fusion类和命令保留但不安排重复运行；Training Log状态表明确没有新增V2训练事实。
+共享baseline与新V2模型的评价使用SHARED_A2/V2_B标签，记录MIXED来源，
+不改名/复制/覆盖旧checkpoint、run-config或报告，不将历史A2改记为V2训练。
+采样不同的native_dicece不是同配置的替代物。只读元数据核查与git diff --check通过；未启动训练/评测。
+
+## 2026-10-12 — 当前V2研究范围收敛 [VERSION=V2；实验计划调整；A复用更正见上条]
+
+用户要求逐步训练、控制为硕士研究规模。Research Plan将核心问题收敛到预测解剖先验对
+多模态融合的作用，H1–H3为核心；Experiment Plan必要实验仅A/B/C/D，E/F/SCHED代码与身份保留但不排期。
+第一步用户运行原生结构V2-A；A完成检查后，轮到三encoder B之前再做用户运行的full-patch资源检查。
+首轮fold0/单seed逐组，最终只为强基线与候选补足3seed；不自动扩展5-fold/外部队列/额外机制。
+README同步当前范围与首条运行入口。未改网络、Trainer、预算或指标；未启动真实训练。
+
+轻量检查：训练CLI --help、605/608 plans/split/dataset元数据可读，当前fold0相同且患者无交叉，
+V2-A模型与run-config目标未存在；GPU查询可用。上述只支持交付首条命令，不证明长训练成功，
+三encoder full-patch显存仍未验证。git diff --check通过；运行事实待用户返回后再写Training Log。
+
+## 2026-10-12 — 全病例Dice_all与兼容报告 [VERSION=V2；共享评价扩展]
+
+用户明确确认主表Dice使用全部固定病例宏平均、GT/预测空空记1。新增独立
+`all_case_segmentation.all_case_macro_dice_empty1`及`per_case.dice_empty1`，记录总例数、
+阴阳性组成、真阴例数与Dice和；原生summary与历史`dice`空值、阳性Dice、研究primary原义保留。
+内部和Prostate158外测复用评价包纯函数，主表列名Dice_all，诊断表Dice_pos；
+新增独立全病例配对delta/CI，旧配对字段仍只对阳性病例。其他四列不改，外测未计算表面指标时n/a。
+内部schema 1.2→1.3，外测1.0→1.1；既有JSON、checkpoint、病例、预测与third_party未改。
+Evaluation_Protocol作为唯一规则源说明新增边界约定、混合列范围与作者脚本全前景兼容证据边界；
+README与V2 Research Plan仅入口/终点角色说明，不把主表展示变更写成已发生实验结果。
+
+检查：内部与外测两个纯合成评价测试模块169项通过，覆盖混合队列、空空=1、漏检/假阳=0、
+旧阳性/原生null兼容、逐例/JSON/主表、全病例配对与非法输入fail-closed；第三方弃用warnings。
+未启动真实训练、推理或评价；旧报告若需新字段，须由用户重新运行并指定新的输出路径。
+
+## 2026-10-12 — 五列评价主表 [VERSION=V2；共享评价展示；后续Dice_all见上条]
+
+按用户要求将评价CLI主表对齐为Dice、Precision、Recall、HD95、NSD五列。
+直接投影已有阳性病例macro Dice、pooled voxel precision/recall与既有表面指标均值；
+不修改公式、空值语义、模型输出、既有JSON/schema、病例集合或NSD容差默认行为。
+HD95旁明确有效病例分母，summary模式表面指标显示n/a；保留原诊断表与配对比较，
+避免隐去完全漏检和阴性假阳。Evaluation_Protocol §5.1记录列映射与展示精度，
+不宣称复现参考论文尚未明确的聚合及标准差口径。未启动真实数据评测或生成运行产物。
+
+检查：纯合成报告验证五列映射、显示精度、HD95分母、NSD容差、诊断保留及summary/null的n/a；
+AST语法检查、ruff（no-cache）、git diff --check通过。未改评价数值计算，不运行真实评测。
+
+## 2026-10-12 — V2运行产物物理隔离 [VERSION=V2；历史V1/LEGACY与共享产物保留]
+
+用户要求全面转向V2并整理outputs，避免V1/V2混淆。只读查看顶层目录、Trainer目录名与
+配置/报告文件名；未读取真实MRI、未启动清点/处理/评估长任务。现有outputs中无V2真实产物，
+其中同时包含V1 shallow line、LEGACY gate/N0/M0、共享Stage-1及608审计，不能一律更名为V1。
+
+- 实际新建 `outputs/v2/` 下11个空类别目录：nnUNet_results、run_configs、predictions、metrics、
+  reports、logs、diagnostics、figures、external、ablations、inference_inputs。没有生成结果文件或索引文件。
+- 未移动/删除/覆盖原checkpoint、validation、metrics、run-config、先验与审计报告；旧路径、
+  provenance和V1/LEGACY兼容不变。Stage-1 checkpoint/soft priors与Dataset608审计继续共享原位置。
+- shared runtime.py新增pure path helpers。V2训练入口在Trainer构造之前同步修改
+  nnunetv2.paths、native Trainer模块import-time快照和本进程环境中的results路径，
+  固定指向outputs/v2/nnUNet_results；不改third_party源码及raw/preprocessed路径。
+- V2 run-config必须位于outputs/v2/run_configs，记录results_root；仅V2_文件名不足以授权平铺路径。
+- 原预测入口识别V2 Trainer目录/专用模型树，拒绝历史目标与任何既有预测run目录；
+  CLI/路径预检不加载checkpoint或医学影像。原生预测器、滑窗与空间恢复未改。
+- 原评价入口对V2模型要求显式版本标签，JSON只允许v2/metrics或v2/reports；
+  V2标签不能指向历史模型，跨版本对照明确标记MIXED；不改变指标计算、协议或既有JSON。
+- containment检查拒绝路径穿越和symlink越界。outputs/v2/**加入gitignore，避免未来JSON/图像误入库。
+- README、V2 Method/Experiment/Reproducibility及AGENTS同步路径约定；Training_Log唯一状态表
+  只更新V2目的路径，不添加虚构训练事实。V1冻结文档与旧运行产物不改写。
+
+检查结果：新增8项纯合成路径/原生globals/预测保护/评价身份测试；全仓806 passed、0 failed、182项第三方弃用warnings（81.57秒）。ruff、相关compileall与git diff --check均通过；third_party状态干净；完成后确认V2类别目录仍为0个结果文件。
+未启动训练、validation、推理、数据处理或真实评价；当前V2目录为empty skeleton。
+
+## 2026-10-12 — 正式 V1→V2 研究主线重构 [VERSION=V2；V1冻结与LEGACY兼容]
+
+### 授权、审计与边界
+
+依据用户完整附件任务重构。初始git工作区干净；审计README/AGENTS/pyproject/ignore、
+治理文档/实验与归档、src/scripts/tests、实际605/608 plans及D文本日志。
+发现旧README的608未物化陈述过时，改为引用Training_Log当前证据。
+third_party参考审阅三个multi-encoder/text/attention Trainer及相关网络，tools/train/infer/eval，
+并核对论文arXiv:2604.18713。参考只作设计阅读，源码不改、不安装、不runtime import。
+V1实际训练/验证状态变化只写Training_Log，未复制为V2结果。
+
+### 结构与版本结果
+
+- 唯一ACTIVE改为V2；V1浅层conditioned fusion冻结；更早legacy gate单独保留。
+- V1原implementation/import/class module不移动不改。新增v1显式再导出，
+  AST比较确认旧trainers.py全部21个class定义与HEAD完全一致；legacy/multimodal/lesion/bases无diff。
+- 注册真源trainers.py新增7个含V2类名；ACTIVE_V2=ACTIVE、FROZEN_V1、SUPPORTING、LEGACY并列，
+  PROJECT_TRAINERS保留所有历史名字；历史seeded类继续解析，预测resolver自然扩展。
+- CLI默认只显示v2_；V1旧别名需--v1或明确v1_，supporting/legacy保留显式flags。
+- V2要求seed/seeded-output/独立V2_ run-config，记录research_version、architecture、fusion、
+  anatomy/coarse/refiner、初始phase及schedule；原checkpoint/输出保护守卫继续生效。
+- 没有改变包名、third_party/ignore、原指标协议或既有outputs/run-config。
+
+### 独立V2实现与研究解释
+
+1. 由plans构造三个单MRI原生PlainConvEncoder，普通共享UNetDecoder；不复制第三方网络源码。
+2. V2-B所有skip mean；V2-C/D在最后三个selected scales用modality softmax policy，
+   D增加predicted WG/PZ/TZ resize+3→8 pyramid context。不是第四MRI encoder，不硬编码分区偏好。
+3. V2-E fused bottleneck 1×1 coarse head，binary GT adaptive-max-pooling，固定0.5 Dice+BCE auxiliary。
+4. V2-F使用MRI高分辨率skip、anatomy、base和coarse probability做soft-local logit correction，
+   delta末层zero-init，初始base等价；局部卷积仍全patch执行，不宣称稀疏加速。
+5. V2-F-SCHED同架构/原生1000ep，在200/600 epoch切换P1 mean、P2 anatomy/coarse、P3 refiner。
+   不冻结/分组LR/复制训练循环；epoch与load_checkpoint钩子同步phase，覆盖resume与validation-only。
+6. formal inference保持原生tensor/DS协议；native滑窗在纯合成多tile数据上验证，无GT输入。
+7. V2日志增加epoch当前/总量/比例/速率/ETA，入口打印成功/失败/跳过/耗时/输出路径汇总。
+
+本版保持full-width完整三encoder，无显存折中；patch/batch/strides/kernels来自既有plans。
+8通道局部refiner、16通道fusion controller、8通道anatomy projection都是少量代码常量。
+参考设计的text/CLIP/semantic similarity、TopK/Tversky、额外val采样、动态schedule未移植。
+候选贡献仅为anatomy-conditioned hierarchical fusion与lesion-aware late local refinement；
+phase scheduling/采样/可视化是支持项。H1–H5全部待验证，无novelty/性能预先声明。
+
+### 文档隔离与职责
+
+README成为V2 landing page；AGENTS更新版本治理与只读边界。
+docs/v1保存原Research/Method/Experiment/Findings完整冻结快照及V1结论边界；
+旧实验详情原路径保留并标注版本，顶层四文档改为版本入口。
+docs/v2新增Research_Plan、Method、Experiment_Plan、Architecture、Reproducibility、Findings。
+Architecture含ASCII/Mermaid、实际tensor shapes、正式V1/V2对照与作者路线差异。
+Evaluation_Protocol仍唯一共享协议；Training_Log仍唯一variant状态表，并逐记录标注版本；
+V2 Findings明确NO V2 TRAINING RESULTS YET。未创建runbook/gate/额外实验YAML或无授权实验详情文件。
+
+### 实际工程检查（conda lm，纯合成，不读真实医学图像）
+
+- V2独立47项全部通过：三encoder参数独立/输出shape、pyramid、softmax sum、finite/range、
+  每步forward/backward、zero-init等价与启停、coarse tiny-positive、native decoder/DS、
+  7类native Trainer构造/SGD/PolyLR/loss、checkpoint phase恢复、registry/CLI/provenance配置、
+  历史import与seeded解析、第三方runtime隔离、真实605/608 plans小patch、native多tile滑窗。
+- 全仓pytest：**798 passed，0 failed，182 warnings，79.35秒**；warnings为第三方弃用提示。
+  先前18项旧测试失败仅来自ACTIVE/V1 CLI预期，调整为FROZEN_V1/--v1，原机制与安全断言保留。
+- ruff check --no-cache src scripts tests：All checks passed；compileall src scripts tests：exit0。
+- git diff --check：通过；V1/V2相对Markdown链接检查通过；默认/V1 CLI help通过。
+- 两份third_party checkout status均干净；主repo只读源码及ignore没有diff。
+- 原始数据/608/Stage1/既有checkpoints/metrics/reports/run-config无写入；
+  测试产物仅pytest临时目录，compileall只生成src/scripts/tests的ignored bytecode。
+
+### 实测参数与资源helper边界
+
+读取真实plans并构造计数（DS enabled；共享对象去重）：
+
+| VERSION=V2条件 | 参数数量 | Conv feature outputs（plans patch；非peak memory） |
+|---|---:|---:|
+| V2-A | 44,577,932 | 482,730,400 |
+| V2-B | 83,431,436 | 865,527,200 |
+| V2-C | 83,477,717 | 865,567,100 |
+| V2-D | 83,478,197 | 865,583,900 |
+| V2-E | 83,478,518 | 865,584,000 |
+| V2-F | 83,485,816 | 921,289,600 |
+| V2-F-SCHED | 83,485,816 | 921,289,600 |
+
+CPU helper实际运行：V2-B，synthetic [1,3,8,64,64]、1 iteration，
+forward/backward=2.5745秒，ok1/failed0/skipped0，peak_cuda=null，输出stdout-only。
+actual-plan测试另用[16,64,64]，两者都不验证full [batch2,16,320,320]显存。
+GPU full-patch/time helper已提供，未运行；不含真实pipeline与SGD momentum，不能把conv计数当显存。
+
+helper同时报告既有DNA=0.3.1不满足官方>=0.4.1,<0.5；保持现有环境，没有升级/覆盖包。
+兼容范围仅当前PlainConvUNet，源码固定与依赖声明完全满足是两个不同判断。
+
+### 交付与未验证范围
+
+工作区21个既有文件修改、28个新文件（包含4份保留全文的V1 snapshot）；没有提交或推送。
+未启动任何真实训练/validation/inference/preprocessing/物化/评估；没有V2效果、OOF或
+full-patch GPU资源证据。下一步用户先运行V2-B synthetic full-patch资源helper，
+再决定V2-A/V2-B同seed同预算正式对照，完整可复制命令与成功判据在V2 Experiment_Plan。
+
+## 2026-10-12 — 新增作者参考源码的来源说明（文档） [VERSION=V1]
 
 用户将`NUBagciLab/Prostate-Lesion-Segmentation`加入本地`third_party/`并要求更新说明。
 本次只读核查其remote、HEAD、工作区、README、LICENSE及相关Trainer入口：
@@ -16,7 +232,7 @@ HEAD=`d6b549286999407ca7458146c7d8da7717bd0e00`，提交日期2026-04-23，工�
 主仓库仍只跟踪第三方说明，不改变ignore规则，不新增submodule，不复制作者源码到项目模块。
 未完成全文实现审计或复现；未改代码、运行环境、主模型、训练或已有产物。
 
-## 2026-10-10 — 模型说明统一入口与变更追踪（文档）
+## 2026-10-10 — 模型说明统一入口与变更追踪（文档） [VERSION=V1]
 
 用户要求将详细模型图与介绍放在一个文件中，并持续跟踪修改。
 沿用[Method](Method.md)作为唯一模型机制说明，避免新增重复文档。
@@ -32,7 +248,7 @@ HEAD=`d6b549286999407ca7458146c7d8da7717bd0e00`，提交日期2026-04-23，工�
 - 核对：逐项对照当前fusion前向、Trainer集成、辅助损失与固定常量；
   检查本文内部引用的本地路径、代码围栏及文档diff空白。未运行医学数据处理或训练。
 
-## 2026-10-10 — 评价侧几何数值一致性检查（协议修订 + fail-closed 修复）
+## 2026-10-10 — 评价侧几何数值一致性检查（协议修订 + fail-closed 修复） [VERSION=V1]
 
 ### 变更
 
@@ -86,7 +302,7 @@ HEAD=`d6b549286999407ca7458146c7d8da7717bd0e00`，提交日期2026-04-23，工�
 - 未改动：训练、网络、损失、采样、推理、预测/参考文件、`data/`、`workdir/`、`outputs/`、
   `third_party/nnUNet`、`legacy/`。
 
-## 2026-10-08 — 正式实验前最后一次收口（短预算筛选臂 / 608 审计 / 语义清理）
+## 2026-10-08 — 正式实验前最后一次收口（短预算筛选臂 / 608 审计 / 语义清理） [VERSION=V1]
 
 本轮**不新增任何研究模块**，只修复语义、补齐公平比较所需的工具，并冻结 baseline 判据；
 未启动任何训练、validation、推理或数据处理。
@@ -150,7 +366,7 @@ HEAD=`d6b549286999407ca7458146c7d8da7717bd0e00`，提交日期2026-04-23，工�
 未验证：短预算训练是否真的在 100 epoch 内产生可用的方向信号（未运行任何 100ep 训练）；
 Dataset608 审计未在真实数据上运行；未测 FLOPs 与 GPU 显存。
 
-## 2026-10-08 — 预测解剖与粗定位共同条件化局部多模态融合
+## 2026-10-08 — 预测解剖与粗定位共同条件化局部多模态融合 [VERSION=V1]
 
 ### 实现与修复
 
@@ -215,7 +431,7 @@ Dataset608 审计未在真实数据上运行；未测 FLOPs 与 GPU 显存。
 新B/C/D仅骨架/合成构造已验证，无训练或validation效果；短预算独立Trainer与新E待后续。
 第三方及legacy实现未改，未commit/push，未删除/覆盖既有数据或模型。
 
-## 2026-10-08 — 系统级重构：确立单一主线（Anatomy-Guided Lesion-Aware Coarse-to-Fine）
+## 2026-10-08 — 系统级重构：确立单一主线（Anatomy-Guided Lesion-Aware Coarse-to-Fine） [VERSION=V1]
 
 ### 背景
 
@@ -317,7 +533,7 @@ README 首页不是主线、Trainer 数量口径三处不一致（11 / 15 / 16�
 
 ---
 
-## 2026-10-06 — 解剖标签审计工具修订（同日第二轮，代码就绪，真实审计仍未运行）
+## 2026-10-06 — 解剖标签审计工具修订（同日第二轮，代码就绪，真实审计仍未运行） [VERSION=V1]
 
 针对首版审计工具做了一轮严格性修订。**首版条目中以下表述已被本轮取代**，以本轮为准：
 
@@ -392,7 +608,7 @@ WG 来源、PZ∪TZ 与 WG 的关系、Prostate158 取值与 ROI 覆盖率一律
 
 ---
 
-## 2026-10-06 — 前列腺解剖标签只读审计工具（代码就绪，真实审计未运行）
+## 2026-10-06 — 前列腺解剖标签只读审计工具（代码就绪，真实审计未运行） [VERSION=V1]
 
 新增 `scripts/data/audit_prostate_anatomy_labels.py`（只读、fail-closed）。它回答阶段一之前的四个
 证据缺口，且**本次未在真实医学数据上运行**：物化 WG 的来源内容对应、`PZ ∪ TZ` 与物化 WG 的
@@ -469,7 +685,7 @@ numpy 2.2.6、scipy 1.15.3、SimpleITK 2.5.3、torch 2.10.0+cu128 不变）。
 
 ---
 
-## 2026-10-06 — 同区参照融合与独立短预算对照（未训练）
+## 2026-10-06 — 同区参照融合与独立短预算对照（未训练） [VERSION=LEGACY]
 
 最终回归：`test_nnunet_networks.py`、`test_nnunet_trainers.py`、
 `test_positive_case_sampling.py`、`test_predict_entry.py`、`test_prior_transforms.py`
@@ -499,7 +715,7 @@ numpy 2.2.6、scipy 1.15.3、SimpleITK 2.5.3、torch 2.10.0+cu128 不变）。
 
 ---
 
-## 2026-09-28 — 新增独立强参考基线 `nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT`（代码接线，未训练）
+## 2026-09-28 — 新增独立强参考基线 `nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT`（代码接线，未训练） [VERSION=V1]
 
 为回答「在 PositiveSampling 已稳定病灶暴露之后，nnU-Net 原生 Dice+CE 是否优于 PI-CAI Focal+CE
 （A = `positive_sampling`）」新增一个**单变量损失消融 Trainer**。已中止的 `optimized_baseline`
@@ -567,7 +783,7 @@ loader 为原生 `nnUNetDataLoader` 且只用验证 identifiers、metadata 缺�
 
 ---
 
-## 2026-09-28 — 病灶实例级评价协议冻结与实现（在 B 模型结果可见之前）
+## 2026-09-28 — 病灶实例级评价协议冻结与实现（在 B 模型结果可见之前） [VERSION=V1]
 
 目的：在 `feature_no_gate_positive_sampling`（B）训练完成、其结果对本代理可见之前，把 A
 （`positive_sampling`）与 B 的病灶实例级比较协议**先冻结再实现**，避免评价定义被结果影响。
@@ -621,7 +837,7 @@ A/B full evaluation 仍由研究者用冻结后的同一命令在两侧产物齐
 
 ---
 
-## 2026-09-24 — 审计工具 v2：区分「原始 seg 逐值相同」与「有效标签相同」
+## 2026-09-24 — 审计工具 v2：区分「原始 seg 逐值相同」与「有效标签相同」 [VERSION=V1]
 
 v1 真实审计 FAIL 的直接原因：1487 例预处理 seg 含 `-1`，v1 误以 dataset.json 的 `{0, 1}` 为唯一
 合法取值而判非法。从固定版本 nnU-Net v2.6.2 源码核对的事实（只读）：
@@ -678,7 +894,7 @@ split 不同 → 永不 PASS；CLI 端到端（nnU-Net `save_case` 写真实 `.b
 
 ---
 
-## 2026-09-24 — Dataset605/606 MRI 数组审计工具 + Anatomy Gate 启动前校验与文档同步
+## 2026-09-24 — Dataset605/606 MRI 数组审计工具 + Anatomy Gate 启动前校验与文档同步 [VERSION=LEGACY]
 
 为 `anatomy_gate_positive_sampling`（RQ2 公平匹配臂）的正式启动做前置准备：**只新增一个只读审计
 工具与其测试、补齐启动前 dry-run 测试、同步文档**；未修改模型数学形式、损失、采样算法、
@@ -785,7 +1001,7 @@ optimizer / LR / epoch / 增强 / patch / batch / deep supervision，未新增 r
 
 ---
 
-## 2026-09-23 — 实现 Research Plan §8.10 的浅层序列特异特征融合候选（三个未训练条件）
+## 2026-09-23 — 实现 Research Plan §8.10 的浅层序列特异特征融合候选（三个未训练条件） [VERSION=LEGACY]
 
 把计划 §8.10 的 `Feature no gate` / `Feature image gate` / `Feature anatomy gate` 落成三个新的、
 互相匹配的模型条件。**只做实现与合成测试，未运行任何训练**。
@@ -880,7 +1096,7 @@ feature gate 末层零初始化 ⇒ 初始 `S ≡ 1` ⇒ feature gate 网络在*
 
 ---
 
-## 2026-09-22 — Research Plan 一致性修补：NSD 物理表面、PZ/TZ 术语、公平匹配 gate 组合与门控读取接口
+## 2026-09-22 — Research Plan 一致性修补：NSD 物理表面、PZ/TZ 术语、公平匹配 gate 组合与门控读取接口 [VERSION=LEGACY]
 
 按 `docs/Research_Plan.md` 对代码做的四项一致性修补；不改变任何既有 Trainer 的类名与行为、
 不改变已物化的数据、不运行任何训练/推理/评测。
@@ -982,7 +1198,7 @@ feature gate 末层零初始化 ⇒ 初始 `S ≡ 1` ⇒ feature gate 网络在*
 
 ---
 
-## 2026-09-22 — 受控项目侧 patch sampler：positive_sampling（AGENTS.md 放宽 + 新 Trainer）
+## 2026-09-22 — 受控项目侧 patch sampler：positive_sampling（AGENTS.md 放宽 + 新 Trainer） [VERSION=V1]
 
 ### AGENTS.md §5 放宽为「nnU-Net-centered 与受控扩展」
 
@@ -1081,7 +1297,7 @@ nnU-Net v2.6.2 默认先**均匀抽取病例**，再按 `oversample_foreground_p
 
 ---
 
-## 2026-09-22 — 统一分割评估器：RunStats 阶段化 + 普通异常也打印汇总
+## 2026-09-22 — 统一分割评估器：RunStats 阶段化 + 普通异常也打印汇总 [VERSION=V1]
 
 对评估入口的第二轮最小修补，仍不改变任何指标定义。
 
@@ -1133,7 +1349,7 @@ network / data / workdir / outputs / third_party / `docs/Research_Plan.md` / `do
 
 ---
 
-## 2026-09-22 — 统一分割评估器：逐例异常收集与结构化结束汇总
+## 2026-09-22 — 统一分割评估器：逐例异常收集与结构化结束汇总 [VERSION=V1]
 
 对上一版评估入口的最小修补，不改变任何指标定义。
 
@@ -1186,7 +1402,7 @@ network / data / workdir / outputs / third_party / `docs/Research_Plan.md`。
 
 ---
 
-## 2026-09-22 — 新增统一病灶分割评估入口
+## 2026-09-22 — 新增统一病灶分割评估入口 [VERSION=V1]
 
 ### 新增
 
@@ -1271,7 +1487,7 @@ full 模式每例只读一次、nan/inf/非正容差拒绝、多模型加载错�
 
 ---
 
-## 2026-09-22 — 文档结构：新增 Findings 与文件创建权限
+## 2026-09-22 — 文档结构：新增 Findings 与文件创建权限 [VERSION=V1]
 
 ### 文档结构
 
@@ -1299,7 +1515,7 @@ full 模式每例只读一次、nan/inf/非正容差拒绝、多模型加载错�
 
 ---
 
-## 2026-09-21 — 新增 optimized_baseline（原生 Dice+CE 单变量分支）
+## 2026-09-21 — 新增 optimized_baseline（原生 Dice+CE 单变量分支） [VERSION=LEGACY]
 
 针对已完成的 N0（`nnUNetTrainerPICAI_FLCE_NoFFT`）长期停留在背景预测的现象，新增一个
 **单变量**优化基线：只把损失从项目的 PI-CAI Focal+CE 换成 nnU-Net v2.6.2 原生 Dice+CE。
@@ -1331,7 +1547,7 @@ epoch 数、checkpoint、validation、inference 全部不变；`docs/Research_Pl
 
 ---
 
-## 2026-09-21 — nnU-Net-first 重构
+## 2026-09-21 — nnU-Net-first 重构 [VERSION=LEGACY]
 
 把项目从「自写第二套训练框架 + 阶段门治理」彻底重构为 **nnU-Net-first**：通用机制全部交给
 固定版本 nnU-Net（`third_party/nnUNet` v2.6.2，commit `74ceb68`，未修改），项目只保留研究必需
@@ -1399,7 +1615,7 @@ state_dict、PZ/TZ clamp、强度增强不动 PZ/TZ、空间变换同步、build
 
 ---
 
-## 2026-09-21 — 重构修补：预测入口 / 依赖兼容边界 / 数据准备 fail-closed
+## 2026-09-21 — 重构修补：预测入口 / 依赖兼容边界 / 数据准备 fail-closed [VERSION=V1]
 
 在不重新设计、不恢复旧框架、不修改 `third_party/nnUNet` 的前提下修补上一轮重构的缺口。
 
@@ -1455,7 +1671,7 @@ state_dict、PZ/TZ clamp、强度增强不动 PZ/TZ、空间变换同步、build
 
 ---
 
-## 2026-09-21 — zonal-source 来源安全与 prior 复用校验
+## 2026-09-21 — zonal-source 来源安全与 prior 复用校验 [VERSION=LEGACY]
 
 - `prepare_picai_nnunet.py zonal`：`--zonal-source` 改为**必填**（`required=True`，取消默认 `yuan`，
   仍限 `yuan/hevi`），消除“帮助文本说必须选、实际却有默认值”的不一致。
@@ -1474,7 +1690,7 @@ state_dict、PZ/TZ clamp、强度增强不动 PZ/TZ、空间变换同步、build
   缺失文件；`--overwrite` 可按新来源重新生成且内容正确；dataset.json 可审计 zonal 来源。
 
 
-## 2026-10-06 — WG 定向追查与阶段一候选数据契约
+## 2026-10-06 — WG 定向追查与阶段一候选数据契约 [VERSION=V1]
 
 只修改既有审计脚本、对应合成测试与两份获准文档；不创建 Dataset607、split，
 不物化数据、不训练、不读真实影像、不实施 ROI 硬裁剪。
@@ -1590,7 +1806,7 @@ ROI 边界：现有标签 ROI 未完全漏失实例，但训练侧最差实例�
 crop 外补零且数值有限。没有读取真实影像，真实追查尚未运行。
 
 
-## 2026-10-06 — 阶段一 T2W 联合 WG/PZ/TZ 最小接入
+## 2026-10-06 — 阶段一 T2W 联合 WG/PZ/TZ 最小接入 [VERSION=V1]
 
 本次只修改用户授权的 12 个既有文件，保留全部既有工作区修改，不新增源代码、测试、
 配置或文档。只读取两份现有报告及 JSON/CSV 元数据、检查源码与执行 CPU 合成测试。
@@ -1688,7 +1904,7 @@ README 提供每步用户命令、lm/env 初始化、输出、进度与成功判
 相等判断忽略顺序。原始监督与既有产物均未由代理改写。
 
 
-## 2026-10-06 — 阶段一预测参数与验证输出保护修复
+## 2026-10-06 — 阶段一预测参数与验证输出保护修复 [VERSION=V1]
 
 仅修改本轮获准的六个既有文件：predict_nnunet.py、train_nnunet.py、对应两份 unit 测试、
 README.md、Development_Log.md，保留全部原有工作区修改，不创建新文件或改第三方源码。
@@ -1723,7 +1939,7 @@ README 已同步续训与首次验证限制。以上是合成保护逻辑验证�
 GPU 训练和首次 validation 未运行，实际运行行为仍需用户后续命令确认。
 
 
-## 2026-10-06 — 现成分区融合输入的语义措辞修正
+## 2026-10-06 — 现成分区融合输入的语义措辞修正 [VERSION=LEGACY]
 
 仅修改获准的 networks.py、trainers.py、README.md 与本开发记录，保留既有工作区修改。
 Dataset606 PZ/TZ 统一描述为自动分区二值掩膜经既有插值处理形成的分区隶属权重，
@@ -1739,7 +1955,7 @@ AST 语法检查通过；剔除 docstring 并仅归一化获准日志字面量�
 未新增文件、未读取真实影像、未启动训练；本次仅措辞修改，不运行训练或数据处理测试。
 
 
-## 2026-10-08 — 修复四个 `*_100ep` 变体构造阶段的 `KeyError: 'args'`
+## 2026-10-08 — 修复四个 `*_100ep` 变体构造阶段的 `KeyError: 'args'` [VERSION=LEGACY]
 
 四个 100ep 变体（`feature_no_gate_positive_sampling_100ep`、`feature_anatomy_gate_positive_sampling_100ep`、
 `zonal_reference_positive_sampling_100ep`、`zonal_reference_adaptive_positive_sampling_100ep`）在串行队列中
@@ -1771,7 +1987,7 @@ AST 语法检查通过；剔除 docstring 并仅归一化获准日志字面量�
 dataset_json, device)` 全为具名参数、无 var-args，故反射要取的每个名字都是父类自身局部变量，
 `KeyError` 不再可能发生；文件 lint 无报错。真实训练能否跑完 100 epoch 仍需用户后续命令确认。
 
-## 2026-10-09 — 新增只读 PI-CAI 病例数据链诊断脚本
+## 2026-10-09 — 新增只读 PI-CAI 病例数据链诊断脚本 [VERSION=V1]
 
 用户明确授权新增 `scripts/data/diagnose_picai_case_chain.py`，用于定位本次 A1 漏检原因。
 默认检查 `10842_1000858`、`10121_1000121`、`11283_1001306`，并选择本次验证集中
@@ -1841,7 +2057,7 @@ GT、新硬预测和原验证硬预测，检查 shape/有限性/范围/两类概
 没有读取或分析真实概率体素，没有运行全队列统计；实际诊断命令交由用户运行。
 
 
-## 2026-10-10 — 原生DiceCE与原生采样独立参考入口
+## 2026-10-10 — 原生DiceCE与原生采样独立参考入口 [VERSION=V1]
 
 用户要求准备原生DiceCE+原生采样基线。新增薄类`nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT`，仅继承NoFFTAugmentationMixin与nnUNetTrainer；不继承历史中止类，不含项目采样mixin。ACTIVE注册`native_dicece`，现有seeded类生成与预测解析复用，固定1000epoch与独立目录；历史类名及产物保持原样。
 

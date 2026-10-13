@@ -422,14 +422,14 @@ def test_trainer_class_names_are_distinct():
 # --------------------------------------------------------------------------- #16 train_nnunet.py --help
 def test_native_dicece_preserves_native_training_and_seeded_resolution():
     from zonal_reliability_fusion.nnunet.trainers import (
-        ACTIVE_TRAINERS,
+        FROZEN_V1_TRAINERS,
         nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT,
         resolve_trainer_class,
         seeded_trainer_class,
     )
 
     base = nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT
-    assert base in ACTIVE_TRAINERS
+    assert base in FROZEN_V1_TRAINERS
     assert not issubclass(base, PositiveCaseSamplingMixin)
     assert not issubclass(base, nnUNetTrainerPICAI_DiceCE_NoFFT)
     for name in ("_build_loss", "get_dataloaders", "build_network_architecture",
@@ -443,7 +443,7 @@ def test_native_dicece_preserves_native_training_and_seeded_resolution():
 
 def test_native_dicece_entry_reports_actual_sampling_without_creating_outputs():
     module = _load_train_entry()
-    args = module.build_parser().parse_args([
+    args = module.build_parser(include_v1=True).parse_args([
         "native_dicece", "605", "3d_fullres", "0", "--seed", "20261008", "--seeded-output",
     ])
     base = module.resolve_trainer_class(args.variant)
@@ -454,7 +454,7 @@ def test_native_dicece_entry_reports_actual_sampling_without_creating_outputs():
     assert "native case selection" in payload["sampling"]
     assert "native Dice+CE" in payload["loss"]
     assert payload["fusion_condition"] is None
-    positive_args = module.build_parser().parse_args(["dicece_positive_sampling", "605", "3d_fullres", "0"])
+    positive_args = module.build_parser(include_v1=True).parse_args(["dicece_positive_sampling", "605", "3d_fullres", "0"])
     positive = module.build_run_config(
         positive_args, module.resolve_trainer_class(positive_args.variant), plans, dataset)
     assert positive["sampling"].startswith("positive_sampling;")
@@ -497,15 +497,19 @@ def test_train_entry_variant_mapping_is_complete_and_distinct():
     assert set(module.ACTIVE_VARIANTS.values()) == active_classes
     assert set(module.LEGACY_VARIANTS.values()) == legacy_classes
     assert not (active_classes & legacy_classes)
-    assert module.VARIANT_TO_TRAINER == {**module.ACTIVE_VARIANTS, **module.SUPPORTING_VARIANTS, **module.LEGACY_VARIANTS}
+    assert module.VARIANT_TO_TRAINER == {**module.ACTIVE_VARIANTS, **module.FROZEN_V1_VARIANTS,
+                                       **module.V1_EXPLICIT_VARIANTS, **module.SUPPORTING_VARIANTS,
+                                       **module.LEGACY_VARIANTS}
     assert set(module.VARIANT_TO_TRAINER.values()) == set(PROJECT_TRAINERS)
-    assert len(module.VARIANT_TO_TRAINER) == len(set(module.VARIANT_TO_TRAINER.values()))
+    assert len(module.ACTIVE_VARIANTS) == len(set(module.ACTIVE_VARIANTS.values()))
+    for alias, name in module.V1_EXPLICIT_VARIANTS.items():
+        assert name == module.VARIANT_TO_TRAINER[alias[3:]]
     # 默认 --help 只显示 ACTIVE；--legacy 才把归档条件加入可选列表
     def _variant_choices(parser):
         return set(next(a for a in parser._actions if a.dest == "variant").choices or [])
 
     default_choices = _variant_choices(module.build_parser())
-    legacy_choices = _variant_choices(module.build_parser(include_legacy=True, include_supporting=True))
+    legacy_choices = _variant_choices(module.build_parser(include_legacy=True, include_supporting=True, include_v1=True))
     assert default_choices == set(module.ACTIVE_VARIANTS)
     assert legacy_choices == set(module.VARIANT_TO_TRAINER)
     assert not (default_choices & set(module.LEGACY_VARIANTS))
@@ -635,6 +639,7 @@ def test_short_zonal_builders_require_five_channels_and_run_synthetic_forward(sy
 def test_project_trainers_registry_contains_new_trainer():
     from zonal_reliability_fusion.nnunet.trainers import (
         ACTIVE_TRAINERS,
+        FROZEN_V1_TRAINERS,
         LEGACY_TRAINERS,
         PROJECT_TRAINERS,
         SUPPORTING_TRAINERS,
@@ -646,7 +651,7 @@ def test_project_trainers_registry_contains_new_trainer():
     assert dicece_positive_sampling in PROJECT_TRAINERS
     # 注册表 = ACTIVE + SUPPORTING + LEGACY，且键名与类一一对应；键名错位会让既有 checkpoint 失联
     assert set(PROJECT_TRAINERS) == {
-        cls.__name__ for cls in (*ACTIVE_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
+        cls.__name__ for cls in (*ACTIVE_TRAINERS, *FROZEN_V1_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
     }
     assert all(PROJECT_TRAINERS[c.__name__] is c for c in PROJECT_TRAINERS.values())
     for expected in (
@@ -1456,9 +1461,9 @@ def test_anatomy_variant_cli_guards_and_checkpoint_resume(tmp_path, monkeypatch)
     assert module.resolve_trainer_class('anatomy_joint_100ep') is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT
     for dataset, config, fold in [('606', '3d_fullres', '0'), ('607', '2d', '0'), ('607', '3d_fullres', 'all')]:
         with pytest.raises(SystemExit, match='Dataset607'):
-            module.main(['anatomy_joint_100ep', dataset, config, fold, '--export-validation-probabilities'])
+            module.main(['--v1', 'anatomy_joint_100ep', dataset, config, fold, '--export-validation-probabilities'])
     with pytest.raises(SystemExit, match='export-validation-probabilities'):
-        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0'])
+        module.main(['--v1', 'anatomy_joint_100ep', '607', '3d_fullres', '0'])
     output = tmp_path / 'run'
     module.guard_anatomy_checkpoint(output, False, False)
     output.mkdir()
@@ -1493,7 +1498,7 @@ def test_anatomy_entry_missing_explicit_split_never_calls_training(tmp_path, mon
     def forbidden(**kwargs): raise AssertionError('must not start training')
     monkeypatch.setattr(native, 'run_training', forbidden)
     with pytest.raises(SystemExit, match='split missing'):
-        _load_train_entry().main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities'])
+        _load_train_entry().main(['--v1', 'anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities'])
 
 
 
@@ -1563,7 +1568,7 @@ def test_anatomy_existing_validation_blocks_native_and_preserves_files(tmp_path,
     monkeypatch.setattr(nnUNetTrainer, '__init__', lambda *args, **kwargs: pytest.fail('Trainer must not be created'))
     flags = {'fresh': [], 'continue': ['--continue-training'], 'validation': ['--validation-only']}[operation]
     with pytest.raises(SystemExit, match='validation 已有'):
-        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', *flags])
+        module.main(['--v1', 'anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', *flags])
     assert calls == []
     assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
 
@@ -1576,7 +1581,7 @@ def test_anatomy_completed_training_cannot_reenter_final_save(tmp_path, monkeypa
     monkeypatch.setattr(native, 'run_training', lambda **kwargs: calls.append(kwargs))
     monkeypatch.setattr(nnUNetTrainer, '__init__', lambda *args, **kwargs: pytest.fail('Trainer must not be created'))
     with pytest.raises(SystemExit, match='checkpoint_final 已存在'):
-        module.main(['anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', '--continue-training'])
+        module.main(['--v1', 'anatomy_joint_100ep', '607', '3d_fullres', '0', '--export-validation-probabilities', '--continue-training'])
     assert calls == []
     assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
 
@@ -1632,7 +1637,7 @@ def test_short_budget_variants_are_registered_with_frozen_epoch_limit_and_no_ext
     assert SHORT_BUDGET_EPOCHS == 100
     short_names = {cls.__name__ for cls in SHORT_BUDGET_TRAINERS}
     short_variants = {
-        name: trainer for name, trainer in module.ACTIVE_VARIANTS.items()
+        name: trainer for name, trainer in module.FROZEN_V1_VARIANTS.items()
         if trainer in short_names
     }
     assert len(short_variants) == len(short_names) == 8

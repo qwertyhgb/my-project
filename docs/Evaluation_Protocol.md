@@ -22,6 +22,7 @@
 | | `positive_voxel_precision` | 防止粗暴扩大分割 |
 | | `false_positive_burden` | 见 §6 |
 | **Exploratory** | lesion size strata sensitivity | 按 reference lesion 物理体积分层 |
+| | `all_case_macro_dice_empty1` | 主表Dice_all展示口径；全部固定病例等权、空空=1；不替代阳性研究primary |
 | | anatomy-region FP burden | 见 §6.3 |
 | | `surface_metrics`（HD95 / ASSD / NSD@τ） | 表面距离 |
 | | bootstrap CI | 不确定性区间 |
@@ -46,16 +47,38 @@
 
 ### 2.2 Dice 的空值与漏检语义
 
+本节适用于原生summary和历史`per_case.dice`字段；新增`dice_empty1`遵循§2.2.1独立约定。
+
 - 阳性病例**完全漏分**（预测为空）→ Dice 记 **0**，**不得**排除该病例；
 - `n_ref == 0` 且 `n_pred == 0`（真阴）→ Dice 为 `None`（JSON `null`），**不是** 0，也**不是** 1；
 - `n_ref == 0` 且有预测（假阳阴性）→ Dice 为 0；
 - summary 中的 Dice 若给出，必须与由 TP/FP/FN 重算值一致（容差 `DICE_MATCH_TOLERANCE = 1e-6`）；
   真阴病例的 Dice 必须为空/NaN，写成 1 视为数据错误。
 
+### 2.2.1 全病例 Dice_all（2026-10-12 用户授权新增）
+
+`all_case_segmentation.all_case_macro_dice_empty1`：固定评价集合的全部病例等权宏平均。
+逐病例独立字段`per_case.dice_empty1`为：
+
+```text
+GT 与预测都为空：1
+仅一侧为空：0
+其余：2*TP / (2*TP + FP + FN)
+Dice_all = sum(dice_empty1) / n_cases
+```
+
+同时记录`n_cases/n_positive_cases/n_negative_cases/n_true_negative_cases/dice_sum`，
+不能按模型筛选病例或仅取共同预测成功病例。阴性假阳也纳入Dice_all，记0。
+该指标衡量病灶重叠与正确空预测的联合表现，依赖队列阴阳性比例；跨队列不得只凭Dice_all排名。
+它兼容参考作者独立脚本的全前景分支，不等于已确认论文Table I采用该口径。
+原生summary、历史dice/null、positive-case macro Dice与研究primary不改义。
+不修改既有报告；需要新字段时由用户以同一固定病例集合重新运行评价并写入新的输出路径。
+
 ### 2.3 分母为 0 一律为 `null`
 
 `ratio` 在分母为 0 时返回 `None`，**不得**伪造成 0。适用于所有比值型指标（sensitivity、ratio、
 rate、precision 类）。
+§2.2.1的`dice_empty1`是显式命名的Dice边界约定，不通过修改通用`ratio`实现。
 
 ### 2.4 体素 vs 物理体积
 
@@ -236,6 +259,33 @@ lesion_sensitivity_any_overlap = matched reference lesions / all reference lesio
 实现（那会改变已声明的论文指标口径）。NSD 容差 τ **必须**由研究者在运行前显式给出，工具**不设**
 默认值。
 
+### 5.1 五列主表的展示定义
+
+主表指标固定为 `Dice_all ↑ / Precision ↑ / Recall ↑ / HD95 (mm) ↓ / NSD ↑`。
+2026-10-12用户确认Dice_all使用§2.2.1；新增独立字段，内部JSON schema升至1.3，
+外测独立schema升至1.1。研究primary仍为positive-case macro Dice，历史字段原义保留。
+
+- Dice_all纳入预先固定的**全部病例**；其余四列仍使用**GT阳性病例**。
+  整例三维硬分割，多个病灶合并计算；阳性完全漏检Dice_all/NSD记0，FN仍计入Recall。
+- Dice_all = `all_case_segmentation.all_case_macro_dice_empty1`；真阴记1。
+  诊断表Dice_pos = `positive_segmentation.positive_macro_dice_mean`，继续纳入全部阳性漏检。
+- Precision/Recall = `voxel_metrics.positive_voxel_precision/positive_voxel_recall`：
+  先汇总阳性病例 TP/FP/FN 后计算比值，**不是**逐病例 precision/recall 平均。
+  Precision 总分母为0时保持null，显示n/a；不把未定义precision写成1或0。
+- HD95 = `surface_metrics.hd95_mm.mean`：仅有定义的阳性病例平均；预测非空但无重叠病例
+  仍正常计算并纳入。每个模型必须同时显示有效例数/阳性总例数与漏检数，不能隐去分母变化。
+- NSD = `surface_metrics.nsd.mean`：全部阳性病例宏平均，预测为空记0；使用§5的表面面积
+  加权实现，并明确显示运行前指定的容差。不得按结果选择更有利的容差。
+- Dice/Precision/Recall/NSD显示4位小数，HD95显示2位小数；计算保留原精度。
+  summary模式未计算HD95/NSD时显示n/a，不填0、不生成虚构表面指标。
+- 单次运行主表显示均值/汇总值，不虚构跨seed标准差；最终3 seed的mean ± std按§12报告，
+  并明确其为跨seed标准差。病例间分布与CI在诊断报告中另列，不混称训练稳定性。
+
+列名与 Align then Refine Table I 对齐，不声称其未明确的病例范围、空值规则、跨fold聚合、
+“±”含义及NSD容差已被复现。Dice_all仅声称兼容作者独立脚本的全前景Dice分支，
+不声称其余四列也沿用作者脚本。外测入口尚未计算表面指标，HD95/NSD显示n/a。
+主表旁保留病例数、漏检、病灶sensitivity及阴性假阳性诊断；不能只展示匹配成功病灶。
+
 ---
 
 ## 6. False-positive burden
@@ -307,6 +357,9 @@ interpretation                  解释标签（见 §7.3）
 
 ### 7.3 解释纪律
 
+新增`paired_comparisons[*].all_case_dice_empty1`独立保存全病例的逐例delta、均值、配对CI与病例数；
+所有原有delta/CI字段继续只针对阳性病例。内部和外测复用同一纯函数，不能混用两类CI解释。
+
 - CI **跨 0** 时：`no_clear_paired_improvement`。这**既不支持提升，也不支持下降，更不证明等效**；
 - 只有 CI **不跨 0** 且改动可归因于单一变量时，才可以声明方向性差异；
 - **单次运行不能声明 run-to-run 方差**：nnU-Net v2.6.2 不设随机种子，配对 CI 只反映**病例间**
@@ -320,9 +373,9 @@ interpretation                  解释标签（见 §7.3）
   **非零退出，且不发布**输出 JSON（fail-closed）；
 - 结束必须打印结构化汇总（status / mode / phase / unit / ok / failed / skipped / elapsed /
   output）；`skipped` 不可知时渲染为 `not_applicable`，**不伪造成 0**；
-- `SCHEMA_VERSION` 当前为 `1.2`；改动指标集合或输出契约时必须递增
-  （`1.2` = 2026-10-10 几何检查修订：新增顶层 `geometry_check` 与
-  `models[*].geometry_check` / `per_case[*].geometry`，见 §3.1/§3.2）。
+- `SCHEMA_VERSION` 当前为 `1.3`；改动指标集合或输出契约时必须递增。
+  `1.2`为2026-10-10几何检查修订（§3.1/§3.2）；`1.3`新增独立全病例Dice_all、
+  逐例dice_empty1及全病例配对统计，所有历史字段保留。外测自身schema为`1.1`。
 
 ---
 
@@ -337,7 +390,7 @@ interpretation                  解释标签（见 §7.3）
 | `LESION_SIZE_MEDIUM_MAX_MM3` | `1000.0` | 分层人数改变 |
 | `DICE_MATCH_TOLERANCE` | `1e-6` | 只影响 fail-closed 判定的严格度 |
 | `TIE_TOLERANCE` | `1e-12` | `improved/tied/worsened` 计数改变 |
-| `SCHEMA_VERSION` | `1.2` | 输出格式契约 |
+| `SCHEMA_VERSION` | `1.3` | 输出格式契约；新增字段不回写既有1.2报告 |
 | `GEOMETRY_ATOL_MM` | `1e-6` | spacing/origin 绝对容差（mm，rtol=0）；改动会改变哪些病例能进入 full 结果 |
 | `GEOMETRY_ATOL_DIRECTION` | `1e-6` | direction 绝对容差（无量纲，rtol=0）；同上 |
 | `GEOMETRY_CORNER_ATOL_MM` | `1e-3` | 角点物理偏差阈值（mm，`<=` 接受）；同上 |

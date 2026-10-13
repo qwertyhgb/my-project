@@ -1,19 +1,8 @@
-"""固定 nnU-Net v2.6.2 的受控项目扩展与历史 Trainer 注册表。
+"""Versioned registry: ACTIVE V2, FROZEN V1, supporting V1, historical legacy.
 
-ACTIVE：native DiceCE/native sampling reference，A1 FLCE/A2 native DiceCE + positive sampling，Stage-1 anatomy，
-以及各自继承 A1/A2 的 B neutral fusion、C lesion-conditioned residual fusion、
-D predicted-anatomy + lesion-conditioned residual fusion。
-B 仅加独立浅层表征；C 加 coarse lesionness 条件分支及辅助监督；D 仅加预测解剖上下文。
-同一 A/B/C/D 各有 1000 epoch 正式类与 100 epoch 短预算筛选类（``_100ep_`` 类名后缀），
-两者类名/输出目录完全隔离；短预算只做 sanity 与方向筛选，不用于结论。
-SUPPORTING：既有 ROI、logits refinement、zone refinement、hard-negative 实现。
-新的 E = best(C,D) + hard negatives 尚未绑定，不把既有固定父类 E 当作新 E。
-LEGACY：只读再导出历史 gate/fusion 类，保持 checkpoint 可解析。
-
-训练循环、optimizer、PolyLR、deep supervision、checkpoint/resume、validation、
-sliding-window inference 均由原生 nnU-Net 提供。详见 docs/Method.md。
+Historical definitions below are frozen in place to preserve class module paths,
+state-dict keys and checkpoint reconstruction. V2 implementation lives in nnunet/v2.
 """
-
 from __future__ import annotations
 
 from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
@@ -624,8 +613,8 @@ SUPPORTING_TRAINERS = (
     nnUNetTrainerPICAI_LesionHardNegative_NoFFT,
 )
 
-#: 新主线（ACTIVE）Trainer：默认训练视图只暴露这些
-ACTIVE_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
+#: Frozen V1 definitions: preserve every historical name and its output path.
+FROZEN_V1_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
     nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT,
     nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT,
     nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT,
@@ -657,6 +646,25 @@ LEGACY_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
     nnUNetTrainerPICAI_ZonalReferenceAdaptive_PositiveSampling_100ep_NoFFT,
 )
 
+# V2 is the sole active research line; shared Stage-1 remains resolvable under V1 CLI.
+from zonal_reliability_fusion.nnunet.v2 import trainers as _v2_trainers
+
+ACTIVE_V2_TRAINERS = (
+    _v2_trainers.nnUNetTrainerPICAI_V2_EarlyFusion_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_MultiEncoder_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_AdaptiveFusion_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_AnatomyFusion_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_Coarse_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_Refine_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_FullScheduled_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_ConcatAdaptiveFusion_DiceCE_NoFFT,
+    _v2_trainers.nnUNetTrainerPICAI_V2_ConcatAnatomyFusion_DiceCE_NoFFT,
+)
+for _trainer in ACTIVE_V2_TRAINERS:
+    globals()[_trainer.__name__] = _trainer
+ACTIVE_TRAINERS = ACTIVE_V2_TRAINERS
+
 #: 项目 Trainer 名 -> 类。训练入口与预测入口都用它做**进程内直接映射**，
 #: 避免依赖 nnU-Net 的 ``recursive_find_python_class``（该函数只在 nnunetv2 包目录内递归扫描，
 #: 找不到项目自定义类，且可能扫到环境中其他 nnunetv2 分支）。
@@ -664,13 +672,13 @@ LEGACY_TRAINERS: tuple[type[nnUNetTrainer], ...] = (
 #: 注册表必须包含**全部历史类名**：输出目录由 Trainer 类名决定，缺一个类名就会让对应的既有
 #: checkpoint / validation 产物再也无法被本项目解析。
 PROJECT_TRAINERS: dict[str, type[nnUNetTrainer]] = {
-    trainer.__name__: trainer for trainer in (*ACTIVE_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
+    trainer.__name__: trainer for trainer in (*ACTIVE_TRAINERS, *FROZEN_V1_TRAINERS, *SUPPORTING_TRAINERS, *LEGACY_TRAINERS)
 }
 
 
 def seeded_trainer_class(base, seed):
     """Deterministic class name gives independent native output paths for matched seeds."""
-    if base not in ACTIVE_TRAINERS or base is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
+    if base not in (*ACTIVE_TRAINERS, *FROZEN_V1_TRAINERS) or base is nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
         raise ValueError("seeded outputs are limited to active lesion baseline/fusion classes")
     if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed < 2**32:
         raise ValueError("seeded output requires a uint32 explicit seed")
@@ -689,15 +697,17 @@ def resolve_trainer_class(trainer_name: str) -> type[nnUNetTrainer] | None:
     match = re.fullmatch(r"(.+)_Seed([0-9]+)", trainer_name)
     if match and match[1] in PROJECT_TRAINERS:
         base = PROJECT_TRAINERS[match[1]]
-        if base in ACTIVE_TRAINERS and base is not nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
+        if base in (*ACTIVE_TRAINERS, *FROZEN_V1_TRAINERS) and base is not nnUNetTrainerPICAI_AnatomyJoint_100ep_NoFFT:
             return seeded_trainer_class(base, int(match[2]))
     return None
 
 
 __all__ = (
     "ACTIVE_TRAINERS",
+    "ACTIVE_V2_TRAINERS",
     "ANATOMY_DATASET",
     "ANATOMY_LABELS",
+    "FROZEN_V1_TRAINERS",
     "LEGACY_TRAINERS",
     "PROJECT_TRAINERS",
     "SHORT_BUDGET_EPOCHS",

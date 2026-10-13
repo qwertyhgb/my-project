@@ -1,3 +1,6 @@
+> VERSION=V1 — 冻结历史实验文档；原始事实保留。共享 Stage-1 按其 V1 运行来源记录。
+> 当前状态见 [Training Log](../Training_Log.md)，V2 不复用该实验身份。
+
 # native_dicece_seed20261008 — 原生DiceCE＋原生采样正式实验报告
 
 记录日期：2026-10-11。本文只记录该实验自身，不包含跨实验性能比较。

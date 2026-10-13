@@ -265,6 +265,9 @@ def test_negative_case_with_empty_prediction(tmp_path):
     assert rep["negative_false_positive"]["negative_fp_cases"] == 0
     # 真阴病例不得把 Dice 人为记为 1 混入宏平均
     assert rep["positive_segmentation"]["positive_macro_dice_mean"] is None
+    assert rep["all_case_segmentation"]["all_case_macro_dice_empty1"] == 1.0
+    assert rep["per_case"][0]["dice"] is None
+    assert rep["per_case"][0]["dice_empty1"] == 1.0
 
 
 def test_negative_case_with_false_positive(tmp_path):
@@ -276,6 +279,64 @@ def test_negative_case_with_false_positive(tmp_path):
     assert nf["negative_fp_case_rate"] == pytest.approx(1.0)
     assert nf["negative_fp_voxels_total"] == 30
     assert nf["negative_fp_voxels_max"] == pytest.approx(30.0)
+    assert rep["all_case_segmentation"]["all_case_macro_dice_empty1"] == 0.0
+
+
+def test_all_case_dice_empty1_preserves_positive_and_native_semantics(tmp_path, capsys):
+    mod = _load_module()
+    fold = _write_fold(tmp_path, "m", [
+        _case("hit", 100, 100, 50), _case("miss", 100, 0, 0),
+        _case("tn", 0, 0, 0), _case("fp", 0, 30, 0),
+    ])
+    rep, cases = mod.summarize_model("m", fold, 100, 1)
+    all_seg = rep["all_case_segmentation"]
+    assert all_seg["all_case_macro_dice_empty1"] == pytest.approx(0.375)
+    assert all_seg["dice_sum"] == pytest.approx(1.5)
+    assert (all_seg["n_cases"], all_seg["n_positive_cases"],
+            all_seg["n_negative_cases"], all_seg["n_true_negative_cases"]) == (4, 2, 2, 1)
+    assert rep["positive_segmentation"]["positive_macro_dice_mean"] == pytest.approx(0.25)
+    assert rep["nnunet_reported"]["foreground_mean_Dice"] == pytest.approx(1/6)
+    assert cases["tn"]["dice"] is None
+    assert {r["case_id"]: r["dice_empty1"] for r in rep["per_case"]} == {
+        "hit": 0.5, "miss": 0.0, "tn": 1.0, "fp": 0.0,
+    }
+    mod.print_table({"m": rep}, [], "summary")
+    output = capsys.readouterr().out
+    assert "Dice_all ↑" in output and "Dice_pos" in output
+    assert "0.3750" in output and "0.2500" in output
+    assert "全部固定病例" in output and "未计算 HD95/NSD" in output
+
+
+def test_all_case_pair_detects_negative_fp_change_without_changing_positive_delta(tmp_path):
+    mod = _load_module()
+    a = _write_fold(tmp_path, "a", [_case("p", 100, 100, 100), _case("n", 0, 0, 0)])
+    b = _write_fold(tmp_path, "b", [_case("p", 100, 100, 100), _case("n", 0, 20, 0)])
+    ra, ca = mod.summarize_model("a", a, 100, 1)
+    rb, cb = mod.summarize_model("b", b, 100, 1)
+    pair = mod.paired_comparisons({"a": ra, "b": rb}, {"a": ca, "b": cb}, 100, 7)[0]
+    assert pair["mean_paired_dice_delta"] == 0.0
+    assert pair["all_case_dice_empty1"]["mean_paired_delta"] == -0.5
+    assert pair["all_case_dice_empty1"]["n_cases"] == 2
+    assert pair["all_case_dice_empty1"]["paired_bootstrap_ci95"] is not None
+    assert mod.paired_comparisons({"a": ra, "b": rb}, {"a": ca, "b": cb}, 100, 7)[0] == pair
+
+
+@pytest.mark.parametrize("counts", [(-1, 0, 0), (0.5, 0, 0), (True, 0, 0)])
+def test_empty1_dice_rejects_invalid_counts(counts):
+    mod = _load_module()
+    with pytest.raises(mod.EvaluationError, match="非负整数"):
+        mod.dice_empty1_from_counts(*counts)
+
+
+def test_all_case_dice_rejects_empty_or_mismatched_population():
+    mod = _load_module()
+    with pytest.raises(mod.EvaluationError, match="空病例集合"):
+        mod.summarize_all_case_dice_empty1({})
+    case = _case("p", 10, 10, 10)
+    with pytest.raises(mod.EvaluationError, match="相同且非空"):
+        mod.paired_all_case_dice_empty1({"p": case}, {}, 100, 1)
+    with pytest.raises(mod.EvaluationError, match="reference计数不一致"):
+        mod.paired_all_case_dice_empty1({"p": case}, {"p": _case("p", 20, 10, 10)}, 100, 1)
 
 
 # --------------------------------------------------------------------------- 7-10 宏/微/精度

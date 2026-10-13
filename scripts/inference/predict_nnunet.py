@@ -99,6 +99,20 @@ from zonal_reliability_fusion.anatomy.inference import (  # noqa: F401
 _anatomy_prediction_preflight = anatomy_prediction_preflight
 
 
+def v2_prediction_output_preflight(arguments):
+    """Only check paths/CLI; never load images or checkpoints here."""
+    if "--help" in arguments or "-h" in arguments:
+        return
+    from zonal_reliability_fusion.anatomy.inference import parse_model_folder_arguments
+    from zonal_reliability_fusion.nnunet.runtime import model_is_v2, require_v2_output_path
+
+    options = parse_model_folder_arguments(arguments)
+    if model_is_v2(options.m):
+        output = require_v2_output_path(options.o, "predictions")
+        if output.exists() or output.is_symlink():
+            raise ValueError(f"V2 prediction output already exists; refuses overwrite: {output}")
+
+
 def main(argv=None) -> None:
     # 允许 ``--help`` 直接透传到官方 parser；其余情况先校验运行时再委托官方 entry point。
     from zonal_reliability_fusion.nnunet import check_fixed_nnunet_runtime
@@ -113,6 +127,7 @@ def main(argv=None) -> None:
     from nnunetv2.inference.predict_from_raw_data import predict_entry_point_modelfolder
 
     arguments = list(sys.argv[1:] if argv is None else argv)
+    v2_prediction_output_preflight(arguments)
     anatomy = anatomy_prediction_preflight(arguments)
     original_argv = sys.argv
     try:

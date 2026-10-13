@@ -36,6 +36,7 @@
 - ``all_prediction_voxel_precision`` = ΣTP / (ΣTP + ΣFP + ΣFP_阴性)，分母含阴性病例假阳体素。
   两者**不得**都笼统称为 "precision"。
 - 阳性病例完全漏分时 Dice 记为 **0**，不得排除。
+- 主表Dice_all独立使用全部病例宏平均、空空=1；历史dice/null与阳性主终点保持原义。
 - GT 非空、预测为空：NSD = 0，HD95/ASSD = null，同时计入 missed case。
 - GT 与预测均为空：不纳入阳性病灶表面统计。
 - NSD@τ 使用 DeepMind ``surface-distance`` 0.1 官方实现：按**物理表面测度 μ（surfel 面积，
@@ -96,6 +97,7 @@ from zonal_reliability_fusion.evaluation import (
     bootstrap_ci_paired_mean,
     bootstrap_ci_paired_ratio,
     component_analysis,
+    dice_empty1_from_counts,
     dice_from_counts as _recompute_dice,
     dist_stats as _dist_stats,
     finite as _finite,
@@ -105,12 +107,14 @@ from zonal_reliability_fusion.evaluation import (
     lesion_size_stratum as _lesion_size_stratum,
     load_mask_pair,
     nsd_surface_area,
+    paired_all_case_dice_empty1,
     pred_component_stats as _pred_component_stats,
     ratio as _ratio,
     recompute_case_counts,
     spacing_zyx as _spacing_zyx,
     surface_distance_metrics as _surface_distance_metrics,
     surface_metrics,
+    summarize_all_case_dice_empty1,
     verify_case_counts as _verify_case_counts,
     voxel_volume_mm3 as _voxel_volume_mm3,
 )
@@ -673,6 +677,7 @@ def summarize_model(
             "FN": c["FN"],
             "TN": c["TN"],
             "dice": _finite(c["dice"]),
+            "dice_empty1": dice_empty1_from_counts(c["TP"], c["FP"], c["FN"]),
             "tp_over_n_ref": _ratio(c["TP"], c["n_ref"]),
             "tp_over_n_pred": _ratio(c["TP"], c["n_pred"]),
             "n_pred_over_n_ref": _ratio(c["n_pred"], c["n_ref"])
@@ -688,6 +693,7 @@ def summarize_model(
         "case_counts": case_counts,
         "nnunet_reported": nnunet_reported,
         "positive_segmentation": positive_segmentation,
+        "all_case_segmentation": summarize_all_case_dice_empty1(cases),
         "voxel_metrics": voxel_metrics,
         "miss_structure": miss_structure,
         "negative_false_positive": negative_false_positive,
@@ -808,6 +814,9 @@ def paired_comparisons(
                 "model_b": b_name,
                 "delta_definition": "model_b - model_a",
                 "positive_case_dice_deltas": rows,
+                "all_case_dice_empty1": paired_all_case_dice_empty1(
+                    a_cases, b_cases, bootstrap_resamples, seed
+                ),
                 "mean_paired_dice_delta": _finite(np.mean(dice_deltas))
                 if dice_deltas
                 else None,
@@ -861,9 +870,42 @@ def print_table(reports: dict[str, dict], comparisons: list[dict], mode: str) ->
 
     print()
     print(f"=== 病灶分割评估（mode={mode}）===")
+    paper_header = (
+        f"{'model':<20}{'Dice_all ↑':>12}{'Precision ↑':>14}{'Recall ↑':>12}"
+        f"{'HD95 (mm) ↓':>15}{'NSD ↑':>12}"
+    )
+    print(paper_header)
+    print("-" * len(paper_header))
+    for name, rep in reports.items():
+        surface = rep.get("surface_metrics") or {}
+        print(
+            f"{name:<20}"
+            f"{fmt(rep['all_case_segmentation']['all_case_macro_dice_empty1']):>12}"
+            f"{fmt(rep['voxel_metrics']['positive_voxel_precision']):>14}"
+            f"{fmt(rep['voxel_metrics']['positive_voxel_recall']):>12}"
+            f"{fmt((surface.get('hd95_mm') or {}).get('mean'), 2):>15}"
+            f"{fmt((surface.get('nsd') or {}).get('mean')):>12}"
+        )
+    print("Dice_all：全部固定病例等权平均，GT/预测均为空记1；完全漏检或阴性假阳记0。")
+    print("其余四列：GT阳性病例；Precision/Recall为体素计数汇总比值，NSD为病例宏平均。")
+    print("阳性空预测：Dice/NSD记0，FN计入Recall；Precision汇总分母为0时未定义。")
+    print("HD95 仅汇总有定义病例，包含预测非空但无重叠病例；空预测计入漏检。")
+    for name, rep in reports.items():
+        surface = rep.get("surface_metrics")
+        if surface is not None:
+            print(
+                f"[{name}] HD95 有效病例="
+                f"{surface['n_cases_with_defined_hd95']}/{surface['n_positive_cases']}; "
+                f"NSD 容差={fmt(surface['nsd_tolerance_mm'], 2)} mm（表面面积加权）。"
+            )
+    if mode != "full":
+        print("summary 模式未计算 HD95/NSD，n/a 不表示0。")
+    print("展示列与参考论文一致；统计口径不宣称与该论文未明确的表格口径完全相同。")
+    print()
+    print("诊断表（病例数量、覆盖、漏检与阴性假阳性）")
     header = (
         f"{'model':<20}{'cases':>7}{'pos':>6}{'neg':>6}"
-        f"{'macroDice':>11}{'medDice':>9}{'microDice':>11}"
+        f"{'Dice_pos':>11}{'medDice':>9}{'microDice':>11}"
         f"{'recall':>9}{'posPrec':>9}{'allPrec':>9}{'missed':>8}{'negFP':>7}"
     )
     print(header)
@@ -898,6 +940,13 @@ def print_table(reports: dict[str, dict], comparisons: list[dict], mode: str) ->
                 f"missDelta={cmp_['complete_miss_delta']:+d}, "
                 f"negFPCaseDelta={cmp_['negative_fp_case_delta']:+d} "
                 f"[{cmp_['interpretation']}]"
+            )
+            all_pair = cmp_["all_case_dice_empty1"]
+            all_ci = all_pair["paired_bootstrap_ci95"]
+            all_ci_txt = "n/a" if all_ci is None else f"[{all_ci[0]:+.4f}, {all_ci[1]:+.4f}]"
+            print(
+                f"  Dice_all（全部{all_pair['n_cases']}例，空空=1）: "
+                f"meanDelta={fmt(all_pair['mean_paired_delta'])} CI95={all_ci_txt}"
             )
     print()
 
@@ -1517,6 +1566,32 @@ def parse_models(specs: Iterable[str]) -> list[tuple[str, Path]]:
     return out
 
 
+def check_versioned_evaluation_output(models, output):
+    """Keep V2 reports in their subtree, with explicit labels in mixed comparisons."""
+    from zonal_reliability_fusion.nnunet.runtime import (
+        model_is_v2,
+        require_v2_output_path,
+        v2_output_root,
+    )
+
+    versions = {name: model_is_v2(folder) for name, folder in models}
+    for name, is_v2 in versions.items():
+        if name.startswith(("V2_", "v2_")) and not is_v2:
+            raise EvaluationError(f"{name}: V2 label must refer to a V2 Trainer/path")
+    if any(versions.values()):
+        for name, is_v2 in versions.items():
+            prefixes = ("V2_", "v2_") if is_v2 else ("V1_", "v1_", "LEGACY_", "SHARED_")
+            if not name.startswith(prefixes):
+                raise EvaluationError(f"{name}: versioned comparison requires explicit version label")
+        if output is not None:
+            category = "reports" if Path(output).resolve().is_relative_to(v2_output_root("reports")) else "metrics"
+            try:
+                require_v2_output_path(output, category)
+            except ValueError as exc:
+                raise EvaluationError(str(exc)) from exc
+    return versions
+
+
 def parse_thresholds(raw: str | None) -> list[float] | None:
     if raw is None or not raw.strip():
         return None
@@ -1585,6 +1660,7 @@ def _run(args: argparse.Namespace, run: RunStats) -> int:
     if args.bootstrap_resamples <= 0:
         raise EvaluationError("--bootstrap-resamples 必须为正整数")
     models = parse_models(args.model)
+    version_flags = check_versioned_evaluation_output(models, args.output)
     thresholds = parse_thresholds(args.volume_thresholds_mm3)
 
     # --nsd-tolerance-mm 必须是正的有限数（nan / inf / -inf 一律拒绝）
@@ -1661,6 +1737,8 @@ def _run(args: argparse.Namespace, run: RunStats) -> int:
     payload = _json_safe(
         {
             "schema_version": SCHEMA_VERSION,
+            "research_version": ("V2" if all(version_flags.values()) else "MIXED"
+                                 if any(version_flags.values()) else "HISTORICAL_OR_SHARED"),
             "created_at_utc": _now_utc(),
             "mode": args.mode,
             "seed": args.seed,

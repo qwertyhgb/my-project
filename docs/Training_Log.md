@@ -1,3 +1,7 @@
+> 版本治理（2026-10-12）：V2 为唯一 ACTIVE；V1 为 FROZEN；更早 gate 为 LEGACY。
+> 本文件是所有版本的唯一真实运行日志与 variant 状态表。原实验标题中的 A/B/C/D 均按其
+> VERSION=V1 范围解释；新实验只用 v2_ 名字。历史事实、路径、时间不改写。
+
 # Training Log
 
 训练与验证的运行事实日志。只记录真实运行（命令、时间、状态、关键结果、产物路径），不含协议/门控叙述。
@@ -33,7 +37,7 @@
   `outputs/nnUNet_results/Dataset607_PICAI_Anatomy/` 后确认它**已完成 100 epoch 训练与
   validation**（2026-10-06）。事实与逐区域结果见下一小节。
 
-### Stage-1（`anatomy_joint_100ep`）的真实结果
+### Stage-1（`anatomy_joint_100ep`）的真实结果 [VERSION=V1]
 
 - 数据集：`Dataset607_PICAI_Anatomy` / `3d_fullres` / fold 0（train 1276 / val 223 study）；
 - 起止（UTC）：2026-10-06 11:02:00 → 12:28:20 训练完成 100 epoch；validation 至 12:38:15；
@@ -80,7 +84,7 @@
 
 ---
 
-## 2026-10-08 — 串行队列运行事实、用户停止与 100ep 构造失败
+## 2026-10-08 — 串行队列运行事实、用户停止与 100ep 构造失败 [VERSION=V1 / VERSION=LEGACY]
 
 队列命令（用户于 2026-10-06 14:10 起在后台串行执行，逐项 `tee` 到 `outputs/logs/<variant>.log`）：
 
@@ -112,7 +116,7 @@
 
 ---
 
-## 2026-10-06 — 现有产物核对与新分支状态
+## 2026-10-06 — 现有产物核对与新分支状态 [VERSION=V1 / VERSION=LEGACY]
 
 - 原 `feature_no_gate_positive_sampling` / Dataset605 / fold 0 已有 2026-09-28 启动日志、
   `checkpoint_best.pth` 与 `checkpoint_latest.pth`。现有日志最后完整 epoch 为 335，
@@ -125,7 +129,7 @@
 
 ---
 
-## N0 — baseline（已完成）
+## N0 — baseline（已完成） [VERSION=LEGACY]
 
 - variant / Trainer：`baseline` → `nnUNetTrainerPICAI_FLCE_NoFFT`
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0
@@ -165,7 +169,7 @@
 
 ---
 
-## legacy M0 — 旧自写 Residual-Encoder 管线（已中断，仅历史保留）
+## legacy M0 — 旧自写 Residual-Encoder 管线（已中断，仅历史保留） [VERSION=LEGACY]
 
 - 性质：**旧自写训练框架**（非 nnU-Net-first），本次重构后不再续训、不再用于任何结论。
 - 启动：2026-09-20 09:32 UTC；由用户于 2026-09-21 停止。
@@ -190,36 +194,39 @@
 
 ## 各 variant 状态
 
-本表是当前状态唯一来源；前面的重构表是历史快照。命令统一见 README「训练与推理命令」；运行后按下方模板在此登记真实事实。
+本表是当前状态唯一来源；前面的重构表是历史快照。V2命令见 docs/v2/Experiment_Plan.md；V1旧命令见 docs/v1/Experiment_Plan_V1.md（须 --v1）；运行后按下方模板在此登记真实事实。
 
-| variant | 数据集/配置/fold | 状态 | 输出目录 |
-|---|---|---|---|
-| native_dicece（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成；Native/A2 full配对评价完成**；详情见`experiments/native_dicece_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| dicece_positive_sampling_100ep（A-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成**；仅短预算筛选参照 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| neutral_fusion_dicece_100ep（B-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A-short/B-short full配对评价完成**；配置budget文字误标formal，但epochs/debug/日志均为100 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| lesion_fusion_dicece_100ep（C-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A/B/C full配对评价完成** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_lesion_fusion_dicece_100ep（D-short，seed=20261008） | Dataset608 / 3d_fullres / 0 | **运行中**；2026-10-12日志快照完成epoch0–41，进入epoch42；608完整MRI/标签一致性审计PASS | `outputs/nnUNet_results/Dataset608_PICAI_PredictedAnatomy/nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| baseline | Dataset605 / 3d_fullres / 0 | 已完成（见上） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| optimized_baseline | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中止（见下）** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| image_gate | Dataset605 / 3d_fullres / 0 | 已完成 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_gate | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
-| positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已启动，缺最终 validation**（2026-10-06 产物核对见首节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中断于 epoch 81**（见 2026-10-08 节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
-| positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation完成**；一次中断续训；详情见 `experiments/positive_sampling_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| dicece_positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成**；详情见 `experiments/dicece_positive_sampling_seed20261008.md`；未加seed的原类名运行未启动 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
-| anatomy_joint_100ep | Dataset607 / 3d_fullres / 0 | 100ep+validation完成；soft heads诊断完成，见末节 | 既有Stage-1目录保留 |
-| neutral_fusion_flce / neutral_fusion_dicece（新B） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
-| lesion_fusion_flce / lesion_fusion_dicece（新C） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
-| anatomy_lesion_fusion_flce / anatomy_lesion_fusion_dicece（新D） | Dataset608 / 3d_fullres / 0 | CODE READY / NOT TRAINED；真实Dataset608尚未物化/预处理 | 各自独立Trainer类名目录，未创建 |
-| lesion_roi / lesion_coarse_to_fine / lesion_zone_refine | 原605/606 | SUPPORTING，未训练；不是新B/C/D；ROI坐标链仍待验证 | 原类名保留，未创建 |
-| lesion_hard_negative | 原605 | SUPPORTING，未训练；固定原C，不能代表新E | 原类名保留，未创建 |
-| 新E best(C,D)+hard negatives | 待父模型选定 | PLANNED / NOT IMPLEMENTED / NOT TRAINED | 尚未定义新Trainer输出 |
+| VERSION | variant | 数据集/配置/fold | 状态 | 输出目录 |
+|---|---|---|---|---|
+| V2 | v2_early_fusion / v2_multi_encoder_simple / v2_adaptive_fusion / v2_anatomy_fusion / v2_coarse / v2_refine / v2_full_sched | 605/608，3d_fullres / 0 | CODE READY / SYNTHETIC TESTS ONLY / NOT TRAINED；旧均值与直接加权类保留兼容、不安排当前首轮；early-fusion对照复用下方V1 A2，E/F/SCHED暂不排期 | V2新产物归outputs/v2；共享A2保留V1原路径与来源，无新增V2训练事实 |
+| V2 | v2_concat_fusion（B-concat，seed=20261008） | Dataset605 / 3d_fullres / 0 | **TRAINING IN PROGRESS**；2026-10-13北京时间08:59只读快照：连续完成epoch0–389（390/1000），正在epoch390；运行正常，final checkpoint与整例validation尚未完成 | outputs/v2/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/ |
+| V2 | v2_concat_adaptive_fusion / v2_concat_anatomy_fusion | 605（C）/608（D），3d_fullres / 0 | CODE READY / SYNTHETIC TESTS ONLY / NOT TRAINED；资源未测，等待B结果后逐组推进 | outputs/v2/nnUNet_results下ConcatAdaptiveFusion/ConcatAnatomyFusion独立V2 Trainer目录 |
+| V1 | native_dicece（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成；Native/A2 full配对评价完成**；详情见`experiments/native_dicece_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NativeSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | dicece_positive_sampling_100ep（A-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成**；仅短预算筛选参照 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | neutral_fusion_dicece_100ep（B-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A-short/B-short full配对评价完成**；配置budget文字误标formal，但epochs/debug/日志均为100 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_NeutralFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | lesion_fusion_dicece_100ep（C-short，seed=20261008） | Dataset605 / 3d_fullres / 0 | **100ep + 223例validation及概率导出完成；A/B/C full配对评价完成** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_LesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | anatomy_lesion_fusion_dicece_100ep（D-short，seed=20261008） | Dataset608 / 3d_fullres / 0 | 训练日志epoch0–99完整，Training done与final checkpoint存在；原生整例validation进行中，尚无summary，608审计PASS | `outputs/nnUNet_results/Dataset608_PICAI_PredictedAnatomy/nnUNetTrainerPICAI_AnatomyLesionFusion_DiceCE_100ep_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | baseline | Dataset605 / 3d_fullres / 0 | 已完成（见上） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | optimized_baseline | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中止（见下）** | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | image_gate | Dataset605 / 3d_fullres / 0 | 已完成 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | anatomy_gate | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见下） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | feature_no_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **已启动，缺最终 validation**（2026-10-06 产物核对见首节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | feature_image_gate_positive_sampling | Dataset605 / 3d_fullres / 0 | **用户已停止 / 中断于 epoch 81**（见 2026-10-08 节） | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| LEGACY | feature_anatomy_gate_positive_sampling | Dataset606 / 3d_fullres / 0 | **已完成**（训练 + validation，见 2026-10-08 节） | `outputs/nnUNet_results/Dataset606_PICAI_Zonal/nnUNetTrainerPICAI_FeatureAnatomyGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation完成**；一次中断续训；详情见 `experiments/positive_sampling_seed20261008.md` | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | dicece_positive_sampling（seed=20261008） | Dataset605 / 3d_fullres / 0 | **1000ep + 223例validation及概率导出完成**；详情见 `experiments/dicece_positive_sampling_seed20261008.md`；未加seed的原类名运行未启动 | `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/` |
+| V1 | anatomy_joint_100ep | Dataset607 / 3d_fullres / 0 | 100ep+validation完成；soft heads诊断完成，见末节 | 既有Stage-1目录保留 |
+| V1 | neutral_fusion_flce / neutral_fusion_dicece（新B） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
+| V1 | lesion_fusion_flce / lesion_fusion_dicece（新C） | Dataset605 / 3d_fullres / 0 | CODE READY / NOT TRAINED；构造与合成检查见Development_Log | 各自独立Trainer类名目录，未创建 |
+| V1 | anatomy_lesion_fusion_flce / anatomy_lesion_fusion_dicece（新D） | Dataset608 / 3d_fullres / 0 | CODE READY / NOT TRAINED（该行正式1000ep类）；608已物化/预处理，D-short状态见独立行 | 各自独立Trainer类名目录，未创建 |
+| V1 | lesion_roi / lesion_coarse_to_fine / lesion_zone_refine | 原605/606 | SUPPORTING，未训练；不是新B/C/D；ROI坐标链仍待验证 | 原类名保留，未创建 |
+| V1 | lesion_hard_negative | 原605 | SUPPORTING，未训练；固定原C，不能代表新E | 原类名保留，未创建 |
+| V1 | 新E best(C,D)+hard negatives | 待父模型选定 | PLANNED / NOT IMPLEMENTED / NOT TRAINED | 尚未定义新Trainer输出 |
 
-### image_gate（已完成）
+### image_gate（已完成） [VERSION=LEGACY]
 
 - variant / Trainer：`image_gate` → `nnUNetTrainerPICAI_ImageGate`
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0（1277 train / 223 val）
@@ -235,7 +242,7 @@
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate__nnUNetPlans__3d_fullres/fold_0/`
 - 详细记录：`docs/archive/historical_experiments/image_gate.md`
 
-### optimized_baseline（**用户已停止 / 中止**）
+### optimized_baseline（**用户已停止 / 中止**） [VERSION=LEGACY]
 
 - variant / Trainer：`optimized_baseline` → `nnUNetTrainerPICAI_DiceCE_NoFFT`
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0
@@ -255,7 +262,7 @@
 - 输出目录（勿覆盖、勿读取其未完成产物）：
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_DiceCE_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 
-### positive_sampling（**已完成**：训练 + actual validation）
+### positive_sampling（**已完成**：训练 + actual validation） [VERSION=V1]
 
 - variant / Trainer：`positive_sampling` → `nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT`
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0（1277 train / 223 val）
@@ -284,7 +291,7 @@
   评估口径不同的打分方式，**不得**据此单独声称某个机制的收益。
 - 详细记录：`docs/experiments/positive_sampling.md`
 
-### image_gate_positive_sampling（**已完成**：训练 + actual validation）
+### image_gate_positive_sampling（**已完成**：训练 + actual validation） [VERSION=LEGACY]
 
 - variant / Trainer：`image_gate_positive_sampling` → `nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT`
 - 数据集 / 配置 / fold：Dataset605_PICAI / `3d_fullres` / fold 0（1277 train / 223 val，与
@@ -313,7 +320,7 @@
   `outputs/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_ImageGate_PositiveSampling_NoFFT__nnUNetPlans__3d_fullres/fold_0/`
 - 详细记录：`docs/archive/historical_experiments/image_gate_positive_sampling.md`
 
-### anatomy_gate_positive_sampling（**已完成**：训练 + actual validation）
+### anatomy_gate_positive_sampling（**已完成**：训练 + actual validation） [VERSION=LEGACY]
 
 - variant / Trainer：`anatomy_gate_positive_sampling` →
   `nnUNetTrainerPICAI_AnatomyGate_PositiveSampling_NoFFT`
@@ -357,7 +364,7 @@
   `docs/Findings.md` §3.11。
 - 详细记录：`docs/archive/historical_experiments/anatomy_gate_positive_sampling.md`
 
-### 三个浅层特征融合 variant（`feature_*_positive_sampling`）
+### 三个浅层特征融合 variant（`feature_*_positive_sampling`） [VERSION=LEGACY]
 - variant / Trainer：
   `feature_no_gate_positive_sampling` → `nnUNetTrainerPICAI_FeatureNoGate_PositiveSampling_NoFFT`；
   `feature_image_gate_positive_sampling` → `nnUNetTrainerPICAI_FeatureImageGate_PositiveSampling_NoFFT`；
@@ -371,7 +378,7 @@
   其余两个门控条件未运行。中间训练动态不能代替完整滑窗验证结果。
 - 结构、参数量与比较边界的登记位置见 `README.md`「浅层特征融合」小节
 
-### Dataset606 / anatomy_gate 数据状态
+### Dataset606 / anatomy_gate 数据状态 [VERSION=LEGACY]
 
 Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入固定 split：
 
@@ -394,10 +401,10 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
 
 ---
 
-## 运行记录模板
+## 运行记录模板 [VERSION=V1]
 
 ```
-### <variant> — <dataset>/<config>/fold <k>
+### <variant> — <dataset>/<config>/fold <k> [VERSION=V1]
 - 命令：
 - 开始 / 结束（UTC）：
 - 状态：完成 / 中断于 epoch N / 失败
@@ -408,7 +415,7 @@ Dataset606_PICAI_Zonal 已物化、完成 3d_fullres preprocessing，并写入�
 
 ---
 
-## 2026-10-08 — 既有 Stage-1 soft heads 只读诊断（无新训练/推理）
+## 2026-10-08 — 既有 Stage-1 soft heads 只读诊断（无新训练/推理） [VERSION=V1]
 
 用户明确授权分析既有 validation 输出。conda lm + 固定 nnU-Net 环境，命令：
 
@@ -438,7 +445,7 @@ python -B -m zonal_reliability_fusion.anatomy.validation outputs/nnUNet_results/
 
 ---
 
-## 2026-10-08 — 正式实验前收口（无新训练 / 无新 validation）
+## 2026-10-08 — 正式实验前收口（无新训练 / 无新 validation） [VERSION=V1]
 
 本轮只做代码、测试、文档与只读诊断，**未启动**任何训练、validation、推理或数据处理；
 未创建任何模型目录或 checkpoint，未删除或覆盖任何既有产物。状态变化（不含运行结果）：
@@ -454,7 +461,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 
 ---
 
-## 2026-10-10 — A1/A2 matched-seed full 评价失败（未发布结果）
+## 2026-10-10 — A1/A2 matched-seed full 评价失败（未发布结果） [VERSION=V1]
 
 - 命令：`python scripts/evaluate_segmentation.py --model A1_final=<A1 fold_0> --model A2_final=<A2 fold_0>
   --mode full --nsd-tolerance-mm 2.0 --bootstrap-resamples 10000 --seed 20260922
@@ -472,7 +479,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 边界：本次未启动任何新的训练/推理/预处理；未修改任何 prediction、reference 或 data/workdir 产物
 
 
-## 2026-10-09 — A1 positive_sampling，seed=20261008 完成
+## 2026-10-09 — A1 positive_sampling，seed=20261008 完成 [VERSION=V1]
 
 - 运行：Dataset605_PICAI / 3d_fullres / fold0；Trainer=`nnUNetTrainerPICAI_FLCE_PositiveSampling_NoFFT_Seed20261008`。
 - 用户首次启动，断网中断后以`--continue-training`恢复；日志从epoch41继续至999。
@@ -483,7 +490,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 配置、两段命令、训练动态、summary-level分析与产物：`docs/experiments/positive_sampling_seed20261008.md`。
 - 本次报告工作只读既有产物；未重跑训练、validation、推理或full评估。
 
-## 2026-10-10 — A2 dicece_positive_sampling，seed=20261008 完成
+## 2026-10-10 — A2 dicece_positive_sampling，seed=20261008 完成 [VERSION=V1]
 
 - 运行：Dataset605_PICAI / 3d_fullres / fold0；Trainer=`nnUNetTrainerPICAI_DiceCE_PositiveSampling_NoFFT_Seed20261008`。
 - 启动入口：`scripts/train/train_nnunet.py dicece_positive_sampling 605 3d_fullres 0 --seed 20261008 --seeded-output --export-validation-probabilities --run-config outputs/run_configs/A2_dicece_positive_sampling_fold0_seed20261008.json`；完整环境与命令见实验报告。
@@ -496,7 +503,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 详细配置、训练动态、病例级结果、产物及证据边界：`docs/experiments/dicece_positive_sampling_seed20261008.md`。
 - 本次报告工作只读既有日志、checkpoint logger、JSON及文件清单；未启动训练、推理、validation或医学体素评测。
 
-### 2026-10-10 — A2 final 全验证集概率诊断
+### 2026-10-10 — A2 final 全验证集概率诊断 [VERSION=V1]
 
 - 用户运行 `scripts/data/diagnose_picai_case_chain.py`，使用A2 `fold_0`与其`validation`概率目录，参数`--all-validation --no-plots`。
 - 开始时间（北京时间）09:38:59；耗时309.475 s；successful=223 / failed=0 / skipped=0，完整队列阳性63、阴性160。
@@ -505,7 +512,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - p>0.5复现阳性macro Dice=0.500360060、零重叠6/63、阴性有FP131/160；p>0.01零重叠仍6/63、阴性有FP153/160。
 - 本次代理仅读取既有JSON并补充上述实验报告，未自行启动数据处理或推理。
 
-### 2026-10-10 — A2 best 概率导出及诊断
+### 2026-10-10 — A2 best 概率导出及诊断 [VERSION=V1]
 
 - 用户完成checkpoint_best.pth独立预测；产物`outputs/predictions/A2_best_fold0_seed20261008_20261010T015819Z/`，原final validation保留。
 - 用户运行全验证集概率诊断，产物`outputs/diagnostics/picai_probability_diagnostics_20261010T021025_787594Z/summary.json`。
@@ -513,7 +520,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - p>0.5：阳性macro Dice=0.503831146，pooled recall=0.568709546，零重叠6/63，阴性有FP149/160、阴性FP体素322425。
 - 详细记录及同run checkpoint比较见现有A2实验报告第10节。代理只读JSON并更新文档，未启动长任务。
 
-### 2026-10-10 — A2 零重叠病例数据链诊断
+### 2026-10-10 — A2 零重叠病例数据链诊断 [VERSION=V1]
 
 - 用户运行既有case-chain脚本，对final/best零重叠并集7例加2例高Dice对照生成JSON与图像。
 - 产物：`outputs/diagnostics/picai_case_chain_20261010T024730_612404Z/summary.json`。
@@ -521,7 +528,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 逐病例结果与检查范围见现有A2实验报告第11节；不能据9例检查声明全数据集处理正确。
 - 代理仅读取既有JSON与两张既有PNG，未启动数据处理、训练或推理。
 
-### 2026-10-10 — A1/A2 matched-seed final 统一summary评价
+### 2026-10-10 — A1/A2 matched-seed final 统一summary评价 [VERSION=V1]
 
 - 用户运行`python scripts/evaluate_segmentation.py --model A1_final=<A1_seed_fold0> --model A2_final=<A2_seed_fold0> --mode summary --bootstrap-resamples 10000 --seed 20260922 --output <新JSON>`。
 - 产物：`outputs/metrics/A1_A2_final_fold0_seed20261008_20261010T025355Z.json`。
@@ -532,7 +539,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 尚未执行统一full评价或启动B/C/D训练。summary不含病灶实例、物理FP体积或表面指标。
 
 
-### 2026-10-10 — A1/A2 final full评价成功
+### 2026-10-10 — A1/A2 final full评价成功 [VERSION=V1]
 
 - 用户在修订后的几何规则下完成full评价；NSD=2mm为探索性，seed=20260922、bootstrap=10000。
 - 产物：`outputs/metrics/A1_A2_final_full_exploratory_NSD2mm_20261010T035655212238528Z.json`；日志`outputs/logs/A1_A2_full_20261010T035655212238528Z.log`。
@@ -541,7 +548,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - A-short/B-short尚未运行；本次代理只读结果JSON并更新文档，未启动任何训练或真实数据评价。
 
 
-### 2026-10-10 — A-short DiceCE+阳性采样完成
+### 2026-10-10 — A-short DiceCE+阳性采样完成 [VERSION=V1]
 
 - 用户运行`dicece_positive_sampling_100ep 605 3d_fullres 0 --seed 20261008 --seeded-output --export-validation-probabilities --run-config outputs/run_configs/A_short_dicece_positive_sampling_fold0_seed20261008.json`。
 - Trainer=`nnUNetTrainerPICAI_DiceCE_PositiveSampling_100ep_NoFFT_Seed20261008`；日志`training_log_2026_10_10_05_36_25.txt`；输出目录见唯一状态表。
@@ -551,7 +558,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 本条仅记录运行事实，不与1000epoch结果比较；未完成本run的概率诊断/full实例评价。原生采样1000epoch参考尚未启动（本次只读路径检查）。
 - 代理只读现有日志/JSON/文件清单并更新记录，未启动训练或数据处理。
 
-### 2026-10-11 — 核查B-short完成及原生采样参考运行
+### 2026-10-11 — 核查B-short完成及原生采样参考运行 [VERSION=V1]
 
 - B-short用户已完成；日志`training_log_2026_10_10_08_02_37.txt`有完整epoch0–99，
   `checkpoint_final.pth`存在，debug中num_epochs=100、batch=2、LR=0.01、每epoch训练/验证迭代250/50。
@@ -572,7 +579,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
   best/latest存在、final及最终验证summary尚未产生。Pseudo Dice不是完整病例分割终点。
 - 核查仅只读日志、配置、JSON及进程清单；代理未启动训练、推理或真实医学数据评价。
 
-### 2026-10-11 — A-short/B-short full配对评价完成
+### 2026-10-11 — A-short/B-short full配对评价完成 [VERSION=V1]
 
 - 用户运行完成；产物`outputs/metrics/Ashort_Bshort_final_full_exploratory_NSD2mm_20261011T021156038922776Z.json`，
   日志`outputs/logs/Ashort_Bshort_full_20261011T021156038922776Z.log`。
@@ -590,7 +597,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 代理只读产物并核对汇总计数/日志，未重跑真实评价；几何规则通过不是原始MRI模态配准质量证明。
   原生采样训练另一次日志快照已进入epoch724，未产生final；C-short目录/run_config尚不存在，未启动。
 
-### 2026-10-11 — 原生DiceCE＋原生采样正式参考完成
+### 2026-10-11 — 原生DiceCE＋原生采样正式参考完成 [VERSION=V1]
 
 - 用户报告完成，本轮核查日志`training_log_2026_10_10_15_01_47.txt`完整epoch0–999；
   final checkpoint current_epoch=1000，logger八个序列各1000项；best current_epoch=949。
@@ -608,7 +615,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - 尚未计算本run CI、实例匹配、物理体积/表面或概率诊断；best没有整例验证证据。
   本轮仅秒级只读日志/JSON/checkpoint元数据及logger，未启动任何训练或真实医学数据评测。
 
-### 2026-10-11 — Native/A2 final完整配对评价完成
+### 2026-10-11 — Native/A2 final完整配对评价完成 [VERSION=V1]
 
 - 用户返回运行日志及EVAL_EXIT=0、TEE_EXIT=0；结果
   `outputs/metrics/native_A2_final_full_exploratory_NSD2mm_20261011T071549214283765Z.json`，
@@ -626,7 +633,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
 - Native自身bootstrap/实例/表面终点补入其独立实验报告；跨run解释写Findings。
   本轮代理仅只读已有JSON并更新文档，未启动训练或真实医学数据评价。C-short尚未发现产物目录。
 
-### 2026-10-12 — C-short完成、Dataset608准备通过及D-short运行
+### 2026-10-12 — C-short完成、Dataset608准备通过及D-short运行 [VERSION=V1]
 
 - C日志`training_log_2026_10_11_07_33_34.txt`完整epoch0–99，无已发现错误/NaN。
   北京时间2026-10-11 15:33:37开始epoch0，19:50:37 Training done，20:06:42 Validation complete；
@@ -653,7 +660,7 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
   epochs=100但budget文字误标formal，保留原始产物，实际预算依据类名/debug/epochs。
 - 本轮代理只读既有日志、配置、审计和summary并更新文档，未运行任何训练、推理或真实医学数据评价。
 
-### 2026-10-12 — A/B/C-short完整配对评价完成
+### 2026-10-12 — A/B/C-short完整配对评价完成 [VERSION=V1]
 
 - 用户执行full评价及tee均exit0；产物
   `outputs/metrics/ABC_short_final_full_exploratory_NSD2mm_20261012T003738020176149Z.json`，
@@ -671,3 +678,82 @@ NO NEW MODEL TRAINING OR VALIDATION WAS STARTED.
   另一例11284_1001307为2783.831 mm³；这是病例总体积，不直接作为单病灶大小。
   四例C预测均非空，不能把它们描述为全部预测背景。
 - 最新D日志快照进入epoch51，final/整例summary尚无；代理只读评价JSON并更新记录，没有重跑评价。
+
+### 2026-10-12 — V1 D-short只读状态核对 [VERSION=V1]
+
+- 读取既有 `training_log_2026_10_11_22_26_11.txt` 的尾部，最后epoch起始行：`2026-10-12 03:36:30.493994: Epoch 98`（原日志UTC）。
+- 未见checkpoint_final与validation/summary；不猜测完成或D性能。
+- 当前进程未被本轮启动/停止；outputs与run-config均未改动。
+- V1状态依据此快照更新唯一表；本次V2代码重构不作为真实训练事实。
+
+### 2026-10-12 — V1 D-short训练完成、整例验证尚未完成 [VERSION=V1]
+
+- 本轮后续只读日志：epoch0–99各一次，共100条；`Training done`时间为 `2026-10-12 03:43:14.458400`（原日志UTC）。
+- final checkpoint文件存在；未加载checkpoint，未核实其内部epoch字段。
+- 日志仍在逐例predicting，validation/summary.json尚不存在，不能报整例性能或评价完成。
+- 用户既有进程继续运行；代理没有启动、停止或重跑training/validation，未写outputs。
+
+## 2026-10-12 — B-concat正式训练启动 [VERSION=V2]
+
+用户返回启动及前两轮日志；本条原始日志时间未标注时区，不推定或转换训练起止时间。
+启动audit时间为日志2026-10-12 10:18:14，epoch0开始10:18:17；用户提供日志已完成
+zero-based epoch0/1，10:22:57进入epoch2（显示3/1000）。这是早期训练事实，不是整例性能结果。
+
+```bash
+nnUNet_compile=false CUDA_VISIBLE_DEVICES=0 \
+python -u -B scripts/train/train_nnunet.py \
+  v2_concat_fusion 605 3d_fullres 0 \
+  --seed 20261008 --seeded-output \
+  --run-config outputs/v2/run_configs/V2_B_concat_fusion_fold0_seed20261008.json \
+  --export-validation-probabilities
+```
+
+- Trainer：nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT_Seed20261008；网络ConcatFusionUNet。
+- 实际run-config确认：concat全尺度0–6、3×3×3投影、无policy、无anatomy/coarse/refiner/schedule；
+  1000epoch、seed20261008、patch[16,320,320]/batch2、Dataset605/fold0。
+- 原生DeepSupervisionWrapper(DC_and_CE_loss)，输入3、输出2；默认预处理与三路ZScore。
+- 训练病例1277（positive362/negative915）；loader固定1个阳性槽位/batch2，验证采样原生。
+  日志0.5保证为loader采样口径，不视为增强后所有patch实际病灶比例测量。
+
+| zero-based epoch | train_loss | val_loss | patch pseudo Dice | epoch time(s) |
+|---|---:|---:|---:|---:|
+| 0 | 0.0088 | -0.0573 | 0.1168 | 141.16 |
+| 1 | -0.1503 | -0.0841 | 0.1651 | 133.77 |
+
+两轮平均137.465s，仅用于粗估剩余998轮约38.1h，不包含整例validation与后续速度变化。
+只读进程/GPU检查发现主训练进程仍在运行，GPU利用率98%、总占用11562MiB（约11.3GiB）；
+此为即时占用，不是训练峰值显存测量。未发现返回日志中的OOM/NaN/Traceback。
+DNA依赖约束warning仍为已知PlainConvUNet兼容限制，不升级包或改变plans；
+hiddenlayer缺失仅导致网络示意图未生成，训练已继续。固定V2-P2标签不是phase-scheduled训练。
+
+产物：run-config已存在；日志training_log_2026_10_12_10_18_10.txt；
+模型目录outputs/v2/nnUNet_results/Dataset605_PICAI/nnUNetTrainerPICAI_V2_ConcatFusion_DiceCE_NoFFT_Seed20261008__nnUNetPlans__3d_fullres/fold_0/。
+本次只读核查时checkpoint_final.pth与validation/summary.json均未存在，不能登记为训练或验证完成。
+原始用户日志附件：/root/.codex/attachments/252397f9-ba33-4f4a-a624-8173354c503b/已粘贴的文本.txt。
+代理未启动、停止、续训或修改运行中的训练；后续用户返回日志后再更新。
+
+## 2026-10-13 — B-concat训练中期只读快照 [VERSION=V2]
+
+检查时间北京时间2026-10-13 08:59，读取既有training_log_2026_10_12_10_18_10.txt、
+文件存在性/mtime与进程/GPU元数据；未加载checkpoint内容或医学影像，未运行验证/评测。
+连续完成zero-based epoch0–389，共390/1000（39.0%），正在epoch390（第391轮）。
+最后完成epoch389：train_loss=-0.3677、val_loss=-0.1600、patch pseudo Dice=0.4904，epoch time=134.30s。
+当前LR=0.00641；最新日志在检查前数秒更新。主进程PID853989仍在运行，GPU利用率100%，
+全卡占用11562MiB（约11.3GiB）；未见日志中的Traceback/OOM/NaN/Inf。
+
+| zero-based epoch范围 | 数量 | 平均train_loss | 平均val_loss | 平均patch pseudo Dice | 平均epoch time(s) |
+|---|---:|---:|---:|---:|---:|
+| 0–99 | 100 | -0.297121 | -0.107440 | 0.344508 | 133.7740 |
+| 100–199 | 100 | -0.337948 | -0.121723 | 0.408627 | 133.7007 |
+| 200–299 | 100 | -0.352461 | -0.125691 | 0.416668 | 133.6811 |
+| 300–389 | 90 | -0.369534 | -0.128756 | 0.443746 | 133.6581 |
+
+最近20轮均值：train_loss=-0.374685、val_loss=-0.132405、pseudo Dice=0.442530、time=133.699s；
+最近100轮均值：train_loss=-0.368519、val_loss=-0.129670、pseudo Dice=0.443471、time=133.6589s。
+这只是单次训练的轮间patch动态，不是整例Dice_all或run-to-run方差；不能据此声明优于共享A2。
+日志最新best EMA pseudo Dice为0.477200（原始时间2026-10-13 00:18:07，未根据EMA改选正式checkpoint）。
+
+checkpoint_latest.pth存在，mtime北京时间2026-10-13 07:28:28；checkpoint_best.pth存在，
+mtime北京时间08:18:09；均约923MB。final checkpoint与validation/summary.json仍不存在。
+日志ETA=81559.7s，约22.7h，另需整例validation；估算不包含后续速度变化或日志外保存开销。
+建议继续当前配置与预算，不停止、不重启、不同时启动C/D。代理未干预用户训练。

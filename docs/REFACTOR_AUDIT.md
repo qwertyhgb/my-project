@@ -1,3 +1,6 @@
+> VERSION=V1 / VERSION=LEGACY — 历史只读审计快照，已由2026-10-12 V2主线取代。
+> 本文件的“当前/主线”均指原审计时刻，不作现行研究入口；当前版本见README与docs/v2。
+
 # Repository Refactor Audit（2026-10-08）
 
 > Phase 0 的只读审计产出。**本文件是重构前状态的快照**，之后不再更新；项目当前状态见

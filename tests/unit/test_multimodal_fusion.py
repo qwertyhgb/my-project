@@ -396,7 +396,7 @@ def test_short_budget_classes_mirror_formal_classes_and_keep_native_mechanisms()
     for short_name, formal_name in SHORT_BUDGET_FORMAL_PAIRS:
         short = trainers.PROJECT_TRAINERS[short_name]
         formal = trainers.PROJECT_TRAINERS[formal_name]
-        assert short in trainers.ACTIVE_TRAINERS and formal in trainers.ACTIVE_TRAINERS
+        assert short in trainers.FROZEN_V1_TRAINERS and formal in trainers.FROZEN_V1_TRAINERS
         assert issubclass(short, formal)
         # 类名只差一个 _100ep，输出目录因此自动隔离，不会与 1000 epoch 产物互相覆盖
         assert short.__name__.replace("_100ep_NoFFT", "_NoFFT") == formal.__name__

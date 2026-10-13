@@ -43,7 +43,8 @@ import numpy as np
 #: 1.2（2026-10-10）：新增顶层 ``geometry_check`` 规则块与 ``models[*].geometry_check``
 #: 逐例/逐模型执行汇总；同时几何判定由「四字段逐值严格相等」改为
 #: 「size 严格相等 + 浮点绝对容差 + 物理角点阈值」，这会改变哪些病例能进入 full 模式结果。
-SCHEMA_VERSION = "1.2"
+#: 1.3（2026-10-12）：新增独立全病例empty-both=1 Dice与配对统计；旧字段原义保留。
+SCHEMA_VERSION = "1.3"
 DEFAULT_BOOTSTRAP_RESAMPLES = 10000
 DEFAULT_SEED = 20260922
 #: 判定「病例间 Dice 变化是否为平局」的容差（仅用于 improved/tied/worsened 计数）
@@ -90,6 +91,7 @@ ENDPOINT_TIERS: dict[str, tuple[str, ...]] = {
         "false_positive_burden",
     ),
     "exploratory": (
+        "all_case_macro_dice_empty1",
         "lesion_size_strata_sensitivity",
         "anatomy_region_fp_burden",
         "surface_metrics",
@@ -218,6 +220,61 @@ def bootstrap_ci_paired_ratio(
     if not bool(valid.any()):
         return None
     return percentile_ci(sn[valid] / sd[valid])
+
+
+def dice_empty1_from_counts(tp: int, fp: int, fn: int) -> float:
+    """独立全病例Dice约定：空空=1；不改变原生/阳性Dice的null语义。"""
+    if any(isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, np.integer))
+           or v < 0 for v in (tp, fp, fn)):
+        raise EvaluationError("Dice empty1 的TP/FP/FN必须是非负整数")
+    denominator = 2 * tp + fp + fn
+    return 1.0 if denominator == 0 else float(2 * tp / denominator)
+
+
+def summarize_all_case_dice_empty1(cases: dict[str, dict]) -> dict:
+    """复用已校验病例计数；每个病例等权，显式报告阴阳性组成与分母。"""
+    if not cases:
+        raise EvaluationError("全病例Dice不能使用空病例集合")
+    values = [dice_empty1_from_counts(c["TP"], c["FP"], c["FN"])
+              for _, c in sorted(cases.items())]
+    n_positive = sum(c["n_ref"] > 0 for c in cases.values())
+    return {
+        "all_case_macro_dice_empty1": float(np.mean(values)),
+        "n_cases": len(cases),
+        "n_positive_cases": n_positive,
+        "n_negative_cases": len(cases) - n_positive,
+        "n_true_negative_cases": sum(c["n_ref"] == 0 and c["n_pred"] == 0
+                                     for c in cases.values()),
+        "dice_sum": float(np.sum(values)),
+        "definition": "all fixed cases, equal-weight mean; both empty=1, one empty=0; hard 3D foreground Dice",
+        "scope_note": "author-script foreground-compatible convention; paper Table I aggregation not confirmed; research primary remains positive-case macro Dice",
+    }
+
+
+def paired_all_case_dice_empty1(
+    a_cases: dict[str, dict], b_cases: dict[str, dict], n_resamples: int, seed: int
+) -> dict:
+    """独立全病例配对统计；不覆盖历史阳性病例delta/CI。"""
+    if not a_cases or set(a_cases) != set(b_cases):
+        raise EvaluationError("全病例Dice配对要求相同且非空的病例集合")
+    rows = []
+    for cid in sorted(a_cases):
+        a, b = a_cases[cid], b_cases[cid]
+        if a["n_ref"] != b["n_ref"]:
+            raise EvaluationError(f"全病例Dice配对的reference计数不一致: {cid}")
+        da = dice_empty1_from_counts(a["TP"], a["FP"], a["FN"])
+        db = dice_empty1_from_counts(b["TP"], b["FP"], b["FN"])
+        rows.append({"case_id": cid, "dice_a": da, "dice_b": db, "delta": db-da})
+    deltas = [r["delta"] for r in rows]
+    ci = bootstrap_ci_paired_mean(deltas, n_resamples, seed)
+    return {
+        "delta_definition": "model_b - model_a; all fixed cases; both empty=1",
+        "n_cases": len(rows),
+        "per_case_deltas": rows,
+        "mean_paired_delta": float(np.mean(deltas)),
+        "paired_bootstrap_ci95": ci,
+        "ci_excludes_zero": None if ci is None else bool(ci[0] > 0 or ci[1] < 0),
+    }
 
 
 # --------------------------------------------------------------------------- 历史私有别名

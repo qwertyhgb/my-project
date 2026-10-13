@@ -60,6 +60,9 @@ outputs/external/**
 third_party/*
 !third_party/README.md
 
+# --------------------------------------------------------------------------- 第三方论文 PDF（版权材料，仅本地保留，不入库）
+paper/**
+
 # --------------------------------------------------------------------------- 本地环境文件
 .env
 .env.*
@@ -83,3 +86,6 @@ workdir/anatomy_priors/
 workdir/anatomy_rois/
 workdir/hard_negatives/
 outputs/run_configs/
+
+# V2 dedicated artifacts: all categories stay out of source control.
+outputs/v2/**
