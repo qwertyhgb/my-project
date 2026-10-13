@@ -5,6 +5,8 @@
 中文：基于预测解剖先验与病灶感知粗到细多模态融合的三维前列腺癌病灶分割。
 备选工作标题：Anatomy-Guided Adaptive Multimodal Fusion for Coarse-to-Fine 3D Prostate Cancer Segmentation。
 不提前冻结 acronym，也不因代码存在声明方法有效。
+标题必须与实际验证的方法一致：若最终正式模型停在融合阶段、未启用并验证 coarse head 与 refiner，
+最终论文标题不得宣称 Coarse-to-Fine；Coarse-to-Fine 目前只是工作标题与保留候选框架。
 
 本文只维护科学问题、待验证假设和贡献边界。具体预算、split、命令与运行 stop rules 见
 [Experiment Plan](Experiment_Plan.md)；实现契约见 [Method](Method.md)；已有证据见
@@ -34,7 +36,7 @@ ADC and HBV/DWI to improve accurate 3D prostate cancer lesion segmentation?
 H4/H5和完整coarse-to-fine框架保留为已实现候选，不作为当前必要贡献或必须启用的主模型。
 不因四组结果不理想同时加入新损失、采样、backbone或多个轻量模块。
 
-## 3. Central Hypotheses — all unvalidated
+## 3. Central Hypotheses — all unvalidated（H1–H3 为当前必要假设；H4/H5 为 OPTIONAL FUTURE EXTENSIONS）
 
 | 假设 | 待验证机制 | 解释边界 |
 |---|---|---|
